@@ -1,6 +1,10 @@
 #define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -16,8 +20,6 @@ using namespace tetris;
 
 namespace {
 
-constexpr Uint64 kMaxFrameMs = 100;  // longer stalls are dropped, not replayed
-
 struct Host {
     SDL_Window* window = nullptr;
     bool gfxReady = false;
@@ -25,6 +27,29 @@ struct Host {
     App app;
     Uint64 last = 0;
 };
+
+bool windowHidden(SDL_Window* window) {
+#ifdef __EMSCRIPTEN__
+    (void)window;
+    EmscriptenVisibilityChangeEvent status;
+    return emscripten_get_visibility_status(&status) == EMSCRIPTEN_RESULT_SUCCESS && status.hidden;
+#else
+    return (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) != 0;
+#endif
+}
+
+void syncVisibility(Host& host) { setHidden(host.app, windowHidden(host.window)); }
+
+#ifdef __EMSCRIPTEN__
+// Browsers stop requestAnimationFrame in a hidden tab, which would freeze a duel mid-air on the
+// opponent's screen. A timer keeps the loop going there (throttled to about once a second). This runs
+// as an event watch because a stopped loop would never get to see the HIDDEN event in SDL_AppEvent.
+bool switchLoopTiming(void*, SDL_Event* event) {
+    if (event->type == SDL_EVENT_WINDOW_HIDDEN) emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, 100);
+    if (event->type == SDL_EVENT_WINDOW_SHOWN) emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
+    return true;
+}
+#endif
 
 }  // namespace
 
@@ -52,6 +77,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int, char**) {
     SDL_SetWindowPosition(host->window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 #endif
     SDL_ShowWindow(host->window);
+#ifdef __EMSCRIPTEN__
+    SDL_AddEventWatch(switchLoopTiming, nullptr);
+#endif
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -77,11 +105,20 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
 SDL_AppResult SDL_AppIterate(void* appstate) {
     auto& host = *static_cast<Host*>(appstate);
     const Uint64 now = SDL_GetTicks();
+    syncVisibility(host);
     pumpNetwork(host.app);
-    step(host.app, static_cast<int>(std::min(now - host.last, kMaxFrameMs)));
+    // A long gap is replayed in short steps, so the duel sends snapshots and freezes on KO or 0:00 as usual.
+    int left = frameBudgetMs(now - host.last, host.app.screen == Screen::Duel && host.app.duel.inMatch());
+    do {
+        const int ms = std::min(left, kMaxFrameMs);
+        step(host.app, ms);
+        left -= ms;
+    } while (left > 0);
     host.last = now;
-    if (SDL_GetWindowFlags(host.window) & SDL_WINDOW_MINIMIZED) {
+    if (host.app.hidden) {
+#ifndef __EMSCRIPTEN__
         SDL_Delay(10);
+#endif
         return SDL_APP_CONTINUE;
     }
     gfxNewFrame();

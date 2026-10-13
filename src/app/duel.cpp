@@ -30,6 +30,10 @@ std::string versus(int mine, int theirs) { return std::to_string(mine) + " : " +
 
 }  // namespace
 
+int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch) {
+    return static_cast<int>(std::min<std::uint64_t>(elapsedMs, inMatch ? kMaxCatchUpMs : kMaxFrameMs));
+}
+
 bool DuelSession::frozen() const { return phase_ == DuelPhase::Playing && (koFlashMs_ > 0 || matchClockMs_ == 0); }
 
 std::string resultReasonText(const DuelSession& duel) {

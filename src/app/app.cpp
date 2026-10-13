@@ -60,9 +60,12 @@ Game* shownGame(App& app) {
 // Plays what the solo or duel game and the duel session reported this frame.
 void playEvents(App& app) {
     const bool inDuel = app.screen == Screen::Duel;
+    // While hidden the events are still drained, so waking up doesn't play a backlog all at once.
     if (Game* game = shownGame(app))
-        for (const GameEvent& event : game->takeEvents()) app.audio.play(soundFor(event, inDuel));
-    for (DuelEvent event : app.duel.takeEvents()) app.audio.play(soundFor(event));
+        for (const GameEvent& event : game->takeEvents())
+            if (!app.hidden) app.audio.play(soundFor(event, inDuel));
+    for (DuelEvent event : app.duel.takeEvents())
+        if (!app.hidden) app.audio.play(soundFor(event));
 }
 
 // What the music should be doing for the current screen.
@@ -166,6 +169,12 @@ void handleEvent(App& app, SDL_Window* window, const SDL_Event& event) {
     default:
         break;
     }
+}
+
+void setHidden(App& app, bool hidden) {
+    if (hidden == app.hidden) return;
+    app.hidden = hidden;
+    if (hidden) app.input.releaseAll();  // key-up events are lost while hidden
 }
 
 void pumpNetwork(App& app) {

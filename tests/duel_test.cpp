@@ -486,3 +486,34 @@ TEST_CASE("duel events: our top-out survives the KO board reset") {
     CHECK(duel.game()->takeEvents() ==
           std::vector<GameEvent>{{GameEventType::HardDropped}, {GameEventType::ToppedOut}});
 }
+
+TEST_CASE("duel: frames replay a long stall only while a match runs") {
+    CHECK(frameBudgetMs(16, false) == 16);
+    CHECK(frameBudgetMs(5000, false) == kMaxFrameMs);
+    CHECK(frameBudgetMs(5000, true) == 5000);
+    CHECK(frameBudgetMs(10'000'000, true) == kMaxCatchUpMs);
+}
+
+TEST_CASE("duel: inMatch covers the countdown and play, not waiting or the result") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    CHECK_FALSE(duel.inMatch());
+    duel.onMessage("START 7 1");
+    CHECK(duel.inMatch());
+    duel.update(kCountdownMs);
+    CHECK(duel.inMatch());
+    duel.onMessage("OVER WIN KO 3 0");
+    CHECK_FALSE(duel.inMatch());
+}
+
+TEST_CASE("duel: catching up after a hidden tab runs the clock and sends the new board") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.game()->tick(5000);  // gravity while hidden, as step() replays it
+    duel.update(5000);
+    CHECK(duel.matchClockMs() == kMatchMs - 5000);
+    REQUIRE(wire.sent.size() == 1);
+    CHECK(wire.sent[0].starts_with("SNAP "));
+}

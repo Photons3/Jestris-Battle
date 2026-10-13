@@ -36,6 +36,7 @@ struct App {
     ComboLabel combo;
     std::vector<Action> pending;
     bool quit = false;
+    bool hidden = false;  // tab hidden or window minimized: keep stepping, skip drawing and sound
 
     void newGame();
     void openDuel();   // connects to the server and shows the duel screens
@@ -47,6 +48,7 @@ struct App {
 };
 
 void handleEvent(App& app, SDL_Window* window, const SDL_Event& event);
+void setHidden(App& app, bool hidden);  // call when the tab or window is hidden or shown again
 void pumpNetwork(App& app);  // feeds received messages to the duel; once per frame, before step()
 void step(App& app, int ms);                   // advances input auto-repeat and the game in 1 ms steps
 void drawFrame(App& app, const Fonts& fonts);  // builds the ImGui frame and applies the chosen menu command
