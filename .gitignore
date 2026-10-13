@@ -26,6 +26,8 @@
 # Fortran module files
 *.mod
 *.smod
+# ...but not Go module files
+!go.mod
 
 # Compiled Static libraries
 *.lai
