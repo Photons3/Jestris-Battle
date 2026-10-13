@@ -1,17 +1,20 @@
 #pragma once
 
+#include <optional>
 #include <string>
+#include <utility>
 
 #include "app/duel.hpp"
 #include "app/fonts.hpp"
+#include "app/keymap.hpp"
 #include "core/game.hpp"
 
 struct ImGuiIO;
 
 namespace tetris {
 
-enum class Screen { Start, Playing, Duel };
-enum class UiCommand { None, Play, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic };
+enum class Screen { Start, Playing, Duel, Controls };
+enum class UiCommand { None, Play, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, OpenControls, CloseControls, ResetControls };
 
 struct StartMenu {
     int startLevel = 1;
@@ -20,6 +23,13 @@ struct StartMenu {
     std::string error;                        // why the last duel attempt ended, e.g. "unknown room"
     bool muted = false;                       // sound effects off for this session
     bool musicOff = false;                    // background music off for this session
+};
+
+// The Controls screen: which slot is waiting for a key, and what the last key press changed.
+struct ControlsMenu {
+    std::optional<std::pair<Key, int>> capturing;  // action and slot (0 or 1)
+    std::string note;                               // e.g. "X removed from Rotate CW"
+    Screen returnTo = Screen::Start;                // where Back goes: the start screen or the paused game
 };
 
 inline constexpr int kComboFadeMs = 500;
@@ -35,6 +45,8 @@ struct ComboLabel {
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu);
+// Each action with its two key buttons; clicking one sets `controls.capturing`.
+UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsMenu& controls);
 // Well, pieces, hold/next panels and stats. The board and panels are hidden while paused.
 void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo);
 // Pause and game-over menus; draws nothing while playing.

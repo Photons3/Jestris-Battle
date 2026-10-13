@@ -12,6 +12,7 @@
 #include "app/duel.hpp"
 #include "app/fonts.hpp"
 #include "app/input.hpp"
+#include "app/keymap.hpp"
 #include "app/render.hpp"
 #include "app/sound_cues.hpp"
 #include "core/game.hpp"
@@ -27,6 +28,8 @@ struct App {
 
     Screen screen = Screen::Start;
     StartMenu menu;
+    ControlsMenu controls;
+    Keymap keymap = defaultKeymap();
     std::optional<Game> game;  // solo game
     std::unique_ptr<Connection> connection;
     DuelSession duel;
@@ -41,9 +44,10 @@ struct App {
     void newGame();
     void openDuel();   // connects to the server and shows the duel screens
     void closeDuel();  // leaves the room, disconnects and returns to the start screen
-    void toggleMusic();                   // flips the music on or off for the session
+    void toggleMusic();                   // flips the music on or off and saves it
     void syncMusic(const MusicCue& cue);  // starts, pauses, retimes or stops the music to match `cue`
-    void toggleSound();  // flips mute for the session
+    void toggleSound();  // flips mute and saves it
+    void saveSettings();  // stores the keymap, mute and music for the next launch
     Game* activeGame();  // the game the keys control: solo, or the duel game while a match is running
 };
 

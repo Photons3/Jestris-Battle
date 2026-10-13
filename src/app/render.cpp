@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -431,6 +432,7 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     if (menuButton(menu.duelsEnabled ? "Solo" : "Play")) command = UiCommand::Play;
     if (soundButton(menu.muted)) command = UiCommand::ToggleSound;
     if (musicButton(menu.musicOff)) command = UiCommand::ToggleMusic;
+    if (menuButton("Controls")) command = UiCommand::OpenControls;
     if (menu.duelsEnabled) {
         ImGui::Spacing();
         ImGui::SeparatorText("1v1 DUEL");
@@ -452,6 +454,41 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     return command;
 }
 
+UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsMenu& controls) {
+    UiCommand command = UiCommand::None;
+    beginMenu("##controls");
+    menuTitle(fonts, "CONTROLS");
+    const float slotWidth = ImGui::GetFontSize() * 7.0f;
+    if (ImGui::BeginTable("##keys", 1 + kKeySlots, ImGuiTableFlags_SizingFixedFit)) {
+        for (int i = 0; i < kActionCount; ++i) {
+            const auto action = static_cast<Key>(i);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(actionName(action));
+            for (int slot = 0; slot < kKeySlots; ++slot) {
+                ImGui::TableNextColumn();
+                const bool waiting = controls.capturing == std::pair(action, slot);
+                // The ### keeps one ImGui ID while the label changes, so keyboard focus stays put.
+                const std::string label = std::string(waiting ? "Press a key..." : keyName(keymap.at(action, slot))) +
+                                          "###bind" + std::to_string(i) + "_" + std::to_string(slot);
+                if (ImGui::Button(label.c_str(), ImVec2(slotWidth, 0.0f))) {
+                    controls.capturing = std::pair(action, slot);
+                    controls.note.clear();
+                }
+            }
+        }
+        ImGui::EndTable();
+    }
+    ImGui::TextDisabled("Esc cancels, Backspace clears");
+    if (!controls.note.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", controls.note.c_str());
+    ImGui::Spacing();
+    if (menuButton("Reset to defaults")) command = UiCommand::ResetControls;
+    if (menuButton("Back")) command = UiCommand::CloseControls;
+    ImGui::End();
+    return command;
+}
+
 void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo) {
     ImDrawList* dl = beginBoardWindow();
     drawPlayfield(dl, computeLayout(), game, fonts, combo);
@@ -467,6 +504,7 @@ UiCommand drawOverlay(const Game& game, const Fonts& fonts, bool muted, bool mus
         if (menuButton("Restart")) command = UiCommand::Restart;
         if (soundButton(muted)) command = UiCommand::ToggleSound;
         if (musicButton(musicOff)) command = UiCommand::ToggleMusic;
+        if (menuButton("Controls")) command = UiCommand::OpenControls;
         if (menuButton("Quit to menu")) command = UiCommand::QuitToMenu;
         ImGui::End();
     } else if (game.state() == GameState::GameOver) {
