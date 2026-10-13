@@ -458,7 +458,7 @@ UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsM
     UiCommand command = UiCommand::None;
     beginMenu("##controls");
     menuTitle(fonts, "CONTROLS");
-    const float slotWidth = ImGui::GetFontSize() * 7.0f;
+    const float slotWidth = ImGui::CalcTextSize("Press a key...").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     if (ImGui::BeginTable("##keys", 1 + kKeySlots, ImGuiTableFlags_SizingFixedFit)) {
         for (int i = 0; i < kActionCount; ++i) {
             const auto action = static_cast<Key>(i);
@@ -481,7 +481,8 @@ UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsM
         ImGui::EndTable();
     }
     ImGui::TextDisabled("Esc cancels, Backspace clears");
-    if (!controls.note.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", controls.note.c_str());
+    // The note line is always there, so the centered window doesn't jump when one appears.
+    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", controls.note.empty() ? " " : controls.note.c_str());
     ImGui::Spacing();
     if (menuButton("Reset to defaults")) command = UiCommand::ResetControls;
     if (menuButton("Back")) command = UiCommand::CloseControls;
