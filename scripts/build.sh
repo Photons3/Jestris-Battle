@@ -17,6 +17,12 @@ cmake --build "$ROOT/build-web" -j"$(nproc)"
 
 echo "==> Testing and building the server"
 cd "$ROOT/server"
+if [ ! -f go.mod ]; then
+  echo "server/go.mod is missing; update the checkout (git pull) so it includes server/go.mod and server/go.sum." >&2
+  exit 1
+fi
+# The server is its own module: ignore any go.work in a parent directory.
+export GOWORK=off
 go test ./...
 mkdir -p "$ROOT/build-server"
 CGO_ENABLED=0 go build -o "$ROOT/build-server/tetris-server" .
