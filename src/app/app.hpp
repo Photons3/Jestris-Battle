@@ -1,0 +1,54 @@
+// src/app/app.hpp
+#pragma once
+
+#include <SDL3/SDL.h>
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "app/audio_out.hpp"
+#include "app/duel.hpp"
+#include "app/fonts.hpp"
+#include "app/input.hpp"
+#include "app/render.hpp"
+#include "app/sound_cues.hpp"
+#include "core/game.hpp"
+#include "net/connection.hpp"
+
+namespace tetris {
+
+// Everything between platform events and pixels: menus, key mapping and stepping the game.
+struct App {
+    App();
+    App(const App&) = delete;  // `duel` sends through a lambda that captures `this`
+    App& operator=(const App&) = delete;
+
+    Screen screen = Screen::Start;
+    StartMenu menu;
+    std::optional<Game> game;  // solo game
+    std::unique_ptr<Connection> connection;
+    DuelSession duel;
+    InputMapper input;
+    AudioOut audio;
+    MusicMode music = MusicMode::Stopped;  // what the music is doing, as last applied
+    ComboLabel combo;
+    std::vector<Action> pending;
+    bool quit = false;
+
+    void newGame();
+    void openDuel();   // connects to the server and shows the duel screens
+    void closeDuel();  // leaves the room, disconnects and returns to the start screen
+    void toggleMusic();                   // flips the music on or off for the session
+    void syncMusic(const MusicCue& cue);  // starts, pauses, retimes or stops the music to match `cue`
+    void toggleSound();  // flips mute for the session
+    Game* activeGame();  // the game the keys control: solo, or the duel game while a match is running
+};
+
+void handleEvent(App& app, SDL_Window* window, const SDL_Event& event);
+void pumpNetwork(App& app);  // feeds received messages to the duel; once per frame, before step()
+void step(App& app, int ms);                   // advances input auto-repeat and the game in 1 ms steps
+void drawFrame(App& app, const Fonts& fonts);  // builds the ImGui frame and applies the chosen menu command
+
+}  // namespace tetris

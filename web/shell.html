@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tetris Duel</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0f0f17; }
+  canvas { display: block; outline: none; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+<script>
+  var Module = { canvas: document.getElementById('canvas') };
+  // Arrow keys and space would otherwise scroll the page while playing.
+  window.addEventListener('keydown', function (e) {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
+  }, { passive: false });
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
