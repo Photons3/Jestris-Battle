@@ -1,4 +1,4 @@
-# Tetris
+# Jestris Battle
 
 C++20 Tetris on SDL3 and Dear ImGui. Plays solo on the desktop or in the browser, and
 as a 1v1 duel between two browsers on the same LAN.

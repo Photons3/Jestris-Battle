@@ -65,7 +65,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int, char**) {
 #else
     const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
 #endif
-    host->window = SDL_CreateWindow("Tetris", static_cast<int>(800 * scale), static_cast<int>(900 * scale),
+    host->window = SDL_CreateWindow("Jestris Battle", static_cast<int>(800 * scale), static_cast<int>(900 * scale),
                                     SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN |
                                         gfxPrepareWindow());
     if (host->window == nullptr) {

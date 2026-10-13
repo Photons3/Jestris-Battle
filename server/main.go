@@ -37,7 +37,7 @@ func main() {
 	hub.matchLength = *match
 	mux.Handle("/ws", hub)
 
-	fmt.Println("Tetris duel server running. Players open one of:")
+	fmt.Println("Jestris Battle server running. Players open one of:")
 	for _, ip := range lanIPs() {
 		fmt.Printf("  http://%s:%s\n", ip, port)
 	}

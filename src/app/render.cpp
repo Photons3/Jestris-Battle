@@ -424,7 +424,7 @@ void ComboLabel::update(int combo, int ms) {
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     beginMenu("##start");
-    menuTitle(fonts, "TETRIS");
+    menuTitle(fonts, "JESTRIS BATTLE");
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
     ImGui::SliderInt("Start level", &menu.startLevel, kMinStartLevel, kMaxStartLevel, "%d",
                      ImGuiSliderFlags_AlwaysClamp);
