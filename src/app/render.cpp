@@ -331,18 +331,29 @@ void beginMenu(const char* id) {
                      ImGuiWindowFlags_NoSavedSettings);
 }
 
-void menuTitle(const Fonts& fonts, const char* title) {
+// Returns the title's width, so a menu can size its rows to match it.
+float menuTitle(const Fonts& fonts, const char* title) {
     ImGui::PushFont(fonts.hud, ImGui::GetFontSize() * 2.0f);
+    const float width = ImGui::CalcTextSize(title).x;
     ImGui::TextUnformatted(title);
     ImGui::PopFont();
     ImGui::Spacing();
+    return width;
 }
 
-bool menuButton(const char* label) { return ImGui::Button(label, ImVec2(ImGui::GetFontSize() * 12.0f, 0.0f)); }
+float menuButtonWidth() { return ImGui::GetFontSize() * 12.0f; }
+
+bool menuButton(const char* label, float width = menuButtonWidth()) {
+    return ImGui::Button(label, ImVec2(width, 0.0f));
+}
 
 // The ### keeps one ImGui ID while the label flips, so keyboard focus stays on the item.
-bool soundButton(bool muted) { return menuButton(muted ? "Sound: Off###sound" : "Sound: On###sound"); }
-bool musicButton(bool off) { return menuButton(off ? "Music: Off###music" : "Music: On###music"); }
+bool soundButton(bool muted, float width = menuButtonWidth()) {
+    return menuButton(muted ? "Sound: Off###sound" : "Sound: On###sound", width);
+}
+bool musicButton(bool off, float width = menuButtonWidth()) {
+    return menuButton(off ? "Music: Off###music" : "Music: On###music", width);
+}
 
 void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo) {
     const Game& game = *duel.game();
@@ -425,29 +436,32 @@ void ComboLabel::update(int combo, int ms) {
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     beginMenu("##start");
-    menuTitle(fonts, "JESTRIS BATTLE");
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-    ImGui::SliderInt("Start level", &menu.startLevel, kMinStartLevel, kMaxStartLevel, "%d",
+    // Every row spans the title's width, so the menu is one even column under it.
+    const float width = std::max(menuTitle(fonts, "JESTRIS BATTLE"), menuButtonWidth());
+    ImGui::SetNextItemWidth(width);
+    ImGui::SliderInt("##level", &menu.startLevel, kMinStartLevel, kMaxStartLevel, "Start level: %d",
                      ImGuiSliderFlags_AlwaysClamp);
-    if (menuButton(menu.duelsEnabled ? "Solo" : "Play")) command = UiCommand::Play;
-    if (soundButton(menu.muted)) command = UiCommand::ToggleSound;
-    if (musicButton(menu.musicOff)) command = UiCommand::ToggleMusic;
-    if (menuButton("Controls")) command = UiCommand::OpenControls;
+    if (menuButton(menu.duelsEnabled ? "Solo" : "Play", width)) command = UiCommand::Play;
+    if (soundButton(menu.muted, width)) command = UiCommand::ToggleSound;
+    if (musicButton(menu.musicOff, width)) command = UiCommand::ToggleMusic;
+    if (menuButton("Controls", width)) command = UiCommand::OpenControls;
     if (menu.duelsEnabled) {
         ImGui::Spacing();
         ImGui::SeparatorText("1v1 DUEL");
-        if (menuButton("Create room")) command = UiCommand::CreateRoom;
+        if (menuButton("Create room", width)) command = UiCommand::CreateRoom;
         const bool complete = static_cast<int>(std::strlen(menu.joinCode)) == kRoomCodeLength;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5.0f);
+        // The code box and Join room share one row, half each.
+        const float half = (width - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
+        ImGui::SetNextItemWidth(half);
         const bool entered = ImGui::InputTextWithHint(
             "##code", "CODE", menu.joinCode, sizeof menu.joinCode,
             ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank | ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SameLine();
         ImGui::BeginDisabled(!complete);
-        if ((ImGui::Button("Join room") || entered) && complete) command = UiCommand::JoinRoom;
+        if ((ImGui::Button("Join room", ImVec2(half, 0.0f)) || entered) && complete) command = UiCommand::JoinRoom;
         ImGui::EndDisabled();
         if (!menu.error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", menu.error.c_str());
-    } else if (menuButton("Quit")) {  // a browser tab has nothing to quit
+    } else if (menuButton("Quit", width)) {  // a browser tab has nothing to quit
         command = UiCommand::QuitApp;
     }
     ImGui::End();
