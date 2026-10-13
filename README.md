@@ -40,6 +40,30 @@ on-screen clock always starts at 2:00, so with `-match 20s` the server's verdict
     scripts/build.sh   # web build into build-web/, server into build-server/
     scripts/run.sh     # serves on 0.0.0.0:8080; extra flags go to the server
 
+Plain `http://` and `ws://` work out of the box. The game connects with `wss://` whenever the
+page was loaded over `https://`, so HTTPS works in either of two ways:
+
+- **Reverse proxy (recommended).** Let nginx or Caddy handle the certificate and forward to
+  the server on `127.0.0.1:8080` (`scripts/run.sh -addr 127.0.0.1:8080`). Caddy needs only
+  `game.example.com { reverse_proxy 127.0.0.1:8080 }`. For nginx, pass the WebSocket upgrade
+  and the Host header through:
+
+      location / {
+          proxy_pass http://127.0.0.1:8080;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_set_header Host $host;
+      }
+
+  If your proxy can't pass the Host header, allow the public hostname with
+  `-origins game.example.com` (comma-separated), or room joins fail with a 403.
+- **Built-in TLS.** `scripts/run.sh -addr 0.0.0.0:443 -cert fullchain.pem -key privkey.pem`
+  serves HTTPS and WSS directly (for example with Let's Encrypt files from certbot).
+
+The server pings every connection every 25 seconds, so proxies don't drop a player waiting
+in a room.
+
 ## Playing a duel
 
 1. One player picks Create room and shares the 4-letter code.

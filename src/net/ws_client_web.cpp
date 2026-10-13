@@ -82,8 +82,10 @@ private:
 bool duelsSupported() { return true; }
 
 std::unique_ptr<Connection> connectToServer() {
-    const std::string host = emscripten_run_script_string("location.host");
-    return std::make_unique<WebSocketConnection>("ws://" + host + "/ws");
+    // wss:// on an https:// page (browsers block ws:// there as mixed content), ws:// otherwise.
+    const std::string url =
+        emscripten_run_script_string("(location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'");
+    return std::make_unique<WebSocketConnection>(url);
 }
 
 }  // namespace tetris

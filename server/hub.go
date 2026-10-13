@@ -17,6 +17,7 @@ import (
 const (
 	maxMessageBytes    = 4096
 	writeTimeout       = 2 * time.Second
+	pingInterval       = 25 * time.Second           // keeps reverse proxies (nginx: 60s idle) from dropping a waiting player
 	codeLetters        = "ABCDEFGHJKLMNPQRSTUVWXYZ" // no I or O, which look like 1 and 0
 	codeLength         = 4
 	minStartLevel      = 1
@@ -39,6 +40,9 @@ type Hub struct {
 	afterFunc   func(d time.Duration, f func()) stopper
 	matchLength time.Duration
 	matchGrace  time.Duration // covers clients starting their clocks a one-way latency after the server
+	// originPatterns are extra page hosts allowed to open /ws (e.g. "game.example.com"), for a
+	// reverse proxy that does not pass the Host header through. The page's own host is always allowed.
+	originPatterns []string
 }
 
 // stopper is a match timer; *time.Timer satisfies it.
@@ -88,22 +92,45 @@ func randomCode() string {
 }
 
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, nil)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.originPatterns})
 	if err != nil {
 		log.Printf("websocket accept: %v", err)
 		return
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(maxMessageBytes)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go keepAlive(ctx, conn)
 	p := &player{conn: conn}
 	defer h.leave(p)
 	for {
-		typ, data, err := conn.Read(context.Background())
+		typ, data, err := conn.Read(ctx)
 		if err != nil {
 			return
 		}
 		if typ == websocket.MessageText {
 			h.deliver(h.route(p, string(data)))
+		}
+	}
+}
+
+// keepAlive pings until ctx ends. A ping that gets no pong closes the connection.
+func keepAlive(ctx context.Context, conn *websocket.Conn) {
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, pingInterval)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				conn.CloseNow()
+				return
+			}
 		}
 	}
 }
