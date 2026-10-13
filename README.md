@@ -1,4 +1,4 @@
-# Tetris
+# Jestris Battle
 
 C++20 Tetris on SDL3 and Dear ImGui. Plays solo on the desktop or in the browser, and
 as a 1v1 duel between two browsers on the same LAN.
@@ -20,8 +20,14 @@ commands with `EMSDK_PYTHON=/opt/homebrew/bin/python3.14` (or any Python >= 3.10
 
 ## Controls
 
-Arrows move and soft-drop, Up or X rotates clockwise, Z or Ctrl rotates counter-clockwise, Space hard-drops,
-C or Shift holds, Esc or P pauses, M mutes the sound, and Ctrl+Cmd+F or Alt+Enter toggles fullscreen. The Music item on the start and pause menus turns the background music off or on.
+Arrows move and soft-drop, Up or X rotates clockwise, Z or Left Ctrl rotates counter-clockwise, Space hard-drops,
+Left Shift or C holds, Esc or P pauses, M mutes the sound, and Ctrl+Cmd+F or Alt+Enter toggles fullscreen. The Music item on the start and pause menus turns the background music off or on.
+
+Controls on the start and pause menus changes the game keys: each action has two key slots.
+Click one (or press Enter on it) and press the new key; Esc cancels and Backspace clears the
+slot. A key already used elsewhere moves to the new action. M, Enter, Esc and Backspace can't
+be assigned, and Pause always keeps a key. The keys, sound and music settings are saved
+(localStorage in the browser, the SDL preferences folder on desktop).
 
 ## Hosting LAN duels
 
@@ -39,6 +45,30 @@ on-screen clock always starts at 2:00, so with `-match 20s` the server's verdict
     scripts/setup.sh   # once: apt packages, emsdk into ~/emsdk, Go into /usr/local/go
     scripts/build.sh   # web build into build-web/, server into build-server/
     scripts/run.sh     # serves on 0.0.0.0:8080; extra flags go to the server
+
+Plain `http://` and `ws://` work out of the box. The game connects with `wss://` whenever the
+page was loaded over `https://`, so HTTPS works in either of two ways:
+
+- **Reverse proxy (recommended).** Let nginx or Caddy handle the certificate and forward to
+  the server on `127.0.0.1:8080` (`scripts/run.sh -addr 127.0.0.1:8080`). Caddy needs only
+  `game.example.com { reverse_proxy 127.0.0.1:8080 }`. For nginx, pass the WebSocket upgrade
+  and the Host header through:
+
+      location / {
+          proxy_pass http://127.0.0.1:8080;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_set_header Host $host;
+      }
+
+  If your proxy can't pass the Host header, allow the public hostname with
+  `-origins game.example.com` (comma-separated), or room joins fail with a 403.
+- **Built-in TLS.** `scripts/run.sh -addr 0.0.0.0:443 -cert fullchain.pem -key privkey.pem`
+  serves HTTPS and WSS directly (for example with Let's Encrypt files from certbot).
+
+The server pings every connection every 25 seconds, so proxies don't drop a player waiting
+in a room.
 
 ## Playing a duel
 

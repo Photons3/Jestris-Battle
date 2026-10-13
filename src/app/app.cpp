@@ -2,8 +2,11 @@
 #include "app/app.hpp"
 
 #include <cstdint>
+#include <string>
 
 #include "app/keymap.hpp"
+#include "app/settings.hpp"
+#include "app/settings_store.hpp"
 #include "app/sound_cues.hpp"
 #include "imgui.h"
 
@@ -48,6 +51,22 @@ void applyCommand(App& app, UiCommand command) {
     case UiCommand::LeaveDuel:
         app.closeDuel();
         break;
+    case UiCommand::OpenControls:
+        app.controls = ControlsMenu{};
+        app.controls.returnTo = app.screen;
+        app.input.releaseAll();
+        app.screen = Screen::Controls;
+        break;
+    case UiCommand::CloseControls:
+        app.controls.capturing.reset();
+        app.screen = app.controls.returnTo;  // a solo game is still paused underneath
+        break;
+    case UiCommand::ResetControls:
+        app.keymap = defaultKeymap();
+        app.controls.capturing.reset();
+        app.controls.note.clear();
+        app.saveSettings();
+        break;
     }
 }
 
@@ -75,10 +94,30 @@ MusicCue musicCue(App& app) {
     return {};
 }
 
+// The key pressed while a Controls slot waits for one: assigns it, clears the slot or cancels.
+void captureKey(App& app, SDL_Scancode scancode) {
+    const auto [action, slot] = *app.controls.capturing;
+    app.controls.capturing.reset();
+    if (scancode == SDL_SCANCODE_ESCAPE) return;
+    if (scancode == SDL_SCANCODE_BACKSPACE) {
+        app.keymap.clear(action, slot);
+    } else if (isReservedKey(scancode)) {
+        app.controls.note = std::string(keyName(scancode)) + " is reserved";
+        return;
+    } else if (const std::optional<Key> takenFrom = app.keymap.bind(action, slot, scancode)) {
+        app.controls.note = std::string(keyName(scancode)) + " removed from " + actionName(*takenFrom);
+    }
+    app.saveSettings();
+}
+
 void handleKey(App& app, SDL_Window* window, const SDL_KeyboardEvent& key) {
     if (key.down && isFullscreenChord(key)) {
         const bool fullscreen = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
         SDL_SetWindowFullscreen(window, !fullscreen);
+        return;
+    }
+    if (app.controls.capturing) {
+        if (key.down && !key.repeat) captureKey(app, key.scancode);
         return;
     }
     // M mutes on any screen, but not while typing a room code.
@@ -87,7 +126,7 @@ void handleKey(App& app, SDL_Window* window, const SDL_KeyboardEvent& key) {
         return;
     }
     if (key.repeat || app.activeGame() == nullptr) return;  // DAS/ARR replaces OS key repeat
-    const std::optional<Key> mapped = keyForScancode(key.scancode);
+    const std::optional<Key> mapped = app.keymap.lookup(key.scancode);
     if (!mapped) return;
     if (key.down)
         app.input.press(*mapped, app.pending);
@@ -102,7 +141,15 @@ App::App()
           if (connection) connection->send(text);
       }) {
     menu.duelsEnabled = duelsSupported();
+    const Settings saved = parseSettings(loadSettingsText());
+    keymap = saved.keys;
+    menu.muted = saved.muted;
+    menu.musicOff = saved.musicOff;
+    audio.setMuted(menu.muted);
+    audio.setMusicMuted(menu.musicOff);
 }
+
+void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff})); }
 
 void App::newGame() {
     syncMusic({});  // a new game always starts the song from the top
@@ -123,11 +170,13 @@ void App::openDuel() {
 void App::toggleSound() {
     menu.muted = !menu.muted;
     audio.setMuted(menu.muted);
+    saveSettings();
 }
 
 void App::toggleMusic() {
     menu.musicOff = !menu.musicOff;
     audio.setMusicMuted(menu.musicOff);
+    saveSettings();
 }
 
 void App::syncMusic(const MusicCue& cue) {
@@ -226,6 +275,9 @@ void drawFrame(App& app, const Fonts& fonts) {
         break;
     case Screen::Duel:
         command = drawDuel(app.duel, fonts, app.combo);
+        break;
+    case Screen::Controls:
+        command = drawControlsScreen(fonts, app.keymap, app.controls);
         break;
     }
     if (app.menu.muted) drawMutedBadge(fonts);

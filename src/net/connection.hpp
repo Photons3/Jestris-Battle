@@ -17,7 +17,7 @@ public:
 
 // True only in the browser build, which is served by (and can reach) the duel server.
 bool duelsSupported();
-// Connects to ws://<page host>/ws. Only called when duelsSupported().
+// Connects to ws://<page host>/ws, or wss:// when the page is served over https. Only called when duelsSupported().
 std::unique_ptr<Connection> connectToServer();
 
 }  // namespace tetris

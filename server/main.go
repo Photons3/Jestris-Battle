@@ -1,4 +1,6 @@
-// Command tetris-server hosts LAN duels: it serves the web build and relays matches over /ws.
+// Command tetris-server hosts duels: it serves the web build and relays matches over /ws.
+// It speaks plain HTTP/WS by default, HTTPS/WSS with -cert and -key, and also works behind
+// a TLS-terminating reverse proxy (the client picks wss:// whenever the page is https://).
 package main
 
 import (
@@ -17,7 +19,15 @@ func main() {
 	addr := flag.String("addr", "0.0.0.0:8080", "address to listen on")
 	dir := flag.String("dir", "../build-web", "directory holding the web build (index.html, index.js, index.wasm)")
 	match := flag.Duration("match", defaultMatchLength, "match length, e.g. 20s for quick manual tests")
+	cert := flag.String("cert", "", "TLS certificate file (PEM, full chain); serves HTTPS/WSS when set with -key")
+	key := flag.String("key", "", "TLS private key file (PEM)")
+	origins := flag.String("origins", "", "comma-separated extra page hosts allowed to open /ws, for proxies that rewrite Host")
 	flag.Parse()
+
+	if (*cert == "") != (*key == "") {
+		log.Fatal("-cert and -key must be given together")
+	}
+	useTLS := *cert != ""
 
 	for _, name := range webFileNames {
 		if _, err := os.Stat(filepath.Join(*dir, name)); err != nil {
@@ -35,13 +45,25 @@ func main() {
 	mux.Handle("/", webFiles(*dir))
 	hub := NewHub()
 	hub.matchLength = *match
+	for _, o := range strings.Split(*origins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			hub.originPatterns = append(hub.originPatterns, o)
+		}
+	}
 	mux.Handle("/ws", hub)
 
-	fmt.Println("Tetris duel server running. Players open one of:")
-	for _, ip := range lanIPs() {
-		fmt.Printf("  http://%s:%s\n", ip, port)
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
 	}
-	fmt.Printf("  http://localhost:%s  (this machine)\n", port)
+	fmt.Println("Jestris Battle server running. Players open one of:")
+	for _, ip := range lanIPs() {
+		fmt.Printf("  %s://%s:%s\n", scheme, ip, port)
+	}
+	fmt.Printf("  %s://localhost:%s  (this machine)\n", scheme, port)
+	if useTLS {
+		log.Fatal(http.ListenAndServeTLS(*addr, *cert, *key, mux))
+	}
 	log.Fatal(http.ListenAndServe(*addr, mux))
 }
 

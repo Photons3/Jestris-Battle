@@ -65,7 +65,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int, char**) {
 #else
     const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
 #endif
-    host->window = SDL_CreateWindow("Tetris", static_cast<int>(800 * scale), static_cast<int>(900 * scale),
+    host->window = SDL_CreateWindow("Jestris Battle", static_cast<int>(800 * scale), static_cast<int>(900 * scale),
                                     SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN |
                                         gfxPrepareWindow());
     if (host->window == nullptr) {
@@ -97,7 +97,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int, char**) {
 
 SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
     auto& host = *static_cast<Host*>(appstate);
-    ImGui_ImplSDL3_ProcessEvent(event);
+    // A key pressed for the Controls screen is a binding, not menu navigation.
+    const bool capturedKey = event->type == SDL_EVENT_KEY_DOWN && host.app.controls.capturing;
+    if (!capturedKey) ImGui_ImplSDL3_ProcessEvent(event);
     handleEvent(host.app, host.window, *event);
     return host.app.quit ? SDL_APP_SUCCESS : SDL_APP_CONTINUE;
 }
