@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
@@ -16,6 +17,12 @@ inline constexpr int kCountdownMs = 3000;  // must match countdown in server/hub
 inline constexpr int kSnapshotIntervalMs = 100;
 inline constexpr int kMatchMs = 120000;  // display clock; the server's -match default is the same 2 minutes
 inline constexpr int kKoFlashMs = 1000;
+inline constexpr int kMaxFrameMs = 100;  // longer stalls are dropped, not replayed, outside a match
+inline constexpr int kMaxCatchUpMs = 130000;  // a match replays stalls up to this long: the clock plus slack
+
+// How much of `elapsedMs` of wall time to simulate this frame. A browser stops or throttles a hidden tab's
+// loop, so a running match replays the gap: gravity keeps going and the opponent keeps getting snapshots.
+int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch);
 
 enum class DuelPhase { Idle, Waiting, Countdown, Playing, Result };
 enum class DuelOutcome { None, Won, Lost, Draw, OpponentLeft };
@@ -47,6 +54,7 @@ public:
     void update(int ms);
 
     DuelPhase phase() const { return phase_; }
+    bool inMatch() const { return phase_ == DuelPhase::Countdown || phase_ == DuelPhase::Playing; }
     DuelOutcome outcome() const { return outcome_; }
     const std::string& roomCode() const { return roomCode_; }  // set once the server confirms a created room
     const std::string& error() const { return error_; }        // why the session last went back to Idle
@@ -74,7 +82,6 @@ private:
     void startMatch(const StartMatch& start);
     void finish(DuelOutcome outcome);
     void reset();
-    bool inMatch() const { return phase_ == DuelPhase::Countdown || phase_ == DuelPhase::Playing; }
     void resetMatchStats();
 
     Send send_;
