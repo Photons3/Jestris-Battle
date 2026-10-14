@@ -38,6 +38,8 @@ struct App {
     MusicMode music = MusicMode::Stopped;  // what the music is doing, as last applied
     ComboLabel combo;
     ClearCallout callout;
+    AttackTrails trails;      // duel attacks in flight
+    float lastClearRow = 0;  // middle of our last clear, where the attack it sends takes off
     std::vector<Action> pending;
     bool quit = false;
     bool hidden = false;  // tab hidden or window minimized: keep stepping, skip drawing and sound

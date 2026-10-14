@@ -83,6 +83,26 @@ struct CalloutLine {
 // The callout's lines, top to bottom, each short enough for the HOLD column.
 std::vector<CalloutLine> calloutLines(const ClearAward& award);
 
+inline constexpr int kTrailFlightMs = 420;  // an attack's flight from one well to the other's garbage meter
+inline constexpr int kTrailImpactMs = 180;  // then a burst on the meter
+inline constexpr int kTrailMs = kTrailFlightMs + kTrailImpactMs;
+
+// Garbage in flight in a duel: each attack arcs from the sender's well to the receiver's garbage meter.
+struct AttackTrail {
+    bool outgoing;  // ours, flying to their meter
+    float fromRow;  // board row it leaves from, in the sender's well
+    int ms = 0;     // time since launch
+};
+
+struct AttackTrails {
+    std::vector<AttackTrail> live;
+    void launch(bool outgoing, float fromRow) { live.push_back({outgoing, fromRow}); }
+    void update(int ms);  // ages each trail and drops the ones that have landed
+};
+
+// How far along its arc a trail `ms` into its flight is: 0 to 1, slow off the well and fast into the meter.
+float trailProgress(int ms);
+
 inline constexpr int kCountdownPopMs = 150;  // each digit settles from 1.3x to 1x over this long
 inline constexpr int kGoBannerMs = 400;      // "GO!" shows for this long once play starts
 
@@ -109,6 +129,6 @@ void drawMutedBadge(const Fonts& fonts);
 // Lobby, waiting room, countdown, both boards and the result menu, depending on the session phase. `menu`
 // supplies our name, and the lobby writes the clicked room to it.
 UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
-                   StartMenu& menu);
+                   const AttackTrails& trails, StartMenu& menu);
 
 }  // namespace tetris

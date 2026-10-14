@@ -83,6 +83,22 @@ TEST_CASE("ui: the clear callout pops in, holds, then fades out") {
     CHECK(callout.alpha() == 1.0f);
 }
 
+TEST_CASE("ui: an attack trail speeds up along its arc, lands, then is dropped after its burst") {
+    CHECK(trailProgress(0) == 0.0f);
+    CHECK(trailProgress(kTrailFlightMs / 2) < 0.5f);
+    CHECK(trailProgress(kTrailFlightMs) == doctest::Approx(1.0f));
+    CHECK(trailProgress(kTrailMs) == doctest::Approx(1.0f));
+    AttackTrails trails;
+    trails.launch(true, 3.0f);
+    trails.update(kTrailMs / 2);
+    trails.launch(false, 10.0f);
+    trails.update(kTrailMs - kTrailMs / 2 - 1);
+    REQUIRE(trails.live.size() == 2);
+    trails.update(1);
+    REQUIRE(trails.live.size() == 1);
+    CHECK_FALSE(trails.live[0].outgoing);
+}
+
 TEST_CASE("ui: only a perfect clear flashes over the well, and only at first") {
     ClearCallout callout;
     callout.show({4});
@@ -168,7 +184,7 @@ TEST_CASE("ui: the lobby draws its room list") {
     StartMenu menu;
     for (int frame = 0; frame < 2; ++frame) {
         ImGui::NewFrame();
-        CHECK(drawDuel(duel, Fonts{}, ComboLabel{}, ClearCallout{}, menu) == UiCommand::None);
+        CHECK(drawDuel(duel, Fonts{}, ComboLabel{}, ClearCallout{}, AttackTrails{}, menu) == UiCommand::None);
         ImGui::EndFrame();
     }
     CHECK(menu.pickedRoom.empty());

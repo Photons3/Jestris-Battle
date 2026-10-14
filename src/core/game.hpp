@@ -116,6 +116,7 @@ public:
     bool canHold() const { return canHold_; }
     std::vector<PieceType> next(int n) const { return bag_.peek(n); }
     const std::vector<int>& clearingRows() const { return clearingRows_; }
+    int clearElapsedMs() const { return clearTimerMs_; }  // time into the clear animation, 0 to kClearDelayMs
     int score() const { return score_; }
     int level() const { return level_; }
     int lines() const { return lines_; }

@@ -4,6 +4,7 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -40,12 +41,15 @@ ImVec4 colorVec(Rgb c, float alpha = 1.0f) { return ImVec4(c.r / 255.0f, c.g / 2
 Rgb lighten(Rgb c) { return {c.r + (255 - c.r) * 2 / 5, c.g + (255 - c.g) * 2 / 5, c.b + (255 - c.b) * 2 / 5}; }
 Rgb darken(Rgb c) { return {c.r * 3 / 5, c.g * 3 / 5, c.b * 3 / 5}; }
 constexpr Rgb kGarbageColor{128, 128, 136};
+constexpr Rgb kBombColor{255, 200, 20};  // hazard yellow, warmer than the O piece
+constexpr Rgb kBombInk{24, 22, 20};
 constexpr Rgb kWellFill{18, 18, 26};
 constexpr Rgb kWellBorder{110, 110, 140};
 constexpr Rgb kLabelColor{150, 160, 190};
 constexpr Rgb kTextColor{235, 235, 245};
 Rgb pieceRgb(PieceType type) {
-    if (type == PieceType::Garbage || type == PieceType::Bomb) return kGarbageColor;
+    if (type == PieceType::Garbage) return kGarbageColor;
+    if (type == PieceType::Bomb) return kBombColor;
     return kPieceColors[static_cast<int>(type)];
 }
 float rowAlpha(int y) { return y >= kVisibleHeight ? kHiddenAlpha : 1.0f; }
@@ -87,15 +91,31 @@ void drawShadowText(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, 
     dl->AddText(fonts.hud, size, pos, col, text);
 }
 
+// A hazard-yellow block with the radiation trefoil: three 60-degree blades around a hub, inside a ring.
+void drawBombCell(ImDrawList* dl, ImVec2 p, float size, float alpha) {
+    const float bevel = bevelFor(size);
+    drawBevelRect(dl, p, ImVec2(p.x + size, p.y + size), bevel, kBombColor, lighten(kBombColor), darken(kBombColor),
+                  alpha);
+    const ImU32 ink = color(kBombInk, alpha);
+    const ImVec2 c(p.x + size * 0.5f, p.y + size * 0.5f);
+    const float inner = size * 0.5f - bevel;
+    dl->AddCircle(c, inner - size * 0.04f, ink, 0, std::max(1.0f, size * 0.07f));
+    const float bladeOuter = inner - size * 0.12f;
+    constexpr float kPi = 3.14159265f;
+    for (int i = 0; i < 3; ++i) {  // screen y points down, so the 90-degree blade points down
+        const float mid = kPi * 0.5f + i * kPi * 2.0f / 3.0f;
+        dl->PathLineTo(c);
+        dl->PathArcTo(c, bladeOuter, mid - kPi / 6.0f, mid + kPi / 6.0f);
+        dl->PathFillConvex(ink);
+    }
+    dl->AddCircleFilled(c, bladeOuter * 0.32f, color(kBombColor, alpha));  // gap between hub and blades
+    dl->AddCircleFilled(c, bladeOuter * 0.2f, ink);                          // hub
+}
+
 void drawCell(ImDrawList* dl, ImVec2 p, float size, PieceType type, float alpha) {
+    if (type == PieceType::Bomb) return drawBombCell(dl, p, size, alpha);
     const Rgb base = pieceRgb(type);
     drawBevelRect(dl, p, ImVec2(p.x + size, p.y + size), bevelFor(size), base, lighten(base), darken(base), alpha);
-    if (type == PieceType::Bomb) {
-        const int a = static_cast<int>(alpha * 255.0f);
-        dl->AddCircleFilled(ImVec2(p.x + size * 0.5f, p.y + size * 0.55f), size * 0.28f, IM_COL32(25, 25, 32, a));
-        dl->AddCircleFilled(ImVec2(p.x + size * 0.74f, p.y + size * 0.24f), std::max(1.0f, size * 0.09f),
-                            IM_COL32(255, 140, 0, a));  // fuse
-    }
 }
 
 void drawWell(ImDrawList* dl, const Layout& l) {
@@ -106,14 +126,88 @@ void drawWell(ImDrawList* dl, const Layout& l) {
                 2.0f);
 }
 
+// Like cellTopLeft, for a row partway between two (while the stack falls after a clear), snapped to whole pixels.
+ImVec2 cellTopLeftAt(const Layout& l, int x, float y) {
+    return ImVec2(l.origin.x + x * l.cell, std::floor(l.origin.y + (kDrawnRows - 1 - y) * l.cell));
+}
+
+float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
+
+// A stable pseudo-random number in [0, 1) for one particle, so the clear animation needs no state of its own.
+float hash01(int a, int b, int c) {
+    std::uint32_t h = static_cast<std::uint32_t>(a) * 73856093u ^ static_cast<std::uint32_t>(b) * 19349663u ^
+                      static_cast<std::uint32_t>(c) * 83492791u;
+    h ^= h >> 13;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15;
+    return static_cast<float>(h & 0xffffu) / 65536.0f;
+}
+
+// The clear runs in two halves of kClearDelayMs. First each cleared cell flashes white and shrinks away,
+// sweeping out from the middle of the row, and throws off a few fragments. Then the rows above fall into the gap,
+// landing as the clear finishes so the next frame's board matches.
+constexpr float kBurstEnd = 0.55f;     // the shrink ends here, as a fraction of the clear
+constexpr float kFallStart = 0.45f;    // and the stack starts falling here
+constexpr float kSweepDelay = 0.15f;   // the edge columns start this much later than the middle ones
+constexpr int kFragments = 3;          // per cleared cell; bombs throw twice as many
+constexpr float kGravity = 60.0f;      // fragments, in cells per second squared
+constexpr float kClearSeconds = kClearDelayMs / 1000.0f;
+
+void drawClearingCell(ImDrawList* dl, const Layout& l, int x, int y, PieceType type, float progress) {
+    const float delay = std::abs(x - (kBoardWidth - 1) * 0.5f) / (kBoardWidth * 0.5f) * kSweepDelay;
+    const float local = clamp01((progress - delay) / (kBurstEnd - kSweepDelay));
+    const ImVec2 p = cellTopLeft(l, x, y);
+    const ImVec2 center(p.x + l.cell * 0.5f, p.y + l.cell * 0.5f);
+    const float alpha = rowAlpha(y);
+
+    if (local < 1.0f) {
+        const float size = std::floor(l.cell * (1.0f - local * local));
+        const ImVec2 q(std::floor(center.x - size * 0.5f), std::floor(center.y - size * 0.5f));
+        if (size >= 2.0f) drawCell(dl, q, size, type, alpha);
+        const float white = clamp01(1.0f - local * 2.5f);  // a white flash over the first part
+        dl->AddRectFilled(q, ImVec2(q.x + size, q.y + size), color({255, 255, 255}, white * alpha));
+    }
+
+    const bool bomb = type == PieceType::Bomb;
+    if (bomb && local > 0.0f && local < 1.0f) {  // a shock ring
+        dl->AddCircle(center, l.cell * (0.4f + 1.4f * local), color({255, 150, 30}, (1.0f - local) * alpha), 0,
+                      std::max(1.0f, l.cell * 0.15f * (1.0f - local)));
+    }
+
+    const float t = (progress - delay) * kClearSeconds;  // seconds since this cell popped
+    if (t <= 0.0f) return;
+    const float life = clamp01(1.0f - (progress - delay) / (1.0f - delay));
+    const Rgb shard = bomb ? Rgb{255, 170, 40} : lighten(pieceRgb(type));
+    const float speed = bomb ? 1.6f : 1.0f;
+    for (int i = 0; i < kFragments * (bomb ? 2 : 1); ++i) {
+        const float vx = (hash01(x, y, i * 2) - 0.5f) * 16.0f * speed;
+        const float vy = (6.0f + hash01(x, y, i * 2 + 1) * 10.0f) * speed;  // upward, in cells per second
+        const float dx = vx * t;
+        const float dy = vy * t - 0.5f * kGravity * t * t;
+        const float size = std::max(1.0f, std::floor(l.cell * (0.25f + 0.2f * hash01(y, x, i)) * (0.4f + 0.6f * life)));
+        const ImVec2 f(std::floor(center.x + dx * l.cell - size * 0.5f), std::floor(center.y - dy * l.cell - size * 0.5f));
+        dl->AddRectFilled(f, ImVec2(f.x + size, f.y + size), color(shard, life * alpha));
+    }
+}
+
 void drawBoardCells(ImDrawList* dl, const Layout& l, const Game& game) {
-    for (int y = 0; y < kDrawnRows; ++y)
+    const std::vector<int>& clearing = game.clearingRows();
+    const float progress = clamp01(static_cast<float>(game.clearElapsedMs()) / kClearDelayMs);
+    const float fall = clamp01((progress - kFallStart) / (1.0f - kFallStart));
+    const float eased = fall * fall;  // accelerating, like gravity
+    for (int y = 0; y < kBoardHeight; ++y) {
+        if (std::binary_search(clearing.begin(), clearing.end(), y)) continue;
+        const auto below = std::lower_bound(clearing.begin(), clearing.end(), y) - clearing.begin();
+        const float shown = static_cast<float>(y) - static_cast<float>(below) * eased;
+        if (shown > kDrawnRows - 1) continue;
         for (int x = 0; x < kBoardWidth; ++x)
-            if (const Cell c = game.board().at(x, y)) drawCell(dl, cellTopLeft(l, x, y), l.cell, *c, rowAlpha(y));
-    for (int y : game.clearingRows()) {
+            if (const Cell c = game.board().at(x, y))
+                drawCell(dl, cellTopLeftAt(l, x, shown), l.cell, *c, rowAlpha(static_cast<int>(std::lround(shown))));
+    }
+    for (int y : clearing) {
         if (y >= kDrawnRows) continue;
-        const ImVec2 p = cellTopLeft(l, 0, y);
-        dl->AddRectFilled(p, ImVec2(p.x + kBoardWidth * l.cell, p.y + l.cell), IM_COL32(255, 255, 255, 220));
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (const Cell c = game.board().at(x, y)) drawClearingCell(dl, l, x, y, *c, progress);
     }
 }
 
@@ -438,6 +532,74 @@ constexpr ImU32 kFlashFill = IM_COL32(255, 230, 40, 255);
 constexpr ImU32 kFlashOutline = IM_COL32(255, 120, 0, 200);
 
 // A large yellow "KO!" with an orange glow, centered on the well.
+// Where an attack lands: the top of the garbage meter whose left edge is at `meterX`.
+ImVec2 meterTop(const Layout& well, float meterX, int pending) {
+    const int stacked = std::min(std::max(pending, 1), kVisibleHeight);
+    return ImVec2(meterX + std::floor(well.cell * 0.5f) * 0.5f, wellBottom(well) - static_cast<float>(stacked) * well.cell);
+}
+
+ImVec2 bezier(ImVec2 a, ImVec2 c, ImVec2 b, float t) {
+    const float u = 1.0f - t;
+    return ImVec2(u * u * a.x + 2 * u * t * c.x + t * t * b.x, u * u * a.y + 2 * u * t * c.y + t * t * b.y);
+}
+
+// A pixel comet arcing over the center column: a bright head, a tail of shrinking squares, then a burst on the
+// meter. Ours fly in our plate blue, theirs in their plate orange.
+void drawAttackTrail(ImDrawList* dl, const AttackTrail& trail, ImVec2 from, ImVec2 to, float cell) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec2 control((from.x + to.x) * 0.5f, std::max(vp->Pos.y + cell, std::min(from.y, to.y) - 8.0f * cell));
+    const Rgb tone = lighten(trail.outgoing ? kMyPlateColor : kTheirPlateColor);
+    const float head = trailProgress(trail.ms);
+    constexpr int kTail = 16;
+    constexpr float kTailStep = 0.025f;  // of the flight, between tail squares
+    if (trail.ms < kTrailFlightMs) {
+        for (int i = kTail; i >= 0; --i) {
+            const float t = head - static_cast<float>(i) * kTailStep;
+            if (t < 0.0f) continue;
+            const float fade = 1.0f - static_cast<float>(i) / (kTail + 1);
+            const float size = std::max(1.0f, std::floor(cell * 0.8f * fade));
+            const ImVec2 c = bezier(from, control, to, t);
+            const ImVec2 p(std::floor(c.x - size * 0.5f), std::floor(c.y - size * 0.5f));
+            dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size), color(i < 3 ? Rgb{255, 255, 255} : tone, fade));
+        }
+        const ImVec2 c = bezier(from, control, to, head);
+        const float glow = std::floor(cell * 1.4f);
+        const float core = std::floor(cell * 0.6f);
+        dl->AddRectFilled(ImVec2(std::floor(c.x - glow * 0.5f), std::floor(c.y - glow * 0.5f)),
+                          ImVec2(std::floor(c.x + glow * 0.5f), std::floor(c.y + glow * 0.5f)), color(tone, 0.45f));
+        dl->AddRectFilled(ImVec2(std::floor(c.x - core * 0.5f), std::floor(c.y - core * 0.5f)),
+                          ImVec2(std::floor(c.x + core * 0.5f), std::floor(c.y + core * 0.5f)),
+                          IM_COL32(255, 255, 255, 255));
+        return;
+    }
+    const float t = clamp01(static_cast<float>(trail.ms - kTrailFlightMs) / kTrailImpactMs);
+    const float alpha = 1.0f - t;
+    const float ring = std::floor(cell * (0.5f + 1.5f * t));
+    dl->AddRect(ImVec2(to.x - ring, to.y - ring), ImVec2(to.x + ring, to.y + ring), color(tone, alpha), 0.0f, 0,
+                std::max(1.0f, std::floor(cell * 0.2f * alpha)));
+    for (int i = 0; i < 8; ++i) {  // sparks in eight directions
+        const float angle = static_cast<float>(i) * 0.785398f;
+        const float reach = cell * (0.4f + 1.8f * t);
+        const float size = std::max(1.0f, std::floor(cell * 0.25f * alpha));
+        const ImVec2 p(std::floor(to.x + std::cos(angle) * reach - size * 0.5f),
+                       std::floor(to.y + std::sin(angle) * reach - size * 0.5f));
+        dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size), color({255, 255, 255}, alpha));
+    }
+}
+
+void drawAttackTrails(ImDrawList* dl, const DuelLayout& layout, const DuelSession& duel, const AttackTrails& trails) {
+    const float cell = layout.mine.cell;
+    for (const AttackTrail& trail : trails.live) {
+        const Layout& sender = trail.outgoing ? layout.mine : layout.theirs;
+        const ImVec2 from(sender.origin.x + kBoardWidth * cell * 0.5f,
+                          cellTopLeftAt(sender, 0, trail.fromRow).y + cell * 0.5f);
+        const ImVec2 to = trail.outgoing
+                              ? meterTop(layout.theirs, layout.left + kTheirMeterCol * cell, duel.opponent().pending)
+                              : meterTop(layout.mine, layout.left + kMyMeterCol * cell, duel.game()->pendingGarbage());
+        drawAttackTrail(dl, trail, from, to, cell);
+    }
+}
+
 void drawKoFlash(ImDrawList* dl, const Fonts& fonts, const Layout& well) {
     const char* text = "KO!";
     const float size = well.cell * 3.0f;
@@ -519,7 +681,7 @@ bool musicButton(bool off, float width = menuButtonWidth()) {
 }
 
 void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
-                    const StartMenu& menu) {
+                    const AttackTrails& trails, const StartMenu& menu) {
     const Game& game = *duel.game();
     const char* mine = menu.playerName.empty() ? "YOU" : menu.playerName.c_str();
     const char* theirs = duel.opponentName().empty() ? "FOE" : duel.opponentName().c_str();
@@ -535,6 +697,7 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
                      duel.opponent().pending);
     drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, kTheirPlateColor, duel.kosTheirs());
     drawOpponent(dl, layout, duel.opponent(), fonts);
+    drawAttackTrails(dl, layout, duel, trails);
     if (duel.koFlashMs() > 0) drawKoFlash(dl, fonts, layout.mine);
     ImGui::End();
 }
@@ -712,6 +875,16 @@ void ComboLabel::update(int combo, int ms) {
     if (fadeMs == 0) shown = 0;
 }
 
+void AttackTrails::update(int ms) {
+    for (AttackTrail& trail : live) trail.ms += ms;
+    std::erase_if(live, [](const AttackTrail& trail) { return trail.ms >= kTrailMs; });
+}
+
+float trailProgress(int ms) {
+    const float t = clamp01(static_cast<float>(ms) / kTrailFlightMs);
+    return 0.4f * t + 0.6f * t * t;
+}
+
 float ClearCallout::popScale() const {
     const float t = std::min(1.0f, static_cast<float>(kCalloutMs - ms) / kCalloutPopMs);
     return 1.25f - 0.25f * t;
@@ -879,7 +1052,7 @@ void drawMutedBadge(const Fonts& fonts) {
 }
 
 UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
-                   StartMenu& menu) {
+                   const AttackTrails& trails, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     switch (duel.phase()) {
     case DuelPhase::Idle:
@@ -916,16 +1089,16 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
         ImGui::End();
         break;
     case DuelPhase::Countdown:
-        drawDuelBoards(duel, fonts, combo, callout, menu);
+        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
         drawCountdown(duel.countdownMs(), fonts);
         drawVersus(fonts, menu.playerName, duel.opponentName());
         break;
     case DuelPhase::Playing:
-        drawDuelBoards(duel, fonts, combo, callout, menu);
+        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
         if (showGoBanner(duel.matchClockMs())) drawGo(fonts);
         break;
     case DuelPhase::Result:
-        drawDuelBoards(duel, fonts, combo, callout, menu);
+        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
         command = drawDuelResult(duel, fonts);
         break;
     }

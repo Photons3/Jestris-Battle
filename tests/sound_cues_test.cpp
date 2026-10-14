@@ -40,6 +40,7 @@ TEST_CASE("cues: duel events map to their sounds") {
     CHECK(soundFor(DuelEvent::CountdownTick) == Sound::CountdownTick);
     CHECK(soundFor(DuelEvent::MatchStart) == Sound::Go);
     CHECK(soundFor(DuelEvent::Attacked) == Sound::Attacked);
+    CHECK_FALSE(soundFor(DuelEvent::Sent).has_value());  // the clear that sent it already played
     CHECK(soundFor(DuelEvent::KoMine) == Sound::KoMine);
     CHECK(soundFor(DuelEvent::Won) == Sound::Won);
     CHECK(soundFor(DuelEvent::Lost) == Sound::Lost);

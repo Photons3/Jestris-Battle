@@ -29,8 +29,8 @@ enum class DuelPhase { Idle, Lobby, Waiting, Countdown, Playing, Result };
 enum class DuelOutcome { None, Won, Lost, Draw, OpponentLeft };
 using DuelReason = MatchReason;  // why a Won, Lost or Draw match ended, from the server's OVER
 
-// Something that just happened in the duel, for sound. Our own top-out is reported by the Game.
-enum class DuelEvent { CountdownTick, MatchStart, Attacked, KoMine, Won, Lost, Draw };
+// Something that just happened in the duel, for sound and effects. Our own top-out is reported by the Game.
+enum class DuelEvent { CountdownTick, MatchStart, Attacked, Sent, KoMine, Won, Lost, Draw };
 
 // The local game for a match: same seed (so the same pieces) as the opponent, and no pausing.
 Game makeDuelGame(const StartMatch& start);
