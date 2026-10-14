@@ -129,6 +129,8 @@ func pair(t *testing.T, srv *httptest.Server) (a, b *client) {
 	a.send("CREATE 3")
 	a.expect("ROOM AAAA")
 	b.send("JOIN AAAA")
+	a.expect("OPP Player")
+	b.expect("OPP Player")
 	a.expect("START 101 3")
 	b.expect("START 101 3")
 	return a, b
@@ -148,7 +150,7 @@ func TestGameMessagesAreRelayed(t *testing.T) {
 
 func TestServerOnlyVerbsAreNotRelayed(t *testing.T) {
 	a, b := pair(t, newTestServer(t))
-	for _, forged := range []string{"ROOM ZZZZ", "START 1 1", "LEFT", "ERR boom", "KO 3 0", "OVER WIN KO 0 0"} {
+	for _, forged := range []string{"ROOM ZZZZ", "START 1 1", "LEFT", "ERR boom", "KO 3 0", "OVER WIN KO 0 0", "OPP Zed"} {
 		a.send(forged)
 	}
 	a.send("ATK 1")
@@ -373,4 +375,43 @@ func TestLeavingStopsTheMatchTimer(t *testing.T) {
 		t.Error("match timer still running after a player left")
 	}
 	clock.timer(0).fire() // the room is gone; this must do nothing
+}
+
+func TestNamesAreSentBeforeStart(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("HELLO Sam")
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("HELLO Kai")
+	b.send("JOIN AAAA")
+	a.expect("OPP Kai")
+	a.expect("START 101 3")
+	b.expect("OPP Sam")
+	b.expect("START 101 3")
+}
+
+func TestBadHelloLeavesTheDefaultName(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("HELLO two words")
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("HELLO abcdefghijklm")
+	b.send("JOIN AAAA")
+	a.expect("OPP Player")
+	b.expect("OPP Player")
+}
+
+func TestHelloInsideARoomIsIgnored(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := pair(t, srv)
+	a.send("HELLO Zed") // dropped: a is in a room
+	b.conn.Close(websocket.StatusNormalClosure, "")
+	a.expect("LEFT")
+	a.send("CREATE 1")
+	a.expect("ROOM AAAB")
+	c := dial(t, srv)
+	c.send("JOIN AAAB")
+	c.expect("OPP Player")
 }

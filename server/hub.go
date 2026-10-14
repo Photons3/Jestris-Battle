@@ -27,11 +27,13 @@ const (
 	countdown          = 3 * time.Second // must match kCountdownMs in src/app/duel.hpp
 	defaultMatchLength = 2 * time.Minute
 	defaultMatchGrace  = 500 * time.Millisecond
+	maxNameLength      = 12       // kMaxNameLength in src/net/protocol.hpp
+	defaultName        = "Player" // for clients that send no valid HELLO
 )
 
 // Hub pairs browsers into two-player rooms, relays game messages between them and referees each match.
-// It handles CREATE, JOIN, REMATCH, ATK and DEAD itself; other game messages go to the opponent unchanged,
-// and the verbs only the server sends (ROOM, START, LEFT, ERR, KO, OVER) are dropped.
+// It handles HELLO, CREATE, JOIN, REMATCH, ATK and DEAD itself; other game messages go to the opponent
+// unchanged, and the verbs only the server sends (ROOM, START, LEFT, ERR, KO, OVER, OPP) are dropped.
 type Hub struct {
 	mu          sync.Mutex
 	rooms       map[string]*room
@@ -63,7 +65,8 @@ type room struct {
 
 type player struct {
 	conn *websocket.Conn
-	room *room // guarded by Hub.mu
+	room *room  // guarded by Hub.mu
+	name string // from HELLO, guarded by Hub.mu
 }
 
 // outgoing is a message to write after the hub lock is released.
@@ -102,7 +105,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	go keepAlive(ctx, conn)
-	p := &player{conn: conn}
+	p := &player{conn: conn, name: defaultName}
 	defer h.leave(p)
 	for {
 		typ, data, err := conn.Read(ctx)
@@ -139,6 +142,12 @@ func (h *Hub) route(p *player, text string) []outgoing {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	verb, arg, _ := strings.Cut(text, " ")
+	if verb == "HELLO" {
+		if p.room == nil && validName(arg) {
+			p.name = arg
+		}
+		return nil
+	}
 	if p.room == nil {
 		switch verb {
 		case "CREATE":
@@ -160,7 +169,7 @@ func (h *Hub) route(p *player, text string) []outgoing {
 			return nil
 		}
 		return p.room.knockOut(p)
-	case "ROOM", "START", "LEFT", "ERR", "KO", "OVER":
+	case "ROOM", "START", "LEFT", "ERR", "KO", "OVER", "OPP":
 		return nil // only the server sends these; never relay a forged one
 	}
 	if other := p.room.opponent(p); other != nil {
@@ -195,7 +204,22 @@ func (h *Hub) join(p *player, code string) []outgoing {
 	}
 	r.players[1] = p
 	p.room = r
-	return h.startMatch(r)
+	out := []outgoing{{r.players[0], "OPP " + p.name}, {p, "OPP " + r.players[0].name}}
+	return append(out, h.startMatch(r)...)
+}
+
+// validName mirrors isValidName in src/net/protocol.cpp.
+func validName(s string) bool {
+	if len(s) == 0 || len(s) > maxNameLength {
+		return false
+	}
+	for _, c := range []byte(s) {
+		ok := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Hub) rematch(p *player) []outgoing {
