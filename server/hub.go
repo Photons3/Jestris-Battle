@@ -34,6 +34,7 @@ const (
 	maxListedRooms     = 20       // kMaxListedRooms in src/net/protocol.hpp
 	maxRoomPlayers     = 16       // kMaxRoomPlayers in src/net/protocol.hpp
 	defaultMaxRooms    = 500
+	sendQueueLength    = 1024 // per player; a full 16-player room relays about 150 SNAPs a second to each
 )
 
 // Hub gathers browsers into rooms of up to maxRoomPlayers, starts a match when the host sends BEGIN, relays
@@ -42,6 +43,9 @@ const (
 // else inside a room, including the verbs only the server sends (ROOM, PLAYERS, START, KO, OVER, OUT, LEFT,
 // ERR, ROOMS), is dropped. Lobby watchers get the full ROOMS list whenever a listed room appears,
 // disappears, or changes its player count or host.
+//
+// Messages are queued to each recipient while the hub lock is held, so every player gets them in the order
+// the hub produced them; a writer goroutine per connection writes them outside the lock.
 type Hub struct {
 	mu          sync.Mutex
 	rooms       map[string]*room
@@ -77,10 +81,22 @@ type room struct {
 
 type player struct {
 	conn     *websocket.Conn
-	room     *room  // guarded by Hub.mu
-	name     string // from HELLO, guarded by Hub.mu
-	id       int    // in the room, 1 to maxRoomPlayers
-	roomName string // name made unique in the room
+	room     *room         // guarded by Hub.mu
+	name     string        // from HELLO, guarded by Hub.mu
+	id       int           // in the room, 1 to maxRoomPlayers
+	roomName string        // name made unique in the room
+	queue    chan string   // outbound messages in production order, filled under Hub.mu
+	kick     chan struct{} // closed when queue overflows; the writer then closes the connection
+	kicked   bool          // guarded by Hub.mu
+}
+
+func newPlayer(conn *websocket.Conn) *player {
+	return &player{
+		conn:  conn,
+		name:  defaultName,
+		queue: make(chan string, sendQueueLength),
+		kick:  make(chan struct{}),
+	}
 }
 
 // match is one match in a room: its participants are the room's players at BEGIN.
@@ -92,7 +108,7 @@ type match struct {
 	alive   map[*player]bool
 }
 
-// outgoing is a message to write after the hub lock is released.
+// outgoing is a message for the queue of player to.
 type outgoing struct {
 	to   *player
 	text string
@@ -131,7 +147,8 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	go keepAlive(ctx, conn)
-	p := &player{conn: conn, name: defaultName}
+	p := newPlayer(conn)
+	go p.write(ctx)
 	defer h.leave(p)
 	for {
 		typ, data, err := conn.Read(ctx)
@@ -139,9 +156,38 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if typ == websocket.MessageText {
-			h.deliver(h.route(p, string(data)))
+			h.receive(p, string(data))
 		}
 	}
+}
+
+// write sends p's queued messages until ctx ends, each with the write timeout. A failed write or a kick
+// closes the connection, whose read loop then leaves.
+func (p *player) write(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.kick:
+			p.conn.CloseNow()
+			return
+		case text := <-p.queue:
+			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+			err := p.conn.Write(writeCtx, websocket.MessageText, []byte(text))
+			cancel()
+			if err != nil {
+				p.conn.CloseNow()
+				return
+			}
+		}
+	}
+}
+
+// receive handles one message from p and queues what it causes, all under the lock.
+func (h *Hub) receive(p *player, text string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	enqueue(h.route(p, text))
 }
 
 // keepAlive pings until ctx ends. A ping that gets no pong closes the connection.
@@ -164,9 +210,8 @@ func keepAlive(ctx context.Context, conn *websocket.Conn) {
 	}
 }
 
+// route handles one message from p; the caller holds the lock.
 func (h *Hub) route(p *player, text string) []outgoing {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	verb, arg, _ := strings.Cut(text, " ")
 	if verb == "HELLO" {
 		if p.room == nil && validName(arg) {
@@ -192,7 +237,7 @@ func (h *Hub) route(p *player, text string) []outgoing {
 		case "QUICK":
 			return h.quick(p, arg)
 		}
-		return nil // relay traffic that raced a LEFT; nothing to do
+		return nil // a lobby or idle connection: match verbs and anything unknown mean nothing here
 	}
 	switch verb {
 	case "CREATE", "JOIN", "QUICK":
@@ -398,16 +443,22 @@ func (h *Hub) leave(p *player) {
 			out = append(out, h.lobbyUpdate()...)
 		}
 	}
+	enqueue(out)
 	h.mu.Unlock()
-	h.deliver(out)
 }
 
-// deliver writes outside the lock; a failed write closes that connection, whose read loop then cleans up.
-func (h *Hub) deliver(out []outgoing) {
+// enqueue adds each message to its recipient's queue without blocking; the caller holds the lock. A
+// recipient whose queue is full is kicked: its writer closes the connection and its read loop leaves.
+func enqueue(out []outgoing) {
 	for _, o := range out {
-		ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
-		_ = o.to.conn.Write(ctx, websocket.MessageText, []byte(o.text))
-		cancel()
+		select {
+		case o.to.queue <- o.text:
+		default:
+			if !o.to.kicked {
+				o.to.kicked = true
+				close(o.to.kick)
+			}
+		}
 	}
 }
 
@@ -451,8 +502,8 @@ func (h *Hub) timeUp(r *room, id uint64) {
 	if h.rooms[r.code] == r && r.matchID == id && r.match != nil {
 		out = r.finish("TIME")
 	}
+	enqueue(out)
 	h.mu.Unlock()
-	h.deliver(out)
 }
 
 // player returns the player with ID id, or nil.
