@@ -87,6 +87,10 @@ func webFiles(dir string) http.Handler {
 			r = r.Clone(r.Context())
 			r.URL.Path = "/"
 		}
+		// Without this, browsers cache index.js and index.wasm heuristically and keep
+		// running the old build after a deploy. no-cache still allows a cheap 304
+		// revalidation through Last-Modified.
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFile(w, r, filepath.Join(dir, name))
 	})
 }

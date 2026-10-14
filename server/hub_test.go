@@ -230,6 +230,9 @@ func TestWebFilesServesOnlyTheAllowlist(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("GET %s: status %d, want 200", path, resp.StatusCode)
 		}
+		if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("GET %s: Cache-Control %q, want no-cache", path, got)
+		}
 		if path == "/index.wasm" && resp.Header.Get("Content-Type") != "application/wasm" {
 			t.Errorf("GET %s: Content-Type %q, want application/wasm", path, resp.Header.Get("Content-Type"))
 		}
