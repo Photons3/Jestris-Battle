@@ -77,6 +77,26 @@ std::vector<Note> notesFor(Sound sound) {
         const float hz = kComboHz[static_cast<std::size_t>(static_cast<int>(sound) - static_cast<int>(Sound::Combo1))];
         return {{Wave::Square, hz, hz, 0.0f, 0.09f, 0.5f}, {Wave::Triangle, 2 * hz, 2 * hz, 0.09f, 0.12f, 0.2f}};
     }
+    case Sound::TSpin:  // a quick upward swirl, then a bright double stab
+        return {{Wave::Square, kC5, kC6, 0.0f, 0.12f, 0.45f},
+                {Wave::Square, kG5, kG5, 0.12f, 0.06f, 0.45f},
+                {Wave::Square, kC6, kC6, 0.18f, 0.2f, 0.45f},
+                {Wave::Triangle, 2 * kE5, 2 * kE5, 0.18f, 0.2f, 0.3f}};
+    case Sound::BackToBack: {  // a power chord, then the same an octave up
+        std::vector<Note> notes{{Wave::Square, kC5, kC5, 0.0f, 0.12f, 0.4f}, {Wave::Square, kG5, kG5, 0.0f, 0.12f, 0.3f}};
+        notes.push_back({Wave::Square, kC6, kC6, 0.14f, 0.3f, 0.4f});
+        notes.push_back({Wave::Square, 2 * kG5, 2 * kG5, 0.14f, 0.3f, 0.25f});
+        return notes;
+    }
+    case Sound::PerfectClear: {  // a fanfare up two octaves, ringing on a full chord
+        std::vector<Note> notes = run(Wave::Square, {kC5, kE5, kG5, kC6, 2 * kE5, 2 * kG5}, 0.07f, 0.07f, 0.45f);
+        const float at = 0.42f;
+        notes.push_back({Wave::Square, 2 * kC6, 2 * kC6, at, 0.7f, 0.3f});
+        notes.push_back({Wave::Triangle, kC6, kC6, at, 0.7f, 0.3f});
+        notes.push_back({Wave::Triangle, 2 * kE5, 2 * kE5, at, 0.7f, 0.25f});
+        notes.push_back({Wave::Triangle, kC4, kC4, at, 0.7f, 0.3f});
+        return notes;
+    }
     case Sound::CountdownTick:
         return {{Wave::Square, kA4, kA4, 0.0f, 0.08f, 0.3f}};
     case Sound::Go:

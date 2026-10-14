@@ -114,8 +114,10 @@ void playEvents(App& app) {
     const bool inDuel = app.screen == Screen::Duel;
     // While hidden the events are still drained, so waking up doesn't play a backlog all at once.
     if (Game* game = shownGame(app))
-        for (const GameEvent& event : game->takeEvents())
-            if (!app.hidden) app.audio.play(soundFor(event, inDuel));
+        for (const GameEvent& event : game->takeEvents()) {
+            if (event.type == GameEventType::SpecialClear) app.callout.show(event.award);
+            if (const auto sound = soundFor(event, inDuel); sound && !app.hidden) app.audio.play(*sound);
+        }
     for (DuelEvent event : app.duel.takeEvents())
         if (!app.hidden) app.audio.play(soundFor(event));
 }
@@ -204,6 +206,7 @@ void App::newGame() {
     input.releaseAll();
     pending.clear();
     combo = {};
+    callout = {};
     screen = Screen::Playing;
 }
 
@@ -309,6 +312,7 @@ void step(App& app, int ms) {
     playEvents(app);
     const Game* shown = shownGame(app);
     app.combo.update(shown != nullptr ? shown->combo() : -1, ms);
+    app.callout.update(ms);
     app.syncMusic(musicCue(app));
 }
 
@@ -319,11 +323,11 @@ void drawFrame(App& app, const Fonts& fonts) {
         command = drawStartScreen(fonts, app.menu);
         break;
     case Screen::Playing:
-        drawGame(*app.game, fonts, app.combo);
+        drawGame(*app.game, fonts, app.combo, app.callout);
         command = drawOverlay(*app.game, fonts, app.menu.muted, app.menu.musicOff);
         break;
     case Screen::Duel:
-        command = drawDuel(app.duel, fonts, app.combo, app.menu);
+        command = drawDuel(app.duel, fonts, app.combo, app.callout, app.menu);
         break;
     case Screen::Controls:
         command = drawControlsScreen(fonts, app.keymap, app.controls);

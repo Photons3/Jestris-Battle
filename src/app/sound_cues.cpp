@@ -4,7 +4,7 @@
 
 namespace tetris {
 
-Sound soundFor(const GameEvent& event, bool inDuel) {
+std::optional<Sound> soundFor(const GameEvent& event, bool inDuel) {
     switch (event.type) {
     case GameEventType::Moved:
         return Sound::Move;
@@ -30,8 +30,13 @@ Sound soundFor(const GameEvent& event, bool inDuel) {
         return inDuel ? Sound::KoTheirs : Sound::Lost;
     case GameEventType::Combo:
         return static_cast<Sound>(static_cast<int>(Sound::Combo1) + std::clamp(event.value, 1, kComboSteps) - 1);
+    case GameEventType::SpecialClear:  // one sound for the biggest part of the clear
+        if (event.award.perfectClear) return Sound::PerfectClear;
+        if (event.award.backToBack > 0) return Sound::BackToBack;
+        if (event.award.spin != Spin::None) return Sound::TSpin;
+        return std::nullopt;
     }
-    return Sound::Move;
+    return std::nullopt;
 }
 
 Sound soundFor(DuelEvent event) {

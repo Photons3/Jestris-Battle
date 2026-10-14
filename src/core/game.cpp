@@ -35,9 +35,66 @@ int attackFor(int lines) {
 }
 
 int comboBonus(int combo) {
-    if (combo >= 5) return 3;
-    if (combo >= 3) return 2;
-    return combo >= 1 ? 1 : 0;
+    static constexpr std::array<int, 11> kBonus{0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5};  // combo 10 and up send 5
+    if (combo <= 0) return 0;
+    return kBonus[std::min(combo, static_cast<int>(kBonus.size()) - 1)];
+}
+
+bool isDifficult(const ClearAward& award) {
+    return award.lines > 0 && (award.lines == 4 || award.spin != Spin::None);
+}
+
+int awardScore(const ClearAward& award, int combo, int level) {
+    static constexpr std::array<int, 5> kMini{100, 200, 400, 500, 800};
+    static constexpr std::array<int, 5> kFull{400, 800, 1200, 1600, 1600};
+    static constexpr std::array<int, 5> kPerfect{0, 800, 1200, 1800, 2000};
+    assert(award.lines >= 0 && award.lines <= 4);
+    int points = award.spin == Spin::Full ? kFull[award.lines]
+                 : award.spin == Spin::Mini ? kMini[award.lines]
+                                            : lineClearScore(award.lines, 1);
+    if (award.backToBack > 0) points = points * 3 / 2;
+    if (award.lines > 0 && combo >= 1) points += 50 * combo;
+    if (award.perfectClear) points += award.lines == 4 && award.backToBack > 0 ? 3200 : kPerfect[award.lines];
+    return points * level;
+}
+
+int awardAttack(const ClearAward& award, int combo) {
+    static constexpr std::array<int, 5> kFull{0, 2, 4, 6, 6};
+    if (award.lines == 0) return 0;
+    int attack = award.spin == Spin::Full ? kFull[award.lines] : attackFor(award.lines);  // a mini sends as plain
+    if (award.backToBack > 0) ++attack;
+    attack += comboBonus(combo);
+    if (award.perfectClear) attack += 10;
+    return attack;
+}
+
+Spin tSpinFor(const Board& board, const Piece& piece, int kick) {
+    if (piece.type != PieceType::T) return Spin::None;
+    const int cx = piece.pos.x + 1;  // the T's center is the middle of its 3x3 box
+    const int cy = piece.pos.y - 1;
+    auto filled = [&](int dx, int dy) {
+        const int x = cx + dx;
+        const int y = cy + dy;
+        return !Board::inBounds(x, y) || board.at(x, y).has_value();
+    };
+    const bool upLeft = filled(-1, 1), upRight = filled(1, 1), downLeft = filled(-1, -1), downRight = filled(1, -1);
+    if (upLeft + upRight + downLeft + downRight < 3) return Spin::None;
+    bool front = false;  // both corners on the side the T points to
+    switch (piece.rotation) {
+    case Rotation::Zero:
+        front = upLeft && upRight;
+        break;
+    case Rotation::R:
+        front = upRight && downRight;
+        break;
+    case Rotation::Two:
+        front = downLeft && downRight;
+        break;
+    case Rotation::L:
+        front = upLeft && downLeft;
+        break;
+    }
+    return front || kick == 4 ? Spin::Full : Spin::Mini;
 }
 
 Game::Game(std::uint32_t seed, int startLevel, Board board, GameOptions options)
@@ -64,6 +121,7 @@ void Game::resetBoard() {
     hold_.reset();
     canHold_ = true;
     combo_ = -1;
+    backToBack_ = -1;
     clearingRows_.clear();
     clearTimerMs_ = 0;
     state_ = GameState::Playing;
@@ -167,6 +225,7 @@ void Game::step() {
 
 void Game::spawn(PieceType type) {
     active_ = spawnPiece(type);
+    rotatedLast_ = false;
     lowestY_ = active_.pos.y;
     lockTimerMs_ = 0;
     lockResets_ = 0;
@@ -185,13 +244,15 @@ bool Game::tryMove(int dx, int dy) {
     moved.pos.y += dy;
     if (board_.collides(moved)) return false;
     active_ = moved;
+    rotatedLast_ = false;
     updateLowest();
     return true;
 }
 
 void Game::rotate(RotateDir dir) {
-    if (const auto rotated = rotateWithKicks(board_, active_, dir)) {
+    if (const auto rotated = rotateWithKicks(board_, active_, dir, &lastKick_)) {
         active_ = *rotated;
+        rotatedLast_ = true;
         updateLowest();
         onPlayerMoved();
         emit(GameEventType::Rotated);
@@ -222,6 +283,7 @@ bool Game::onGround() const {
 void Game::hardDrop() {
     const int distance = ghostDistance();
     active_.pos.y -= distance;
+    if (distance > 0) rotatedLast_ = false;
     score_ += 2 * distance;
     emit(GameEventType::HardDropped);
     lockPiece(true);
@@ -237,6 +299,7 @@ void Game::holdPiece() {
 }
 
 void Game::lockPiece(bool hardDropped) {
+    const Spin spin = rotatedLast_ ? tSpinFor(board_, active_, lastKick_) : Spin::None;
     board_.lock(active_);
     canHold_ = true;
     const auto cells = active_.cells();
@@ -249,17 +312,26 @@ void Game::lockPiece(bool hardDropped) {
     const std::vector<int> full = board_.fullRows();
     const std::vector<int> exploded = board_.bombRowsHitBy(active_);  // bomb rows are never full, so no overlap
     combo_ = full.empty() && exploded.empty() ? -1 : combo_ + 1;
-    if (!full.empty()) emit(GameEventType::LinesCleared, static_cast<int>(full.size()));
-    if (!exploded.empty()) emit(GameEventType::BombExploded);
-    if (combo_ >= 1) emit(GameEventType::Combo, combo_);
     clearingRows_ = full;
     clearingRows_.insert(clearingRows_.end(), exploded.begin(), exploded.end());
     std::sort(clearingRows_.begin(), clearingRows_.end());
+    award_ = {std::min(static_cast<int>(clearingRows_.size()), kMaxScoredLines), spin};
+    if (award_.lines > 0) {
+        backToBack_ = isDifficult(award_) ? backToBack_ + 1 : -1;
+        award_.backToBack = isDifficult(award_) ? std::max(backToBack_, 0) : 0;
+        award_.perfectClear = clearEmptiesBoard();
+    }
+    if (!full.empty()) emit(GameEventType::LinesCleared, static_cast<int>(full.size()));
+    if (!exploded.empty()) emit(GameEventType::BombExploded);
+    if (combo_ >= 1) emit(GameEventType::Combo, combo_);
+    if (award_.spin != Spin::None || award_.lines == 4 || award_.perfectClear)
+        events_.push_back({GameEventType::SpecialClear, 0, award_});
     if (!clearingRows_.empty()) {
         state_ = GameState::Clearing;
         clearTimerMs_ = 0;
         return;
     }
+    score_ += awardScore(award_, combo_, level_);  // a T-spin that clears nothing still scores
     if (!hardDropped) emit(GameEventType::Locked);
     if (!applyGarbage()) {
         topOut();
@@ -271,12 +343,11 @@ void Game::lockPiece(bool hardDropped) {
 void Game::finishClear() {
     const int levelBefore = level_;
     const int cleared = static_cast<int>(clearingRows_.size());
-    const int counted = std::min(cleared, kMaxScoredLines);
-    const int attack = attackFor(counted) + comboBonus(combo_);
+    const int attack = awardAttack(award_, combo_);
     const int cancelled = std::min(attack, pendingGarbage_);
     pendingGarbage_ -= cancelled;
     outgoingAttack_ += attack - cancelled;
-    score_ += lineClearScore(counted, level_);
+    score_ += awardScore(award_, combo_, level_);
     lines_ += cleared;
     level_ = levelFor(startLevel_, lines_);
     if (level_ > levelBefore) emit(GameEventType::LevelUp);
@@ -284,6 +355,15 @@ void Game::finishClear() {
     clearingRows_.clear();
     state_ = GameState::Playing;
     spawn(bag_.next());
+}
+
+bool Game::clearEmptiesBoard() const {
+    for (int y = 0; y < kBoardHeight; ++y) {
+        if (std::binary_search(clearingRows_.begin(), clearingRows_.end(), y)) continue;
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (board_.at(x, y)) return false;
+    }
+    return true;
 }
 
 }  // namespace tetris

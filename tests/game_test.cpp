@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <optional>
 #include <vector>
 
 #include "core/game.hpp"
@@ -165,9 +166,10 @@ TEST_CASE("game: hold works once per piece and swaps back in spawn orientation")
 }
 
 TEST_CASE("game: a four-line clear flashes for 300 ms, ignores input, then scores 800 at level 1") {
-    Board well;  // rows 0-3 full except column 0
+    Board well;  // rows 0-3 full except column 0, and one block above them so it is not a perfect clear
     for (int y = 0; y < 4; ++y)
         for (int x = 1; x < kBoardWidth; ++x) well.set(x, y, PieceType::Z);
+    well.set(9, 4, PieceType::Z);
     Game game(seedWithFirst(PieceType::I), 1, well);
     game.apply(Action::RotateCW);                       // vertical I in column 5
     for (int i = 0; i < 5; ++i) game.apply(Action::Left);  // column 0
@@ -185,7 +187,7 @@ TEST_CASE("game: a four-line clear flashes for 300 ms, ignores input, then score
     CHECK(game.score() == 836);
     CHECK(game.lines() == 4);
     CHECK(game.level() == 1);
-    CHECK(countFilled(game.board()) == 0);
+    CHECK(countFilled(game.board()) == 1);
 }
 
 TEST_CASE("game: block-out ends the game when the spawn area is occupied") {
@@ -308,10 +310,10 @@ TEST_CASE("game: a clearing lock holds garbage back until the next lock") {
     game.tick(kClearDelayMs);
     CHECK(game.lines() == 1);
     CHECK(game.pendingGarbage() == 1);
-    CHECK(countFilled(game.board()) == 3);  // the rest of the I; no garbage yet
+    CHECK(countFilled(game.board()) == 3 + 1);  // the rest of the I and the well's extra block; no garbage yet
     game.apply(Action::HardDrop);
     CHECK(game.pendingGarbage() == 0);
-    CHECK(countFilled(game.board()) == 3 + 4 + kBoardWidth);
+    CHECK(countFilled(game.board()) == 3 + 1 + 4 + kBoardWidth);
 }
 
 TEST_CASE("game: garbage that pushes blocks off the top ends the game") {
@@ -339,18 +341,21 @@ TEST_CASE("game: pausing can be turned off for duels") {
 namespace {
 
 // `bombRows` garbage rows with a bomb in column `bombX`, and above them `openRows` rows that are full except
-// columns 4-5, which is where a freshly spawned O lands.
+// columns 4-5, which is where a freshly spawned O lands. One block on top in column 0 keeps any clear from
+// being a perfect clear.
 Board bombBoard(int bombRows, int bombX, int openRows) {
     Board board;
     board.pushGarbage(bombRows, bombX);
     for (int y = bombRows; y < bombRows + openRows; ++y)
         for (int x = 0; x < kBoardWidth; ++x)
             if (x != 4 && x != 5) board.set(x, y, PieceType::Z);
+    board.set(0, bombRows + openRows, PieceType::Z);
     return board;
 }
 
 // Rows 0-3 are full except column 5, where an upright I clears all four. The two rows above are open only at
-// columns 4-5, so after that clear they are the bottom rows, and an O dropped from spawn clears them.
+// columns 4-5, so after that clear they are the bottom rows, and an O dropped from spawn clears them. A block
+// on top in column 0 is left over, so neither clear is a perfect clear.
 Board comboBoard() {
     Board board;
     for (int y = 0; y < 4; ++y)
@@ -359,6 +364,7 @@ Board comboBoard() {
     for (int y = 4; y < 6; ++y)
         for (int x = 0; x < kBoardWidth; ++x)
             if (x != 4 && x != 5) board.set(x, y, PieceType::Z);
+    board.set(0, 6, PieceType::Z);
     return board;
 }
 
@@ -383,7 +389,7 @@ TEST_CASE("game: landing on a bomb clears its whole stack and counts as cleared 
     game.tick(kClearDelayMs);
     CHECK(game.lines() == 2);
     CHECK(game.takeOutgoingAttack() == 1);
-    CHECK(countFilled(game.board()) == 4);  // just the O, dropped to the floor
+    CHECK(countFilled(game.board()) == 4 + 1);  // the O and the extra block, dropped to the floor
 }
 
 TEST_CASE("game: landing beside a bomb sets nothing off") {
@@ -391,7 +397,7 @@ TEST_CASE("game: landing beside a bomb sets nothing off") {
     game.apply(Action::HardDrop);
     CHECK(game.state() == GameState::Playing);
     CHECK(game.lines() == 0);
-    CHECK(countFilled(game.board()) == 2 * kBoardWidth + 4);
+    CHECK(countFilled(game.board()) == 2 * kBoardWidth + 4 + 1);
 }
 
 TEST_CASE("game: a bomb hit and a normal clear in one lock add up to one attack") {
@@ -411,6 +417,7 @@ TEST_CASE("game: more than four cleared rows are capped at the four-line attack 
     CHECK(game.lines() == 6);
     CHECK(game.takeOutgoingAttack() == 4);
     CHECK(game.score() == 2 * distance + lineClearScore(4, 1));
+    CHECK(game.backToBack() == 0);  // counted as a tetris, so it starts a back-to-back chain
 }
 
 TEST_CASE("game: a detonating lock cancels pending garbage and holds the rest back") {
@@ -421,7 +428,7 @@ TEST_CASE("game: a detonating lock cancels pending garbage and holds the rest ba
     game.tick(kClearDelayMs);
     CHECK(game.pendingGarbage() == 2);  // the 1-line attack cancelled one
     CHECK(game.takeOutgoingAttack() == 0);
-    CHECK(countFilled(game.board()) == 4);  // nothing rose
+    CHECK(countFilled(game.board()) == 4 + 1);  // nothing rose
 }
 
 TEST_CASE("game: a clear that drops a cell onto a bomb does not detonate it") {
@@ -506,15 +513,15 @@ TEST_CASE("game: resetBoard ends the combo") {
     CHECK(game.combo() == -1);
 }
 
-TEST_CASE("game: combo bonus adds 1 line from combo 1, 2 from combo 3 and 3 from combo 5") {
+TEST_CASE("game: combo bonus follows the guideline table: 1,1,2,2,3,3,4,4,4 and then 5") {
     CHECK(comboBonus(-1) == 0);
     CHECK(comboBonus(0) == 0);
-    CHECK(comboBonus(1) == 1);
-    CHECK(comboBonus(2) == 1);
-    CHECK(comboBonus(3) == 2);
-    CHECK(comboBonus(4) == 2);
-    CHECK(comboBonus(5) == 3);
-    CHECK(comboBonus(10) == 3);
+    const std::vector<int> expected{1, 1, 2, 2, 3, 3, 4, 4, 4, 5, 5, 5};
+    for (int combo = 1; combo <= static_cast<int>(expected.size()); ++combo) {
+        CAPTURE(combo);
+        CHECK(comboBonus(combo) == expected[combo - 1]);
+    }
+    CHECK(comboBonus(40) == 5);
 }
 
 TEST_CASE("game: a combo clear sends its bonus on top of the line attack") {
@@ -539,6 +546,202 @@ TEST_CASE("game: pending garbage cancels a combo bonus like any other attack") {
     CHECK(game.takeOutgoingAttack() == 1);  // 1 line + 1 bonus, minus the 1 cancelled
 }
 
+TEST_CASE("game: guideline points for T-spins, back-to-back, combos and perfect clears") {
+    CHECK(awardScore({0}, -1, 1) == 0);
+    CHECK(awardScore({4}, 0, 1) == 800);
+    CHECK(awardScore({0, Spin::Mini}, -1, 1) == 100);
+    CHECK(awardScore({1, Spin::Mini}, 0, 1) == 200);
+    CHECK(awardScore({2, Spin::Mini}, 0, 1) == 400);
+    CHECK(awardScore({0, Spin::Full}, -1, 1) == 400);
+    CHECK(awardScore({1, Spin::Full}, 0, 1) == 800);
+    CHECK(awardScore({2, Spin::Full}, 0, 1) == 1200);
+    CHECK(awardScore({3, Spin::Full}, 0, 3) == 1600 * 3);
+    CHECK(awardScore({4, Spin::None, 1}, 0, 1) == 1200);         // back-to-back is worth 1.5x
+    CHECK(awardScore({2, Spin::Full, 2}, 0, 2) == 1800 * 2);
+    CHECK(awardScore({1}, 3, 2) == (100 + 150) * 2);             // 50 per combo step
+    CHECK(awardScore({0, Spin::Full}, 3, 1) == 400);             // no lines, no combo points
+    CHECK(awardScore({1, Spin::None, 0, true}, 0, 1) == 100 + 800);
+    CHECK(awardScore({2, Spin::None, 0, true}, 0, 1) == 300 + 1200);
+    CHECK(awardScore({3, Spin::None, 0, true}, 0, 1) == 500 + 1800);
+    CHECK(awardScore({4, Spin::None, 0, true}, 0, 1) == 800 + 2000);
+    CHECK(awardScore({4, Spin::None, 1, true}, 0, 1) == 1200 + 3200);
+}
+
+TEST_CASE("game: guideline garbage for T-spins, back-to-back, combos and perfect clears") {
+    CHECK(awardAttack({0, Spin::Full}, -1) == 0);
+    CHECK(awardAttack({1, Spin::Mini}, 0) == 0);
+    CHECK(awardAttack({2, Spin::Mini}, 0) == 1);
+    CHECK(awardAttack({1, Spin::Full}, 0) == 2);
+    CHECK(awardAttack({2, Spin::Full}, 0) == 4);
+    CHECK(awardAttack({3, Spin::Full}, 0) == 6);
+    CHECK(awardAttack({4}, 0) == 4);
+    CHECK(awardAttack({4, Spin::None, 1}, 0) == 5);  // back-to-back adds one line
+    CHECK(awardAttack({2, Spin::Full, 3}, 0) == 5);
+    CHECK(awardAttack({2}, 2) == 1 + comboBonus(2));
+    CHECK(awardAttack({1, Spin::None, 0, true}, 0) == 10);
+    CHECK(awardAttack({4, Spin::None, 0, true}, 0) == 14);
+}
+
+TEST_CASE("game: only tetrises and T-spins that clear lines are difficult") {
+    CHECK(isDifficult({4}));
+    CHECK(isDifficult({1, Spin::Mini}));
+    CHECK(isDifficult({2, Spin::Full}));
+    CHECK_FALSE(isDifficult({3}));
+    CHECK_FALSE(isDifficult({0, Spin::Full}));
+}
+
+TEST_CASE("game: the three-corner rule tells full T-spins from minis") {
+    const Piece upOnFloor{PieceType::T, Rotation::Zero, {3, 1}};  // center (4, 0): the floor fills both low corners
+    Board board;
+    CHECK(tSpinFor(board, upOnFloor, 0) == Spin::None);  // two corners
+    board.set(3, 1, PieceType::Z);                        // a third corner, behind the T's point
+    CHECK(tSpinFor(board, upOnFloor, 0) == Spin::Mini);
+    CHECK(tSpinFor(board, upOnFloor, 4) == Spin::Full);   // the last SRS kick always makes it full
+    board.set(5, 1, PieceType::Z);                        // both corners the T points to
+    CHECK(tSpinFor(board, upOnFloor, 0) == Spin::Full);
+    CHECK(tSpinFor(board, Piece{PieceType::J, Rotation::Zero, {3, 1}}, 0) == Spin::None);
+}
+
+namespace {
+
+// A T-spin double slot: row 0 is full except column 4, row 1 except columns 3-5, and row 2 has a roof over
+// column 3 (columns 0-3 filled). A T rotated at spawn, soft-dropped and rotated again spins into the slot.
+Board tSpinDoubleBoard() {
+    Board board;
+    for (int x = 0; x < kBoardWidth; ++x) {
+        if (x != 4) board.set(x, 0, PieceType::Z);
+        if (x < 3 || x > 5) board.set(x, 1, PieceType::Z);
+    }
+    for (int x = 0; x <= 3; ++x) board.set(x, 2, PieceType::Z);
+    return board;
+}
+
+// Four bomb rows (bomb in column 4) under four rows open only at column 5, and one leftover block on top. An
+// upright I clears the four rows, then an O dropped from spawn sets off all four bombs: two tetrises in a row.
+Board backToBackBoard() {
+    Board board;
+    board.pushGarbage(4, 4);
+    for (int y = 4; y < 8; ++y)
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (x != 5) board.set(x, y, PieceType::Z);
+    board.set(0, 8, PieceType::Z);
+    return board;
+}
+
+}  // namespace
+
+TEST_CASE("game: a T-spin double scores 1200 and sends four lines") {
+    Game game(seedWithFirst(PieceType::T), 1, tSpinDoubleBoard());
+    game.apply(Action::RotateCW);
+    dropToFloor(game);
+    game.apply(Action::RotateCW);
+    const int before = game.score();
+    game.takeEvents();
+    game.apply(Action::HardDrop);
+    CHECK(game.takeEvents() == std::vector<GameEvent>{{GameEventType::HardDropped},
+                                                      {GameEventType::LinesCleared, 2},
+                                                      {GameEventType::SpecialClear, 0, {2, Spin::Full}}});
+    game.tick(kClearDelayMs);
+    CHECK(game.lines() == 2);
+    CHECK(game.score() == before + 1200);
+    CHECK(game.takeOutgoingAttack() == 4);
+    CHECK(game.backToBack() == 0);
+}
+
+TEST_CASE("game: a T-spin that clears nothing still scores, sends nothing and keeps the chain") {
+    Board board = tSpinDoubleBoard();
+    board.set(9, 0, std::nullopt);  // neither row can complete now
+    board.set(9, 1, std::nullopt);
+    Game game(seedWithFirst(PieceType::T), 1, board);
+    game.apply(Action::RotateCW);
+    dropToFloor(game);
+    game.apply(Action::RotateCW);
+    const int before = game.score();
+    game.takeEvents();
+    game.apply(Action::HardDrop);
+    CHECK(game.takeEvents() == std::vector<GameEvent>{{GameEventType::HardDropped},
+                                                      {GameEventType::SpecialClear, 0, {0, Spin::Full}}});
+    CHECK(game.state() == GameState::Playing);
+    CHECK(game.score() == before + 400);
+    CHECK(game.takeOutgoingAttack() == 0);
+    CHECK(game.backToBack() == -1);
+}
+
+TEST_CASE("game: a T that drops into the slot without spinning is no T-spin") {
+    Game game(seedWithFirst(PieceType::T), 1, tSpinDoubleBoard());
+    game.apply(Action::RotateCW);
+    dropToFloor(game);  // the rotation is followed by falling, so it no longer counts
+    game.takeEvents();
+    game.apply(Action::HardDrop);
+    for (const GameEvent& event : game.takeEvents()) CHECK(event.type != GameEventType::SpecialClear);
+}
+
+TEST_CASE("game: two tetrises in a row are back-to-back") {
+    Game game(seedWithFirstTwo(PieceType::I, PieceType::O), 1, backToBackBoard());
+    dropUprightI(game);
+    game.tick(kClearDelayMs);
+    CHECK(game.takeOutgoingAttack() == 4);
+    CHECK(game.backToBack() == 0);
+    const int before = game.score();
+    const int distance = game.ghostDistance();
+    game.takeEvents();
+    game.apply(Action::HardDrop);  // the O sets off all four bombs: a tetris, in a combo
+    CHECK(game.takeEvents() == std::vector<GameEvent>{{GameEventType::HardDropped},
+                                                      {GameEventType::BombExploded},
+                                                      {GameEventType::Combo, 1},
+                                                      {GameEventType::SpecialClear, 0, {4, Spin::None, 1}}});
+    game.tick(kClearDelayMs);
+    CHECK(game.backToBack() == 1);
+    CHECK(game.score() == before + 2 * distance + 1200 + 50);
+    CHECK(game.takeOutgoingAttack() == 4 + 1 + comboBonus(1));
+}
+
+TEST_CASE("game: a plain line clear ends the back-to-back chain, a lock that clears nothing does not") {
+    SUBCASE("a double after a tetris") {
+        Game game(seedWithFirstTwo(PieceType::I, PieceType::O), 1, comboBoard());
+        dropUprightI(game);
+        game.tick(kClearDelayMs);
+        REQUIRE(game.backToBack() == 0);
+        game.apply(Action::HardDrop);
+        CHECK(game.backToBack() == -1);
+    }
+    SUBCASE("an empty lock after a tetris") {
+        Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
+        dropUprightI(game);
+        game.tick(kClearDelayMs);
+        game.apply(Action::HardDrop);
+        CHECK(game.lines() == 4);
+        CHECK(game.backToBack() == 0);
+    }
+}
+
+TEST_CASE("game: resetBoard ends the back-to-back chain") {
+    Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
+    dropUprightI(game);
+    REQUIRE(game.backToBack() == 0);
+    game.resetBoard();
+    CHECK(game.backToBack() == -1);
+}
+
+TEST_CASE("game: a clear that empties the board is a perfect clear: 2000 more points and ten more lines") {
+    Board well;  // rows 0-3 full except column 5, and nothing else
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (x != 5) well.set(x, y, PieceType::Z);
+    Game game(seedWithFirst(PieceType::I), 1, well);
+    game.apply(Action::RotateCW);
+    const int distance = game.ghostDistance();
+    game.takeEvents();
+    game.apply(Action::HardDrop);
+    CHECK(game.takeEvents() == std::vector<GameEvent>{{GameEventType::HardDropped},
+                                                      {GameEventType::LinesCleared, 4},
+                                                      {GameEventType::SpecialClear, 0, {4, Spin::None, 0, true}}});
+    game.tick(kClearDelayMs);
+    CHECK(countFilled(game.board()) == 0);
+    CHECK(game.score() == 2 * distance + 800 + 2000);
+    CHECK(game.takeOutgoingAttack() == 4 + 10);
+}
+
 namespace {
 
 using Events = std::vector<GameEvent>;
@@ -553,6 +756,8 @@ constexpr GameEvent kLevelUp{GameEventType::LevelUp};
 constexpr GameEvent kToppedOut{GameEventType::ToppedOut};
 constexpr GameEvent cleared(int lines) { return {GameEventType::LinesCleared, lines}; }
 constexpr GameEvent comboOf(int n) { return {GameEventType::Combo, n}; }
+constexpr GameEvent special(ClearAward award) { return {GameEventType::SpecialClear, 0, award}; }
+constexpr GameEvent kTetris = special({4});
 
 }  // namespace
 
@@ -580,7 +785,7 @@ TEST_CASE("game events: a hard drop reports the drop, not a lock") {
 TEST_CASE("game events: a hard-dropped tetris reports four full rows at once") {
     Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
     dropUprightI(game);
-    CHECK(game.takeEvents() == Events{kRotated, kHardDropped, cleared(4)});
+    CHECK(game.takeEvents() == Events{kRotated, kHardDropped, cleared(4), kTetris});
     game.tick(kClearDelayMs);
     CHECK(game.takeEvents().empty());
 }
@@ -616,7 +821,7 @@ TEST_CASE("game events: garbage rising after a lock is reported") {
 TEST_CASE("game events: reaching the next level is reported when the clear finishes") {
     Game game(seedWithFirst(PieceType::O), 1, bombBoard(10, 4, 0));  // ten bomb rows clear as ten lines
     game.apply(Action::HardDrop);
-    CHECK(game.takeEvents() == Events{kHardDropped, kBombExploded});
+    CHECK(game.takeEvents() == Events{kHardDropped, kBombExploded, kTetris});  // ten rows count as a tetris
     game.tick(kClearDelayMs);
     CHECK(game.level() == 2);
     CHECK(game.takeEvents() == Events{kLevelUp});
@@ -657,7 +862,7 @@ TEST_CASE("game events: resetting the board keeps events not yet taken") {
 TEST_CASE("game events: a combo is reported from the second clear in a row") {
     Game game(seedWithFirstTwo(PieceType::I, PieceType::O), 1, comboBoard());
     dropUprightI(game);
-    CHECK(game.takeEvents() == Events{kRotated, kHardDropped, cleared(4)});
+    CHECK(game.takeEvents() == Events{kRotated, kHardDropped, cleared(4), kTetris});
     game.tick(kClearDelayMs);
     game.apply(Action::HardDrop);
     CHECK(game.takeEvents() == Events{kHardDropped, cleared(2), comboOf(1)});

@@ -79,7 +79,11 @@ in a room.
    Create room makes a room with a 4-letter code (tick Public to also list it in Browse rooms).
    Share the code, or the invite link on the waiting screen, which opens the game with a Join button ready.
 3. The friend types the code and joins; the match starts after a short countdown.
-4. Clearing 2, 3 or 4 lines sends 1, 2 or 4 garbage lines to the opponent. Clearing
+4. Clearing 2, 3 or 4 lines sends 1, 2 or 4 garbage lines to the opponent, following the
+   [Tetris Guideline](https://tetris.wiki/Garbage): a T-spin single, double or triple sends 2, 4
+   or 6 (a T-spin mini sends like a plain clear), back-to-back tetrises and T-spins add 1, combos
+   add 1 to 5, and a perfect clear adds 10. The same clears score the guideline points in solo
+   and duels, and a callout under HOLD names them. Clearing
    lines cancels incoming garbage first. Each garbage batch carries a column of bombs:
    land a piece directly on the top bomb to blow up the whole stack below it. Exploded
    rows count as cleared lines.

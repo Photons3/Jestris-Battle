@@ -37,6 +37,7 @@ struct App {
     AudioOut audio;
     MusicMode music = MusicMode::Stopped;  // what the music is doing, as last applied
     ComboLabel combo;
+    ClearCallout callout;
     std::vector<Action> pending;
     bool quit = false;
     bool hidden = false;  // tab hidden or window minimized: keep stepping, skip drawing and sound
