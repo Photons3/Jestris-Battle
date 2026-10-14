@@ -62,6 +62,7 @@ public:
     int countdownMs() const { return countdownMs_; }
     bool rematchRequested() const { return rematchRequested_; }
     bool opponentGone() const { return opponentGone_; }
+    const std::string& opponentName() const { return opponentName_; }  // from OPP; empty if not sent
     DuelReason reason() const { return reason_; }
     int kosMine() const { return kosMine_; }  // KOs this player has scored, from the server's KO messages
     int kosTheirs() const { return kosTheirs_; }
@@ -92,6 +93,7 @@ private:
     Snapshot opponent_;
     std::optional<Snapshot> lastSent_;
     std::string roomCode_;
+    std::string opponentName_;
     std::string error_;
     int countdownMs_ = 0;
     int sinceSnapshotMs_ = 0;

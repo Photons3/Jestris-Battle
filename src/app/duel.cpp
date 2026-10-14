@@ -38,7 +38,8 @@ bool DuelSession::frozen() const { return phase_ == DuelPhase::Playing && (koFla
 
 std::string resultReasonText(const DuelSession& duel) {
     if (duel.phase() != DuelPhase::Result) return {};
-    if (duel.outcome() == DuelOutcome::OpponentLeft) return "Opponent left the match";
+    if (duel.outcome() == DuelOutcome::OpponentLeft)
+        return (duel.opponentName().empty() ? std::string("Opponent") : duel.opponentName()) + " left the match";
     if (duel.reason() == DuelReason::KOs) return std::to_string(kKosToWin) + " KOs";
     std::string text = "Time up" + std::string(kSeparator) + "KO " + versus(duel.kosMine(), duel.kosTheirs());
     if (duel.kosMine() == duel.kosTheirs())
@@ -77,6 +78,8 @@ void DuelSession::onMessage(std::string_view text) {
     if (!message || phase_ == DuelPhase::Idle) return;
     if (const auto* room = std::get_if<RoomCreated>(&*message)) {
         roomCode_ = room->code;
+    } else if (const auto* opp = std::get_if<OpponentName>(&*message)) {
+        if (phase_ == DuelPhase::Waiting) opponentName_ = opp->name;
     } else if (const auto* start = std::get_if<StartMatch>(&*message)) {
         const bool rematch = phase_ == DuelPhase::Result && rematchRequested_ && !opponentGone_;
         if (phase_ == DuelPhase::Waiting || rematch) startMatch(*start);
@@ -186,6 +189,7 @@ void DuelSession::reset() {
     opponent_ = Snapshot{};
     lastSent_.reset();
     roomCode_.clear();
+    opponentName_.clear();
     error_.clear();
     countdownMs_ = 0;
     sinceSnapshotMs_ = 0;

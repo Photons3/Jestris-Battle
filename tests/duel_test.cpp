@@ -517,3 +517,35 @@ TEST_CASE("duel: catching up after a hidden tab runs the clock and sends the new
     REQUIRE(wire.sent.size() == 1);
     CHECK(wire.sent[0].starts_with("SNAP "));
 }
+
+TEST_CASE("duel: OPP while waiting names the opponent, and leaving forgets it") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.joinRoom("ABCD");
+    duel.onMessage("OPP Kai");
+    CHECK(duel.opponentName() == "Kai");
+    duel.onMessage("START 7 1");
+    CHECK(duel.opponentName() == "Kai");
+    duel.leave();
+    CHECK(duel.opponentName().empty());
+}
+
+TEST_CASE("duel: OPP outside Waiting is ignored") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.onMessage("OPP Kai");  // Idle
+    CHECK(duel.opponentName().empty());
+    startMatch(duel, wire);
+    duel.onMessage("OPP Zed");  // Playing
+    CHECK(duel.opponentName().empty());
+}
+
+TEST_CASE("duel: the opponent-left line uses the name when known") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("OPP Kai");
+    duel.onMessage("START 7 1");
+    duel.onMessage("LEFT");
+    CHECK(resultReasonText(duel) == "Kai left the match");
+}
