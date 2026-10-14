@@ -29,6 +29,8 @@ public:
     // Pushes the stack up by `rows` and fills the bottom rows with garbage, with a bomb in column `bombX`.
     // Returns false and changes nothing if a filled cell would be pushed off the top.
     bool pushGarbage(int rows, int bombX);
+    // The same, one garbage row per entry, bottom row first, each with its bomb in the given column.
+    bool pushGarbage(const std::vector<int>& bombColumns);
     // Rows a just-locked `piece` sets off: each bomb directly under one of its cells, plus every bomb
     // touching that one below it in the same column. Sorted bottom-up, without duplicates.
     std::vector<int> bombRowsHitBy(const Piece& piece) const;

@@ -188,15 +188,65 @@ void drawComboLabel(ImDrawList* dl, const Layout& l, const Fonts& fonts, const C
     dl->AddText(fonts.hud, l.cell * 0.6f, pos, IM_COL32(255, 220, 60, static_cast<int>(combo.alpha() * 255.0f)), text);
 }
 
+Rgb calloutRgb(CalloutTone tone) {
+    switch (tone) {
+    case CalloutTone::BackToBack:
+        return {255, 210, 40};
+    case CalloutTone::Spin:
+        return lighten(kPieceColors[static_cast<int>(PieceType::T)]);
+    case CalloutTone::Tetris:
+        return kPieceColors[static_cast<int>(PieceType::I)];
+    case CalloutTone::Perfect:
+        break;
+    }
+    return {255, 245, 200};
+}
+
+// Under the COMBO label, in the HOLD column: one short line per part of the clear, with a hard shadow.
+void drawCallout(ImDrawList* dl, const Layout& l, const Fonts& fonts, const ClearCallout& callout) {
+    if (callout.ms <= 0) return;
+    const float size = std::floor(l.cell * 0.6f * callout.popScale());
+    const int alpha = static_cast<int>(callout.alpha() * 255.0f);
+    ImVec2 pos(l.origin.x - 5.5f * l.cell, cellTopLeft(l, 0, kVisibleHeight - 1).y + 5.5f * l.cell);
+    for (const CalloutLine& line : calloutLines(callout.shown)) {
+        drawShadowText(dl, fonts, size, pos, color(calloutRgb(line.tone), alpha / 255.0f), line.text.c_str(),
+                       bevelFor(size), IM_COL32(0, 0, 0, alpha * 220 / 255));
+        pos.y += l.cell * 0.9f;
+    }
+}
+
+void drawOutlinedText(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, const char* text, ImU32 fill,
+                      ImU32 outline, float thickness);
+
+// PERFECT / CLEAR in large outlined letters across the middle of the well, fading with the callout.
+void drawPerfectFlash(ImDrawList* dl, const Layout& l, const Fonts& fonts, const ClearCallout& callout) {
+    if (!callout.perfectFlash()) return;
+    const float size = std::floor(l.cell * 1.2f * callout.popScale());
+    const float fade = static_cast<float>(callout.ms - (kCalloutMs - kPerfectFlashMs)) / kPerfectFlashMs;
+    const float alpha = std::min(1.0f, fade * 3.0f);  // full for most of the flash, then a quick fade
+    const float centerX = l.origin.x + kBoardWidth * l.cell * 0.5f;
+    const float middle = cellTopLeft(l, 0, kVisibleHeight / 2).y;
+    const std::array<const char*, 2> words{"PERFECT", "CLEAR"};
+    for (int i = 0; i < 2; ++i) {
+        const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, words[i]);
+        const ImVec2 pos(centerX - extent.x * 0.5f, middle - extent.y * (1.1f - 1.2f * i));
+        drawOutlinedText(dl, fonts, size, pos, words[i], color(calloutRgb(CalloutTone::Perfect), alpha),
+                         IM_COL32(255, 120, 0, static_cast<int>(alpha * 200.0f)),
+                         std::max(1.0f, std::floor(l.cell * 0.12f)));
+    }
+}
+
 // `comboUnderHold` is false in duels, where the combo sits in the center column instead.
 void drawPlayfield(ImDrawList* dl, const Layout& layout, const Game& game, const Fonts& fonts,
-                   const ComboLabel& combo, bool comboUnderHold) {
+                   const ComboLabel& combo, const ClearCallout& callout, bool comboUnderHold) {
     drawWell(dl, layout);
     if (game.state() == GameState::Paused) return;
     drawBoardCells(dl, layout, game);
     if (game.state() == GameState::Playing) drawActivePiece(dl, layout, game);
     drawSidePanels(dl, layout, game, fonts);
     if (comboUnderHold) drawComboLabel(dl, layout, fonts, combo);
+    drawCallout(dl, layout, fonts, callout);
+    drawPerfectFlash(dl, layout, fonts, callout);
 }
 
 // Layout A, left to right, in cells: hold 5 | your well 10 | meter | next 5 | center 7 | meter | their well 10 |
@@ -468,7 +518,8 @@ bool musicButton(bool off, float width = menuButtonWidth()) {
     return menuButton(off ? "Music: Off###music" : "Music: On###music", width);
 }
 
-void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const StartMenu& menu) {
+void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
+                    const StartMenu& menu) {
     const Game& game = *duel.game();
     const char* mine = menu.playerName.empty() ? "YOU" : menu.playerName.c_str();
     const char* theirs = duel.opponentName().empty() ? "FOE" : duel.opponentName().c_str();
@@ -477,7 +528,7 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     drawGridBackground(cell, layout.mine.origin);
     ImDrawList* dl = beginBoardWindow();
     drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, duel.kosMine());
-    drawPlayfield(dl, layout.mine, game, fonts, combo, false);
+    drawPlayfield(dl, layout.mine, game, fonts, combo, callout, false);
     drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage());
     drawScoreboard(dl, fonts, layout, duel, combo);
     drawGarbageMeter(dl, layout.left + kTheirMeterCol * cell, wellBottom(layout.theirs), cell,
@@ -661,6 +712,33 @@ void ComboLabel::update(int combo, int ms) {
     if (fadeMs == 0) shown = 0;
 }
 
+float ClearCallout::popScale() const {
+    const float t = std::min(1.0f, static_cast<float>(kCalloutMs - ms) / kCalloutPopMs);
+    return 1.25f - 0.25f * t;
+}
+
+std::vector<CalloutLine> calloutLines(const ClearAward& award) {
+    static constexpr std::array<const char*, 5> kLineNames{"", "SINGLE", "DOUBLE", "TRIPLE", "TETRIS"};
+    std::vector<CalloutLine> lines;
+    if (award.backToBack > 0) {
+        char text[16];
+        std::snprintf(text, sizeof text, "B2B x%d", award.backToBack);
+        lines.push_back({text, CalloutTone::BackToBack});
+    }
+    if (award.spin != Spin::None) {
+        lines.push_back({"T-SPIN", CalloutTone::Spin});
+        if (award.spin == Spin::Mini) lines.push_back({"MINI", CalloutTone::Spin});
+        if (award.lines > 0) lines.push_back({kLineNames[award.lines], CalloutTone::Spin});
+    } else if (award.lines == 4) {
+        lines.push_back({"TETRIS", CalloutTone::Tetris});
+    }
+    if (award.perfectClear) {
+        lines.push_back({"PERFECT", CalloutTone::Perfect});
+        lines.push_back({"CLEAR", CalloutTone::Perfect});
+    }
+    return lines;
+}
+
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     beginMenu("##start");
@@ -760,11 +838,11 @@ UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsM
     return command;
 }
 
-void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo) {
+void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout) {
     const Layout layout = computeLayout();
     drawGridBackground(layout.cell, layout.origin);
     ImDrawList* dl = beginBoardWindow();
-    drawPlayfield(dl, layout, game, fonts, combo, true);
+    drawPlayfield(dl, layout, game, fonts, combo, callout, true);
     ImGui::End();
 }
 
@@ -800,7 +878,8 @@ void drawMutedBadge(const Fonts& fonts) {
     drawLabel(ImGui::GetForegroundDrawList(), fonts, size, pos, text);
 }
 
-UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, StartMenu& menu) {
+UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
+                   StartMenu& menu) {
     UiCommand command = UiCommand::None;
     switch (duel.phase()) {
     case DuelPhase::Idle:
@@ -837,16 +916,16 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
         ImGui::End();
         break;
     case DuelPhase::Countdown:
-        drawDuelBoards(duel, fonts, combo, menu);
+        drawDuelBoards(duel, fonts, combo, callout, menu);
         drawCountdown(duel.countdownMs(), fonts);
         drawVersus(fonts, menu.playerName, duel.opponentName());
         break;
     case DuelPhase::Playing:
-        drawDuelBoards(duel, fonts, combo, menu);
+        drawDuelBoards(duel, fonts, combo, callout, menu);
         if (showGoBanner(duel.matchClockMs())) drawGo(fonts);
         break;
     case DuelPhase::Result:
-        drawDuelBoards(duel, fonts, combo, menu);
+        drawDuelBoards(duel, fonts, combo, callout, menu);
         command = drawDuelResult(duel, fonts);
         break;
     }

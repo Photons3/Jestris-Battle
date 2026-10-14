@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "app/render.hpp"
 #include "imgui.h"
@@ -48,6 +49,49 @@ TEST_CASE("ui: a new combo during the fade shows at full strength") {
     label.update(1, 16);
     CHECK(label.shown == 1);
     CHECK(label.alpha() == 1.0f);
+}
+
+TEST_CASE("ui: the clear callout names each part of a special clear") {
+    using Lines = std::vector<CalloutLine>;
+    CHECK(calloutLines({4}) == Lines{{"TETRIS", CalloutTone::Tetris}});
+    CHECK(calloutLines({2, Spin::Full}) == Lines{{"T-SPIN", CalloutTone::Spin}, {"DOUBLE", CalloutTone::Spin}});
+    CHECK(calloutLines({0, Spin::Mini}) == Lines{{"T-SPIN", CalloutTone::Spin}, {"MINI", CalloutTone::Spin}});
+    CHECK(calloutLines({3, Spin::Full, 2}) ==
+          Lines{{"B2B x2", CalloutTone::BackToBack}, {"T-SPIN", CalloutTone::Spin}, {"TRIPLE", CalloutTone::Spin}});
+    CHECK(calloutLines({4, Spin::None, 1, true}) == Lines{{"B2B x1", CalloutTone::BackToBack},
+                                                          {"TETRIS", CalloutTone::Tetris},
+                                                          {"PERFECT", CalloutTone::Perfect},
+                                                          {"CLEAR", CalloutTone::Perfect}});
+    CHECK(calloutLines({1, Spin::None, 0, true}) ==
+          Lines{{"PERFECT", CalloutTone::Perfect}, {"CLEAR", CalloutTone::Perfect}});
+}
+
+TEST_CASE("ui: the clear callout pops in, holds, then fades out") {
+    ClearCallout callout;
+    CHECK(callout.alpha() == 0.0f);
+    callout.show({4});
+    CHECK(callout.popScale() == doctest::Approx(1.25f));
+    CHECK(callout.alpha() == 1.0f);
+    callout.update(kCalloutPopMs);
+    CHECK(callout.popScale() == doctest::Approx(1.0f));
+    callout.update(kCalloutMs - kCalloutPopMs - kCalloutFadeMs / 2);
+    CHECK(callout.alpha() == doctest::Approx(0.5f));
+    callout.update(kCalloutFadeMs);
+    CHECK(callout.ms == 0);
+    CHECK(callout.alpha() == 0.0f);
+    callout.show({2, Spin::Full});  // a new one starts over
+    CHECK(callout.alpha() == 1.0f);
+}
+
+TEST_CASE("ui: only a perfect clear flashes over the well, and only at first") {
+    ClearCallout callout;
+    callout.show({4});
+    CHECK_FALSE(callout.perfectFlash());
+    callout.show({4, Spin::None, 0, true});
+    CHECK(callout.perfectFlash());
+    callout.update(kPerfectFlashMs);
+    CHECK_FALSE(callout.perfectFlash());
+    CHECK(callout.ms > 0);
 }
 
 namespace {
@@ -124,7 +168,7 @@ TEST_CASE("ui: the lobby draws its room list") {
     StartMenu menu;
     for (int frame = 0; frame < 2; ++frame) {
         ImGui::NewFrame();
-        CHECK(drawDuel(duel, Fonts{}, ComboLabel{}, menu) == UiCommand::None);
+        CHECK(drawDuel(duel, Fonts{}, ComboLabel{}, ClearCallout{}, menu) == UiCommand::None);
         ImGui::EndFrame();
     }
     CHECK(menu.pickedRoom.empty());

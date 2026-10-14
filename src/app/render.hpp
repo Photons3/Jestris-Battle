@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "app/duel.hpp"
 #include "app/fonts.hpp"
@@ -50,6 +52,37 @@ struct ComboLabel {
     float alpha() const { return shown > 0 ? static_cast<float>(fadeMs) / kComboFadeMs : 0.0f; }
 };
 
+inline constexpr int kCalloutMs = 1800;      // how long a special clear stays named beside the board
+inline constexpr int kCalloutFadeMs = 500;   // the last part of that, fading out
+inline constexpr int kCalloutPopMs = 150;    // the text settles from 1.25x to 1x over this long
+inline constexpr int kPerfectFlashMs = 1000; // PERFECT CLEAR also flashes over the well for this long
+
+// The callout under the HOLD panel naming the last special clear: B2B xN, T-SPIN (MINI) DOUBLE, TETRIS, PERFECT
+// CLEAR. A new one replaces it at full strength.
+struct ClearCallout {
+    ClearAward shown;  // the clear on the callout
+    int ms = 0;        // time left on screen; 0 draws nothing
+    void show(const ClearAward& award) {
+        shown = award;
+        ms = kCalloutMs;
+    }
+    void update(int elapsedMs) { ms = std::max(0, ms - elapsedMs); }
+    float alpha() const { return std::min(1.0f, static_cast<float>(ms) / kCalloutFadeMs); }
+    float popScale() const;  // 1.25 when it appears, easing to 1.0
+    bool perfectFlash() const { return shown.perfectClear && ms > kCalloutMs - kPerfectFlashMs; }
+};
+
+enum class CalloutTone { BackToBack, Spin, Tetris, Perfect };  // picks each line's color
+
+struct CalloutLine {
+    std::string text;
+    CalloutTone tone;
+    friend bool operator==(const CalloutLine&, const CalloutLine&) = default;
+};
+
+// The callout's lines, top to bottom, each short enough for the HOLD column.
+std::vector<CalloutLine> calloutLines(const ClearAward& award);
+
 inline constexpr int kCountdownPopMs = 150;  // each digit settles from 1.3x to 1x over this long
 inline constexpr int kGoBannerMs = 400;      // "GO!" shows for this long once play starts
 
@@ -68,13 +101,14 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu);
 // Each action with its two key buttons; clicking one sets `controls.capturing`.
 UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsMenu& controls);
 // Well, pieces, hold/next panels and stats. The board and panels are hidden while paused.
-void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo);
+void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout);
 // Pause and game-over menus; draws nothing while playing.
 UiCommand drawOverlay(const Game& game, const Fonts& fonts, bool muted, bool musicOff);
 // A small MUTED label in the top-right corner, over every screen.
 void drawMutedBadge(const Fonts& fonts);
 // Lobby, waiting room, countdown, both boards and the result menu, depending on the session phase. `menu`
 // supplies our name, and the lobby writes the clicked room to it.
-UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, StartMenu& menu);
+UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
+                   StartMenu& menu);
 
 }  // namespace tetris

@@ -20,6 +20,17 @@ TEST_CASE("cues: game events map to their sounds") {
     CHECK(soundFor(GameEvent{GameEventType::LevelUp}, false) == Sound::LevelUp);
 }
 
+TEST_CASE("cues: a special clear plays its biggest part, and a plain tetris adds nothing") {
+    auto cue = [](ClearAward award) { return soundFor(GameEvent{GameEventType::SpecialClear, 0, award}, false); };
+    CHECK(cue({2, Spin::Full}) == Sound::TSpin);
+    CHECK(cue({0, Spin::Mini}) == Sound::TSpin);
+    CHECK(cue({2, Spin::Full, 1}) == Sound::BackToBack);
+    CHECK(cue({4, Spin::None, 2}) == Sound::BackToBack);
+    CHECK(cue({4, Spin::None, 1, true}) == Sound::PerfectClear);
+    CHECK(cue({1, Spin::None, 0, true}) == Sound::PerfectClear);
+    CHECK_FALSE(cue({4}).has_value());
+}
+
 TEST_CASE("cues: a top-out ends a solo game but is a KO in a duel") {
     CHECK(soundFor(GameEvent{GameEventType::ToppedOut}, false) == Sound::Lost);
     CHECK(soundFor(GameEvent{GameEventType::ToppedOut}, true) == Sound::KoTheirs);

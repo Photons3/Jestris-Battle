@@ -15,12 +15,34 @@ namespace tetris {
 
 enum class GameState { Playing, Clearing, Paused, GameOver };
 enum class Action { Left, Right, RotateCW, RotateCCW, HardDrop, Hold, Pause };
-enum class GameEventType { Moved, Rotated, Held, HardDropped, Locked, LinesCleared, BombExploded, GarbageRose, LevelUp, ToppedOut, Combo };
+enum class GameEventType {
+    Moved, Rotated, Held, HardDropped, Locked, LinesCleared, BombExploded, GarbageRose, LevelUp, ToppedOut, Combo,
+    SpecialClear
+};
+
+enum class Spin : std::uint8_t { None, Mini, Full };
+
+// What one lock cleared, as scored: the rows, whether it was a T-spin, and the bonuses it earned.
+struct ClearAward {
+    int lines = 0;              // full rows the piece completed, 0-4
+    Spin spin = Spin::None;
+    int backToBack = 0;         // 0 unless this clear continues a back-to-back chain; then 1, 2, 3...
+    bool perfectClear = false;  // the clear leaves the board empty
+    int bombRows = 0;           // rows blown up by bombs; they score and send like lines, up to 4 in all
+    friend bool operator==(const ClearAward&, const ClearAward&) = default;
+};
+
+// A tetris, or a T-spin that clears lines, counting full rows only. Two in a row, with no other line clear
+// between, are back-to-back; bomb rows neither count toward the chain nor break it.
+bool isDifficult(const ClearAward& award);
+// Rows the award scores and sends for: full and bomb rows together, at most 4.
+int countedLines(const ClearAward& award);
 
 // Something that just happened in a game, for sound. Locked is only for a piece that locks on its own.
 struct GameEvent {
     GameEventType type;
     int value = 0;  // LinesCleared: full rows, 1-4 (bomb rows are reported as BombExploded). Combo: the combo, 1+
+    ClearAward award{};  // SpecialClear only: a T-spin (with or without lines), a tetris or a perfect clear
     friend bool operator==(const GameEvent&, const GameEvent&) = default;
 };
 
@@ -45,6 +67,22 @@ int clampStartLevel(int level);
 int attackFor(int lines);
 // Extra garbage for clearing during a combo; `combo` is Game::combo() at the clearing lock.
 int comboBonus(int combo);
+
+// Scoring and garbage follow the Tetris Guideline (tetris.wiki/Scoring and tetris.wiki/Garbage).
+// Points for `award` at `level`: the clear (x1.5 when back-to-back), 50 per combo step and the perfect-clear bonus.
+int awardScore(const ClearAward& award, int combo, int level);
+// Garbage sent for `award`: the clear, +1 when back-to-back, the combo bonus and 10 for a perfect clear.
+int awardAttack(const ClearAward& award, int combo);
+// The T-spin a T piece earns by locking at `piece`, when its last move was a rotation that used SRS kick
+// `kick` (0-4). Three of the four corners around the T's center must be filled (walls and floor count): both
+// corners on the side it points to make a full T-spin, otherwise a mini, unless the rotation took the last kick.
+Spin tSpinFor(const Board& board, const Piece& piece, int kick);
+
+inline constexpr int kBombPairPercent = 90;  // how often a bomb lands on a lone bomb in the row above it
+// Bomb columns for `rows` new garbage rows, bottom row first. A bomb stacks on the bomb in the row above it
+// kBombPairPercent of the time, but never more than two high; otherwise it moves to another column. `aboveX` is
+// the bomb column of the row the new rows go under (-1 for none), and `aboveRun` how many bombs stack there.
+std::vector<int> bombColumnsFor(int rows, int aboveX, int aboveRun, std::mt19937& rng);
 
 struct GameOptions {
     bool allowPause = true;  // duels turn pausing off so one player can't freeze the match
@@ -83,6 +121,9 @@ public:
     int lines() const { return lines_; }
     // Clearing locks in a row, minus one: -1 with no combo, 0 after the first clear, 1 after the second...
     int combo() const { return combo_; }
+    // Difficult clears in a row, minus one, like combo(): -1 with no chain, 0 after the first, 1 once back-to-back.
+    // Clears that aren't difficult end the chain; locks that clear nothing leave it alone.
+    int backToBack() const { return backToBack_; }
     GameState state() const { return state_; }
 
 private:
@@ -98,6 +139,7 @@ private:
     void lockPiece(bool hardDropped = false);
     void finishClear();
     void emit(GameEventType type, int value = 0) { events_.push_back({type, value}); }
+    bool clearEmptiesBoard() const;  // only clearingRows_ hold any cells
     void topOut();
     bool applyGarbage();  // false if the garbage pushed blocks off the top
 
@@ -124,6 +166,10 @@ private:
     int pendingGarbage_ = 0;
     int outgoingAttack_ = 0;
     int combo_ = -1;
+    int backToBack_ = -1;
+    bool rotatedLast_ = false;  // the active piece's last move was a rotation, for T-spins
+    int lastKick_ = 0;          // the SRS kick that rotation used
+    ClearAward award_;          // the clear in progress, scored when it finishes
     std::vector<GameEvent> events_;
 };
 

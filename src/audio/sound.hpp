@@ -5,6 +5,7 @@ namespace tetris {
 enum class Sound {
     Move, Rotate, Hold, HardDrop, Lock, Clear1, Clear2, Clear3, Tetris, Bomb, Garbage, LevelUp,
     Combo1, Combo2, Combo3, Combo4, Combo5, Combo6, Combo7,  // keep consecutive: indexed from Combo1
+    TSpin, BackToBack, PerfectClear,
     CountdownTick, Go, Attacked, KoMine, KoTheirs, Won, Lost, Draw,
     Count  // not a sound: the number of sounds
 };

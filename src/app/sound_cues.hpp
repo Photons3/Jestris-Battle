@@ -1,13 +1,16 @@
 #pragma once
 
+#include <optional>
+
 #include "app/duel.hpp"
 #include "audio/sound.hpp"
 #include "core/game.hpp"
 
 namespace tetris {
 
-// In a duel a top-out is a KO against us, not the end of the game.
-Sound soundFor(const GameEvent& event, bool inDuel);
+// In a duel a top-out is a KO against us, not the end of the game. A plain tetris has no special-clear sound of
+// its own: its LinesCleared event already plays one.
+std::optional<Sound> soundFor(const GameEvent& event, bool inDuel);
 Sound soundFor(DuelEvent event);
 
 enum class MusicMode { Stopped, Playing, Paused };

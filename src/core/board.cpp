@@ -51,16 +51,23 @@ void Board::removeRows(const std::vector<int>& rows) {
 }
 
 bool Board::pushGarbage(int rows, int bombX) {
-    assert(rows >= 0 && bombX >= 0 && bombX < kBoardWidth);
-    rows = std::min(rows, kBoardHeight);
+    assert(rows >= 0);
+    return pushGarbage(std::vector<int>(static_cast<std::size_t>(rows), bombX));
+}
+
+bool Board::pushGarbage(const std::vector<int>& bombColumns) {
+    const int rows = std::min(static_cast<int>(bombColumns.size()), kBoardHeight);
     for (int y = kBoardHeight - rows; y < kBoardHeight; ++y)
         for (int x = 0; x < kBoardWidth; ++x)
             if (cells_[index(x, y)]) return false;
     for (int y = kBoardHeight - 1; y >= rows; --y)
         for (int x = 0; x < kBoardWidth; ++x) cells_[index(x, y)] = cells_[index(x, y - rows)];
-    for (int y = 0; y < rows; ++y)
+    for (int y = 0; y < rows; ++y) {
+        const int bombX = bombColumns[static_cast<std::size_t>(y)];
+        assert(bombX >= 0 && bombX < kBoardWidth);
         for (int x = 0; x < kBoardWidth; ++x)
             cells_[index(x, y)] = x == bombX ? Cell{PieceType::Bomb} : Cell{PieceType::Garbage};
+    }
     return true;
 }
 

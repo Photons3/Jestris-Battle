@@ -25,19 +25,24 @@ constexpr KickTable kIKicks{{
 
 }  // namespace
 
-std::optional<Piece> rotateWithKicks(const Board& board, const Piece& piece, RotateDir dir) {
+std::optional<Piece> rotateWithKicks(const Board& board, const Piece& piece, RotateDir dir, int* kick) {
     Piece rotated = piece;
     rotated.rotation = dir == RotateDir::CW ? rotatedCW(piece.rotation) : rotatedCCW(piece.rotation);
     if (piece.type == PieceType::O) {
         if (board.collides(rotated)) return std::nullopt;
+        if (kick != nullptr) *kick = 0;
         return rotated;
     }
     const KickTable& table = piece.type == PieceType::I ? kIKicks : kJlstzKicks;
-    for (Point kick : table[static_cast<int>(piece.rotation)][dir == RotateDir::CW ? 0 : 1]) {
+    const Kicks& kicks = table[static_cast<int>(piece.rotation)][dir == RotateDir::CW ? 0 : 1];
+    for (int i = 0; i < static_cast<int>(kicks.size()); ++i) {
         Piece candidate = rotated;
-        candidate.pos.x += kick.x;
-        candidate.pos.y += kick.y;
-        if (!board.collides(candidate)) return candidate;
+        candidate.pos.x += kicks[i].x;
+        candidate.pos.y += kicks[i].y;
+        if (!board.collides(candidate)) {
+            if (kick != nullptr) *kick = i;
+            return candidate;
+        }
     }
     return std::nullopt;
 }

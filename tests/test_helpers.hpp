@@ -45,12 +45,14 @@ inline void dropToFloor(tetris::Game& game) {
     game.setSoftDrop(false);
 }
 
-// Board whose bottom `rows` rows are full except column `gapX`.
+// Board whose bottom `rows` rows are full except column `gapX`, with one more block on top at the far side, so
+// clearing the well is not a perfect clear.
 inline tetris::Board boardWithWell(int rows, int gapX) {
     tetris::Board board;
     for (int y = 0; y < rows; ++y)
         for (int x = 0; x < tetris::kBoardWidth; ++x)
             if (x != gapX) board.set(x, y, tetris::PieceType::Z);
+    board.set(gapX == 0 ? tetris::kBoardWidth - 1 : 0, rows, tetris::PieceType::Z);
     return board;
 }
 
