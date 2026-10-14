@@ -72,6 +72,19 @@ TEST_CASE("solo: sprint finishes at the goal with the time") {
     CHECK(solo.frozen());
 }
 
+TEST_CASE("solo: reaching the goal finishes the run even if the next piece cannot spawn") {
+    Board board = boardWithWell(4, 5);
+    board.set(4, 24, PieceType::Z);  // the clear brings it down into the spawn area
+    SoloSession solo({SoloMode::Sprint, 4}, Game(seedWithFirst(PieceType::I), 1, board));
+    solo.update(250);
+    dropUprightI(solo.game());
+    solo.game().tick(kClearDelayMs);
+    REQUIRE(solo.game().state() == GameState::GameOver);
+    solo.update(kClearDelayMs);  // the clock stopped with the game, so this frame does not count
+    CHECK(solo.phase() == SoloPhase::Finished);
+    CHECK(solo.result() == 250);
+}
+
 TEST_CASE("solo: blitz ends at 0:00 and still counts a clear in progress") {
     SoloSession solo({SoloMode::Blitz, 0, 1000}, Game(seedWithFirst(PieceType::I), 1, boardWithWell(1, 5)));
     dropUprightI(solo.game());

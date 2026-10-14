@@ -98,16 +98,18 @@ void SoloSession::update(int ms) {
             return;
         }
     }
+    // The goal first: the clear that reaches it may leave the next piece no room to spawn.
+    if ((rules_.goalLines > 0 && game_.lines() >= rules_.goalLines) ||
+        (rules_.mode == SoloMode::Cheese && game_.board().garbageRows() == 0)) {
+        finish();
+        return;
+    }
     if (game_.state() == GameState::GameOver) {
         if (rules_.mode == SoloMode::Zen)
             game_.resetBoard();
         else
             phase_ = SoloPhase::ToppedOut;
-        return;
     }
-    if ((rules_.goalLines > 0 && game_.lines() >= rules_.goalLines) ||
-        (rules_.mode == SoloMode::Cheese && game_.board().garbageRows() == 0))
-        finish();
 }
 
 std::optional<int> PersonalBests::best(SoloMode mode) const {
