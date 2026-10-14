@@ -96,8 +96,15 @@ void applyCommand(App& app, UiCommand command) {
         break;
     case UiCommand::ResetControls:
         app.keymap = defaultKeymap();
+        app.handling = {};
+        app.input.setHandling(app.handling);
         app.controls.capturing.reset();
-        app.controls.note.clear();
+        app.controls.note = "Keys and handling reset";
+        app.saveSettings();
+        break;
+    case UiCommand::SaveHandling:
+        app.handling = clampHandling(app.handling);
+        app.input.setHandling(app.handling);
         app.saveSettings();
         break;
     }
@@ -196,6 +203,8 @@ App::App()
     menu.duelsEnabled = duelsSupported();
     const Settings saved = parseSettings(loadSettingsText());
     keymap = saved.keys;
+    handling = saved.handling;
+    input.setHandling(handling);
     menu.muted = saved.muted;
     menu.musicOff = saved.musicOff;
     menu.publicRooms = saved.publicRooms;
@@ -215,7 +224,7 @@ App::App()
     audio.setMusicMuted(menu.musicOff);
 }
 
-void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms})); }
+void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms, handling})); }
 
 void App::newGame() {
     syncMusic({});  // a new game always starts the song from the top
@@ -323,6 +332,7 @@ void step(App& app, int ms) {
             app.input.tick(app.pending);
             flush();
             game->setSoftDrop(app.input.softDrop());
+            game->setSoftDropFactor(app.handling.softDropFactor);
             game->tick(1);
         }
     }
