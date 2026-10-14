@@ -13,6 +13,7 @@
 namespace tetris {
 
 inline constexpr int kSnapshotCells = kBoardWidth * kVisibleHeight;
+inline constexpr int kSnapshotNext = 5;  // the opponent's next queue, as long as your own
 inline constexpr int kRoomCodeLength = 4;
 inline constexpr int kKosToWin = 3;  // the first player to this many KOs wins the match
 inline constexpr int kMaxNameLength = 12;  // maxNameLength in server/hub.go
@@ -25,12 +26,16 @@ bool isRoomCode(std::string_view text);
 bool isNameChar(char c);
 bool isValidName(std::string_view text);
 
-// What the opponent sees of a board: the visible field with the falling piece merged in.
+// What the opponent sees of a board: the visible field with the falling piece merged in, plus the hold and
+// the next queue.
 struct Snapshot {
     int score = 0;
     int lines = 0;
     int pending = 0;                           // garbage waiting to rise
     std::array<Cell, kSnapshotCells> cells{};  // index y * kBoardWidth + x; y = 0 is the bottom row
+    Cell hold{};                               // nullopt: nothing held
+    bool holdLocked = false;                   // hold already used this turn; drawn dimmed
+    std::array<Cell, kSnapshotNext> next{};    // soonest first; nullopt only before the first SNAP arrives
     friend bool operator==(const Snapshot&, const Snapshot&) = default;
 };
 

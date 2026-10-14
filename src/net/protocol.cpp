@@ -11,6 +11,8 @@ namespace tetris {
 namespace {
 
 constexpr std::string_view kCellChars = "IOTSZJLGB";  // index matches PieceType
+constexpr std::string_view kPieceChars = "IOTSZJL";      // the dealable prefix of kCellChars
+constexpr std::string_view kLockedHoldChars = "iotszjl";  // a held piece while hold is locked
 constexpr char kEmptyCell = '.';
 constexpr int kMaxInt = std::numeric_limits<int>::max();
 constexpr std::array<std::string_view, 3> kResultTokens{"WIN", "LOSE", "DRAW"};  // index matches MatchResult
@@ -55,13 +57,47 @@ bool parseCell(char c, Cell& out) {
     return true;
 }
 
+char holdChar(Cell hold, bool locked) {
+    if (!hold) return kEmptyCell;
+    return (locked ? kLockedHoldChars : kPieceChars)[static_cast<int>(*hold)];
+}
+
+// A dealable piece or '.', never garbage or a bomb.
+bool parsePiece(char c, Cell& out) {
+    if (c == kEmptyCell) {
+        out = std::nullopt;
+        return true;
+    }
+    const std::size_t i = kPieceChars.find(c);
+    if (i == std::string_view::npos) return false;
+    out = static_cast<PieceType>(i);
+    return true;
+}
+
+bool parseHold(std::string_view text, Cell& hold, bool& locked) {
+    if (text.size() != 1) return false;
+    const std::size_t i = kLockedHoldChars.find(text[0]);
+    locked = i != std::string_view::npos;
+    if (locked) {
+        hold = static_cast<PieceType>(i);
+        return true;
+    }
+    return parsePiece(text[0], hold);
+}
+
 std::optional<Message> decodeSnapshot(const std::vector<std::string_view>& parts) {
     const auto score = parseNumber(parts[1], 0, kMaxInt);
     const auto lines = parseNumber(parts[2], 0, kMaxInt);
     const auto pending = parseNumber(parts[3], 0, kMaxInt);
-    const std::string_view cells = parts[4];
-    if (!score || !lines || !pending || static_cast<int>(cells.size()) != kSnapshotCells) return std::nullopt;
-    Snapshot snapshot{*score, *lines, *pending, {}};
+    const std::string_view next = parts[5];
+    const std::string_view cells = parts[6];
+    if (!score || !lines || !pending || static_cast<int>(next.size()) != kSnapshotNext ||
+        static_cast<int>(cells.size()) != kSnapshotCells)
+        return std::nullopt;
+    Snapshot snapshot{.score = *score, .lines = *lines, .pending = *pending};
+    if (!parseHold(parts[4], snapshot.hold, snapshot.holdLocked)) return std::nullopt;
+    for (int i = 0; i < kSnapshotNext; ++i)
+        if (!parsePiece(next[i], snapshot.next[i])) return std::nullopt;
     for (int i = 0; i < kSnapshotCells; ++i)
         if (!parseCell(cells[i], snapshot.cells[i])) return std::nullopt;
     return snapshot;
@@ -98,12 +134,16 @@ bool isValidName(std::string_view text) {
 }
 
 Snapshot snapshotOf(const Game& game) {
-    Snapshot snapshot{game.score(), game.lines(), game.pendingGarbage(), {}};
+    Snapshot snapshot{.score = game.score(), .lines = game.lines(), .pending = game.pendingGarbage()};
     for (int y = 0; y < kVisibleHeight; ++y)
         for (int x = 0; x < kBoardWidth; ++x) snapshot.cells[y * kBoardWidth + x] = game.board().at(x, y);
     if (game.state() == GameState::Playing)
         for (Point c : game.active().cells())
             if (c.y < kVisibleHeight) snapshot.cells[c.y * kBoardWidth + c.x] = game.active().type;
+    snapshot.hold = game.hold();
+    snapshot.holdLocked = !game.canHold();
+    const std::vector<PieceType> next = game.next(kSnapshotNext);
+    std::copy_n(next.begin(), std::min<std::size_t>(next.size(), kSnapshotNext), snapshot.next.begin());
     return snapshot;
 }
 
@@ -123,7 +163,9 @@ std::string encode(const Message& message) {
                 return "ATK " + std::to_string(m.lines);
             } else if constexpr (std::is_same_v<T, Snapshot>) {
                 std::string text = "SNAP " + std::to_string(m.score) + " " + std::to_string(m.lines) + " " +
-                                   std::to_string(m.pending) + " ";
+                                   std::to_string(m.pending) + " " + holdChar(m.hold, m.holdLocked) + " ";
+                for (Cell piece : m.next) text += cellChar(piece);
+                text += ' ';
                 for (Cell cell : m.cells) text += cellChar(cell);
                 return text;
             } else if constexpr (std::is_same_v<T, Dead>) {
@@ -191,7 +233,7 @@ std::optional<Message> decode(std::string_view text) {
         if (seed && level) return StartMatch{*seed, *level};
     } else if (verb == "ATK" && args == 1) {
         if (const auto lines = parseNumber(parts[1], 1, kBoardHeight)) return Attack{*lines};
-    } else if (verb == "SNAP" && args == 4) {
+    } else if (verb == "SNAP" && args == 6) {
         return decodeSnapshot(parts);
     } else if (verb == "KO" && args == 2) {
         const auto mine = parseNumber(parts[1], 0, kKosToWin);

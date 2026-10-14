@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "app/duel.hpp"
@@ -80,6 +81,21 @@ TEST_CASE("duel: snapshots go out on the interval and only when changed") {
     CHECK(wire.sent[0].starts_with("SNAP "));
     duel.update(kSnapshotIntervalMs);  // nothing changed on the board
     CHECK(wire.sent.size() == 1);
+}
+
+TEST_CASE("duel: holding a piece sends a snapshot even when the board looks the same") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.update(kSnapshotIntervalMs);
+    REQUIRE(wire.sent.size() == 1);
+    duel.game()->apply(Action::Hold);
+    duel.update(kSnapshotIntervalMs);
+    REQUIRE(wire.sent.size() == 2);
+    const auto snapshot = decode(wire.sent[1]);
+    REQUIRE(snapshot.has_value());
+    REQUIRE(std::holds_alternative<Snapshot>(*snapshot));
+    CHECK(std::get<Snapshot>(*snapshot).holdLocked);
 }
 
 TEST_CASE("duel: incoming attacks queue garbage on the local game") {
@@ -200,7 +216,7 @@ TEST_CASE("duel: opponent snapshots are kept for display") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    Snapshot snapshot{500, 2, 1, {}};
+    Snapshot snapshot{.score = 500, .lines = 2, .pending = 1};
     snapshot.cells[0] = PieceType::Garbage;
     duel.onMessage(encode(snapshot));
     CHECK(duel.opponent() == snapshot);

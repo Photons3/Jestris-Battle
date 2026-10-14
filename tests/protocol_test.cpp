@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -10,16 +12,24 @@
 using namespace tetris;
 
 TEST_CASE("protocol: every message survives an encode/decode round trip") {
-    Snapshot snapshot{1200, 7, 3, {}};
+    Snapshot snapshot{.score = 1200, .lines = 7, .pending = 3};
     snapshot.cells[0] = PieceType::Garbage;
     snapshot.cells[kSnapshotCells - 1] = PieceType::I;
     snapshot.cells[1] = PieceType::Bomb;
+    snapshot.hold = PieceType::T;
+    snapshot.holdLocked = true;
+    snapshot.next = {PieceType::I, PieceType::O, PieceType::S, PieceType::Z, PieceType::L};
+    Snapshot unlockedHold{};
+    unlockedHold.hold = PieceType::J;
+    unlockedHold.next = snapshot.next;
     const std::vector<Message> messages{CreateRoom{3},
                                         JoinRoom{"ABCD"},
                                         RoomCreated{"WXYZ"},
                                         StartMatch{4000000000u, 15},
                                         Attack{4},
                                         snapshot,
+                                        unlockedHold,
+                                        Snapshot{},
                                         Dead{},
                                         Rematch{},
                                         OpponentLeft{},
@@ -51,22 +61,44 @@ TEST_CASE("protocol: the wire format is plain text") {
     CHECK(encode(MatchOver{MatchResult::Lose, MatchReason::Time, 3, 9}) == "OVER LOSE TIME 3 9");
     CHECK(encode(MatchOver{MatchResult::Draw, MatchReason::Time, 4, 4}) == "OVER DRAW TIME 4 4");
     CHECK(encode(StartMatch{42, 1}) == "START 42 1");
-    CHECK(encode(Snapshot{}) == "SNAP 0 0 0 " + std::string(kSnapshotCells, '.'));
+    const std::string empty(kSnapshotCells, '.');
+    CHECK(encode(Snapshot{}) == "SNAP 0 0 0 . ..... " + empty);
     Snapshot bomb{};
     bomb.cells[0] = PieceType::Bomb;
-    CHECK(encode(bomb) == "SNAP 0 0 0 B" + std::string(kSnapshotCells - 1, '.'));
+    CHECK(encode(bomb) == "SNAP 0 0 0 . ..... B" + std::string(kSnapshotCells - 1, '.'));
+    Snapshot held{};
+    held.hold = PieceType::T;
+    held.holdLocked = true;
+    held.next = {PieceType::I, PieceType::O, PieceType::S, PieceType::Z, PieceType::L};
+    CHECK(encode(held) == "SNAP 0 0 0 t IOSZL " + empty);
+    held.holdLocked = false;
+    CHECK(encode(held) == "SNAP 0 0 0 T IOSZL " + empty);
 }
 
 TEST_CASE("protocol: malformed messages are rejected") {
     for (std::string_view text : {"", "HELLO", "DEAD ", "DEAD now", "ATK", "ATK 0", "ATK -1", "ATK x", "ATK 41",
                                   "JOIN abcd", "JOIN ABC", "JOIN ABCDE", "CREATE 0", "CREATE 16", "START 1",
-                                  "START -1 1", "SNAP 0 0 0 ...", "ERR", "ERR "}) {
+                                  "START -1 1", "SNAP 0 0 0 . ..... ...", "ERR", "ERR "}) {
         CAPTURE(text);
         CHECK_FALSE(decode(text).has_value());
     }
-    std::string badCell = "SNAP 0 0 0 " + std::string(kSnapshotCells, '.');
+    std::string badCell = "SNAP 0 0 0 . ..... " + std::string(kSnapshotCells, '.');
     badCell.back() = 'Q';
     CHECK_FALSE(decode(badCell).has_value());
+}
+
+TEST_CASE("protocol: malformed snapshot hold and next fields are rejected") {
+    const std::string cells(kSnapshotCells, '.');
+    CHECK(decode("SNAP 0 0 0 t IOSZL " + cells).has_value());
+    CHECK_FALSE(decode("SNAP 0 0 0 " + cells).has_value());  // the old form, without hold and next
+    for (std::string_view hold : {"G", "B", "g", "b", "x", "TT", ""}) {
+        CAPTURE(hold);
+        CHECK_FALSE(decode("SNAP 0 0 0 " + std::string(hold) + " IOSZL " + cells).has_value());
+    }
+    for (std::string_view next : {"IOSZ", "IOSZLJ", "IOSZG", "IOSZB", "iosz l", "ioszl"}) {
+        CAPTURE(next);
+        CHECK_FALSE(decode("SNAP 0 0 0 . " + std::string(next) + " " + cells).has_value());
+    }
 }
 
 TEST_CASE("protocol: malformed KO and OVER messages are rejected") {
@@ -81,7 +113,7 @@ TEST_CASE("protocol: malformed KO and OVER messages are rejected") {
 
 TEST_CASE("protocol: a snapshot shows the visible field with the falling piece merged in") {
     Game game(seedWithFirst(PieceType::T), 1);
-    CHECK(snapshotOf(game) == Snapshot{});  // the spawned piece is above the visible field
+    for (Cell cell : snapshotOf(game).cells) CHECK_FALSE(cell);  // the spawned piece is above the visible field
     game.receiveGarbage(3);
     CHECK(snapshotOf(game).pending == 3);
     dropToFloor(game);
@@ -92,6 +124,29 @@ TEST_CASE("protocol: a snapshot shows the visible field with the falling piece m
         CHECK(*cell == PieceType::T);
     }
     CHECK(filled == 4);
+}
+
+TEST_CASE("protocol: a snapshot carries the hold and the next queue") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    const auto nextOf = [](const Game& g) {
+        std::array<Cell, kSnapshotNext> next{};
+        const std::vector<PieceType> pieces = g.next(kSnapshotNext);
+        std::copy(pieces.begin(), pieces.end(), next.begin());
+        return next;
+    };
+    Snapshot snapshot = snapshotOf(game);
+    CHECK_FALSE(snapshot.hold);
+    CHECK_FALSE(snapshot.holdLocked);
+    CHECK(snapshot.next == nextOf(game));
+    game.apply(Action::Hold);
+    snapshot = snapshotOf(game);
+    CHECK(snapshot.hold == PieceType::T);
+    CHECK(snapshot.holdLocked);
+    CHECK(snapshot.next == nextOf(game));
+    game.resetBoard();
+    snapshot = snapshotOf(game);
+    CHECK_FALSE(snapshot.hold);
+    CHECK_FALSE(snapshot.holdLocked);
 }
 
 TEST_CASE("protocol: name rules") {
