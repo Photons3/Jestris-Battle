@@ -37,10 +37,11 @@ const (
 )
 
 // Hub gathers browsers into rooms of up to maxRoomPlayers, starts a match when the host sends BEGIN, relays
-// game messages between the match's participants and referees each match: a duel for 2, a royale for 3 or more. It handles HELLO, CREATE, JOIN,
-// LIST, UNLIST, QUICK, BEGIN, ATK, DEAD and SNAP itself; anything else inside a room, including the verbs
-// only the server sends (ROOM, PLAYERS, START, KO, OVER, OUT, LEFT, ERR, ROOMS), is dropped. Lobby watchers
-// get the full ROOMS list whenever a listed room appears, disappears, or changes its player count or host.
+// game messages between the match's participants and referees each match: a duel for 2, a royale for 3 or
+// more. It handles HELLO, CREATE, JOIN, LIST, UNLIST, QUICK, BEGIN, ATK, DEAD and SNAP itself; anything
+// else inside a room, including the verbs only the server sends (ROOM, PLAYERS, START, KO, OVER, OUT, LEFT,
+// ERR, ROOMS), is dropped. Lobby watchers get the full ROOMS list whenever a listed room appears,
+// disappears, or changes its player count or host.
 type Hub struct {
 	mu          sync.Mutex
 	rooms       map[string]*room
@@ -525,12 +526,12 @@ func (h *Hub) attack(p *player, arg string) []outgoing {
 		return nil
 	}
 	m.sent[p] += n
-	to := m.opponent(p)
-	if m.royale {
-		living := slices.DeleteFunc(slices.Clone(m.players), func(q *player) bool { return q == p || !m.alive[q] })
-		to = living[h.pickTarget(len(living))]
+	msg := fmt.Sprintf("ATK %d", n)
+	if !m.royale {
+		return []outgoing{{m.opponent(p), msg}}
 	}
-	return []outgoing{{to, fmt.Sprintf("ATK %d", n)}}
+	living := slices.DeleteFunc(slices.Clone(m.players), func(q *player) bool { return q == p || !m.alive[q] })
+	return []outgoing{{living[h.pickTarget(len(living))], msg}}
 }
 
 // knockOut handles DEAD: a KO in a duel, an elimination in a royale.

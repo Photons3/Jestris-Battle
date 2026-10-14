@@ -858,10 +858,9 @@ func TestEliminatedPlayersCannotAttackOrDieAgain(t *testing.T) {
 	expectAll("OUT 2 3", c...)
 	c[1].send("ATK 3")
 	c[1].send("DEAD")
-	c[1].flush()
-	c[0].send("SNAP probe")
-	c[2].expect("SNAP 1 probe") // an ATK or OUT would have reached Cat first
-	c[1].expect("SNAP 1 probe")
+	c[1].flush() // Bob's ATK and DEAD were handled, and anything they caused was written before this
+	c[0].flush() // a stray ATK (to Ann, the default pick) or OUT would arrive instead of the ERR
+	c[2].flush()
 }
 
 // DEAD racing the end of a royale: the second DEAD arrives after OUT ... 1.
