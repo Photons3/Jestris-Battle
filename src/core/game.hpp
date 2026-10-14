@@ -14,7 +14,8 @@
 namespace tetris {
 
 enum class GameState { Playing, Clearing, Paused, GameOver };
-enum class Action { Left, Right, RotateCW, RotateCCW, HardDrop, Hold, Pause };
+// LeftWall and RightWall move the piece as far as it goes, for auto-repeat at ARR 0.
+enum class Action { Left, Right, RotateCW, RotateCCW, HardDrop, Hold, Pause, LeftWall, RightWall };
 enum class GameEventType {
     Moved, Rotated, Held, HardDropped, Locked, LinesCleared, BombExploded, GarbageRose, LevelUp, ToppedOut, Combo,
     SpecialClear
@@ -131,6 +132,7 @@ private:
     void step();
     void spawn(PieceType type);
     bool tryMove(int dx, int dy);
+    void shiftToWall(int dx);
     void rotate(RotateDir dir);
     void updateLowest();
     void onPlayerMoved();

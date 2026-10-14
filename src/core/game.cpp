@@ -197,6 +197,10 @@ void Game::apply(Action action) {
     case Action::Hold:
         holdPiece();
         break;
+    case Action::LeftWall:
+    case Action::RightWall:
+        shiftToWall(action == Action::LeftWall ? -1 : 1);
+        break;
     case Action::Pause:
         break;
     }
@@ -274,6 +278,15 @@ bool Game::tryMove(int dx, int dy) {
     rotatedLast_ = false;
     updateLowest();
     return true;
+}
+
+// One lock reset and one Moved event however far it goes, like a single move; nothing if it is already blocked.
+void Game::shiftToWall(int dx) {
+    bool moved = false;
+    while (tryMove(dx, 0)) moved = true;
+    if (!moved) return;
+    onPlayerMoved();
+    emit(GameEventType::Moved);
 }
 
 void Game::rotate(RotateDir dir) {

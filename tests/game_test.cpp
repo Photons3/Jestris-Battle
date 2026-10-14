@@ -68,6 +68,38 @@ TEST_CASE("game: moving stops at the wall") {
     CHECK(game.active().pos.x == 0);
 }
 
+TEST_CASE("game: a wall shift moves all the way to the wall") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.apply(Action::RightWall);
+    CHECK(game.active().pos.x == 7);
+    game.apply(Action::LeftWall);
+    CHECK(game.active().pos.x == 0);
+}
+
+TEST_CASE("game: a wall shift stops at a block in the way") {
+    Board board;
+    board.set(8, 20, PieceType::Z);  // in the spawned T's row, two columns right of it
+    Game game(seedWithFirst(PieceType::T), 1, board);
+    REQUIRE(game.active().pos.y == 21);  // the flat of the T is row 20
+    game.apply(Action::RightWall);
+    CHECK(game.active().pos.x == 5);
+}
+
+TEST_CASE("game: a wall shift restarts the lock delay once, like a single move") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    dropToFloor(game);
+    for (int i = 0; i < kMaxLockResets; ++i) {
+        game.tick(100);
+        game.apply(i % 2 == 0 ? Action::LeftWall : Action::RightWall);
+    }
+    game.tick(100);
+    game.apply(Action::LeftWall);  // 16th move: timer keeps running
+    game.tick(kLockDelayMs - 101);
+    CHECK(countFilled(game.board()) == 0);
+    game.tick(1);
+    CHECK(countFilled(game.board()) == 4);
+}
+
 TEST_CASE("game: rotating uses SRS") {
     Game game(seedWithFirst(PieceType::T), 1);
     game.apply(Action::RotateCW);
@@ -871,6 +903,14 @@ TEST_CASE("game events: a blocked move is silent") {
     Game game(seedWithFirst(PieceType::T), 1);
     for (int i = 0; i < 5; ++i) game.apply(Action::Left);  // only 3 columns to the wall
     CHECK(game.takeEvents() == Events{kMoved, kMoved, kMoved});
+}
+
+TEST_CASE("game events: a wall shift reports one move, and nothing once at the wall") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.apply(Action::LeftWall);
+    CHECK(game.takeEvents() == Events{kMoved});
+    game.apply(Action::LeftWall);
+    CHECK(game.takeEvents().empty());
 }
 
 TEST_CASE("game events: a hard drop reports the drop, not a lock") {
