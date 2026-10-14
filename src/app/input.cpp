@@ -1,11 +1,21 @@
 #include "app/input.hpp"
 
+#include <algorithm>
+
 namespace tetris {
 namespace {
 
 Action shiftAction(int dir) { return dir < 0 ? Action::Left : Action::Right; }
 
 }  // namespace
+
+Handling clampHandling(Handling handling) {
+    handling.dasMs = std::clamp(handling.dasMs, kMinDasMs, kMaxDasMs);
+    handling.arrMs = std::clamp(handling.arrMs, kMinArrMs, kMaxArrMs);
+    if (handling.softDropFactor != kSoftDropInstant)
+        handling.softDropFactor = std::clamp(handling.softDropFactor, kMinSdf, kMaxSdf);
+    return handling;
+}
 
 void InputMapper::press(Key key, std::vector<Action>& out) {
     switch (key) {
@@ -55,17 +65,28 @@ void InputMapper::release(Key key) {
 
 void InputMapper::tick(std::vector<Action>& out) {
     if (dir_ == 0) return;
-    if (dasMs_ < kDasMs) {
-        if (++dasMs_ == kDasMs) out.push_back(shiftAction(dir_));
+    if (dasMs_ < handling_.dasMs) {
+        if (++dasMs_ < handling_.dasMs) return;
+        if (handling_.arrMs > 0) {  // the shift that ends DAS; at ARR 0 the wall shift below takes its place
+            out.push_back(shiftAction(dir_));
+            return;
+        }
+    }
+    if (handling_.arrMs == 0) {  // every tick, so a new or rotated piece slides at once
+        out.push_back(dir_ < 0 ? Action::LeftWall : Action::RightWall);
         return;
     }
-    if (++arrMs_ >= kArrMs) {
+    if (++arrMs_ >= handling_.arrMs) {
         arrMs_ = 0;
         out.push_back(shiftAction(dir_));
     }
 }
 
-void InputMapper::releaseAll() { *this = InputMapper{}; }
+void InputMapper::releaseAll() {
+    const Handling handling = handling_;
+    *this = InputMapper{};
+    handling_ = handling;
+}
 
 void InputMapper::startShift(int dir, std::vector<Action>& out) {
     dir_ = dir;
