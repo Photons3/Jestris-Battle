@@ -183,14 +183,15 @@ void drawComboLabel(ImDrawList* dl, const Layout& l, const Fonts& fonts, const C
     dl->AddText(fonts.hud, l.cell * 0.6f, pos, IM_COL32(255, 220, 60, static_cast<int>(combo.alpha() * 255.0f)), text);
 }
 
+// `comboUnderHold` is false in duels, where the combo sits in the center column instead.
 void drawPlayfield(ImDrawList* dl, const Layout& layout, const Game& game, const Fonts& fonts,
-                   const ComboLabel& combo) {
+                   const ComboLabel& combo, bool comboUnderHold) {
     drawWell(dl, layout);
     if (game.state() == GameState::Paused) return;
     drawBoardCells(dl, layout, game);
     if (game.state() == GameState::Playing) drawActivePiece(dl, layout, game);
     drawSidePanels(dl, layout, game, fonts);
-    drawComboLabel(dl, layout, fonts, combo);
+    if (comboUnderHold) drawComboLabel(dl, layout, fonts, combo);
 }
 
 // Layout A, left to right, in cells: hold 5 | your well 10 | meter | next 5 | center 7 | meter | their well 10 |
@@ -296,8 +297,15 @@ void drawCentered(ImDrawList* dl, const Fonts& fonts, float size, float centerX,
     dl->AddText(fonts.hud, size, ImVec2(centerX - extent.x * 0.5f, y), col, text);
 }
 
-// TIME, VS, KO and SENT, with your number on the left.
-void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout, const DuelSession& duel) {
+void drawCenteredShadow(ImDrawList* dl, const Fonts& fonts, float size, float centerX, float y, const char* text,
+                        ImU32 col, float offset, ImU32 shadow = IM_COL32(0, 0, 0, 220)) {
+    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    drawShadowText(dl, fonts, size, ImVec2(centerX - extent.x * 0.5f, y), col, text, offset, shadow);
+}
+
+// TIME, the match target, your COMBO and SENT, with your number on the left. The plates already show the KOs.
+void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout, const DuelSession& duel,
+                    const ComboLabel& combo) {
     const float cell = layout.mine.cell;
     const float cx = layout.left + (kCenterCol + kCenterColumns * 0.5f) * cell;
     const ImU32 label = IM_COL32(150, 160, 190, 255);
@@ -311,11 +319,16 @@ void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout
     drawCentered(dl, fonts, cell * 1.1f, cx, y + cell * 0.8f, text,
                  seconds < kTimeWarningSeconds ? IM_COL32(255, 70, 70, 255) : value);
     y += cell * 4.0f;
-    drawCentered(dl, fonts, cell * 1.4f, cx, y, "VS", IM_COL32(255, 200, 60, 255));
+    std::snprintf(text, sizeof text, "FIRST TO %d", kKosToWin);  // explains the pips on the plates
+    drawCenteredShadow(dl, fonts, cell * 0.45f, cx, y, text, color(kKoPipColor, 1.0f), bevelFor(cell * 0.45f));
     y += cell * 3.5f;
-    std::snprintf(text, sizeof text, "%d : %d", duel.kosMine(), duel.kosTheirs());
-    drawCentered(dl, fonts, cell * 0.5f, cx, y, "KO", label);
-    drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, text, value);
+    drawCentered(dl, fonts, cell * 0.5f, cx, y, "COMBO", label);
+    if (combo.shown > 0) {  // fades like the solo label once the combo breaks
+        std::snprintf(text, sizeof text, "x%d", combo.shown);
+        drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, text, color(kKoPipColor, combo.alpha()));
+    } else {
+        drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, "-", label);
+    }
     y += cell * 3.5f;
     std::snprintf(text, sizeof text, "%d : %d", duel.sentMine(), duel.sentTheirs());
     drawCentered(dl, fonts, cell * 0.5f, cx, y, "SENT", label);
@@ -406,9 +419,9 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     drawGridBackground(cell, layout.mine.origin);
     ImDrawList* dl = beginBoardWindow();
     drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, duel.kosMine());
-    drawPlayfield(dl, layout.mine, game, fonts, combo);
+    drawPlayfield(dl, layout.mine, game, fonts, combo, false);
     drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage());
-    drawScoreboard(dl, fonts, layout, duel);
+    drawScoreboard(dl, fonts, layout, duel, combo);
     drawGarbageMeter(dl, layout.left + kTheirMeterCol * cell, wellBottom(layout.theirs), cell,
                      duel.opponent().pending);
     drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, kTheirPlateColor, duel.kosTheirs());
@@ -630,7 +643,7 @@ void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo) {
     const Layout layout = computeLayout();
     drawGridBackground(layout.cell, layout.origin);
     ImDrawList* dl = beginBoardWindow();
-    drawPlayfield(dl, layout, game, fonts, combo);
+    drawPlayfield(dl, layout, game, fonts, combo, true);
     ImGui::End();
 }
 
