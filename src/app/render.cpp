@@ -230,28 +230,35 @@ DuelLayout computeDuelLayout() {
 float wellBottom(const Layout& l) { return cellTopLeft(l, 0, 0).y + l.cell; }
 float wellTop(const Layout& l) { return cellTopLeft(l, 0, kVisibleHeight - 1).y; }
 
+constexpr Rgb kMyPlateColor{30, 90, 220};
+constexpr Rgb kTheirPlateColor{220, 70, 30};
+constexpr Rgb kKoPipColor{255, 210, 40};
+constexpr Rgb kBackdropColor{6, 10, 28};
+constexpr Rgb kGridColor{16, 24, 50};
+
+// A flat dark fill with a faint one-cell grid. One line passes through `anchor`, so the grid lines up with a well.
+// The lines are 1px filled rects rather than AddLine, which would anti-alias them across two pixels.
+void drawGridBackground(float cell, ImVec2 anchor) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* bg = ImGui::GetBackgroundDrawList();
+    const ImVec2 end(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
+    bg->AddRectFilled(vp->Pos, end, color(kBackdropColor, 1.0f));
+    if (cell < 2.0f) return;  // a window too small for the board; the steps below would never advance
+    const ImU32 line = color(kGridColor, 1.0f);
+    const float startX = anchor.x - std::ceil((anchor.x - vp->Pos.x) / cell) * cell;
+    for (float x = std::floor(startX); x < end.x; x += cell)
+        bg->AddRectFilled(ImVec2(x, vp->Pos.y), ImVec2(x + 1.0f, end.y), line);
+    const float startY = anchor.y - std::ceil((anchor.y - vp->Pos.y) / cell) * cell;
+    for (float y = std::floor(startY); y < end.y; y += cell)
+        bg->AddRectFilled(ImVec2(vp->Pos.x, y), ImVec2(end.x, y + 1.0f), line);
+}
+
 // Red bar showing garbage waiting to rise, one cell tall per line, with its left edge at `x`.
 void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending) {
     if (pending <= 0) return;
     const float height = static_cast<float>(std::min(pending, kVisibleHeight)) * cell;
     dl->AddRectFilled(ImVec2(x, bottom - height), ImVec2(x + 0.35f * cell, bottom), IM_COL32(230, 40, 40, 255));
 }
-
-// ImGui has no radial gradient, so stacked translucent discs fake one over a dark navy fill.
-void drawDuelBackground() {
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImDrawList* bg = ImGui::GetBackgroundDrawList();
-    bg->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), IM_COL32(6, 10, 28, 255));
-    constexpr int kRings = 16;
-    const float radius = std::max(vp->Size.x, vp->Size.y) * 0.6f;
-    for (int i = 0; i < kRings; ++i)
-        bg->AddCircleFilled(vp->GetCenter(), radius * (1.0f - static_cast<float>(i) / kRings),
-                            IM_COL32(30, 50, 110, 14));
-}
-
-constexpr Rgb kMyPlateColor{30, 90, 220};
-constexpr Rgb kTheirPlateColor{220, 70, 30};
-constexpr Rgb kKoPipColor{255, 210, 40};
 
 // A nameplate built like one wide mino: flat player color, the cells' bevel, the name with a hard drop shadow,
 // and a row of KO slots on the right that fill with gold mini-blocks as KOs land.
@@ -396,7 +403,7 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     const char* theirs = duel.opponentName().empty() ? "FOE" : duel.opponentName().c_str();
     const DuelLayout layout = computeDuelLayout();
     const float cell = layout.mine.cell;
-    drawDuelBackground();
+    drawGridBackground(cell, layout.mine.origin);
     ImDrawList* dl = beginBoardWindow();
     drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, duel.kosMine());
     drawPlayfield(dl, layout.mine, game, fonts, combo);
@@ -620,8 +627,10 @@ UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsM
 }
 
 void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo) {
+    const Layout layout = computeLayout();
+    drawGridBackground(layout.cell, layout.origin);
     ImDrawList* dl = beginBoardWindow();
-    drawPlayfield(dl, computeLayout(), game, fonts, combo);
+    drawPlayfield(dl, layout, game, fonts, combo);
     ImGui::End();
 }
 
