@@ -74,6 +74,14 @@ void drawBevelRect(ImDrawList* dl, ImVec2 p, ImVec2 q, float bevel, Rgb fill, Rg
     dl->AddRectFilled(ImVec2(q.x - bevel, p.y), q, color(bottomRight, alpha));  // right
 }
 
+// Text with a hard, unblurred shadow `offset` points down and right, like the nameplates.
+void drawShadowText(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, ImU32 col, const char* text,
+                    float offset, ImU32 shadow = IM_COL32(0, 0, 0, 220)) {
+    pos = ImVec2(std::floor(pos.x), std::floor(pos.y));
+    dl->AddText(fonts.hud, size, ImVec2(pos.x + offset, pos.y + offset), shadow, text);
+    dl->AddText(fonts.hud, size, pos, col, text);
+}
+
 void drawCell(ImDrawList* dl, ImVec2 p, float size, PieceType type, float alpha) {
     const Rgb base = pieceRgb(type);
     drawBevelRect(dl, p, ImVec2(p.x + size, p.y + size), bevelFor(size), base, lighten(base), darken(base), alpha);
@@ -257,9 +265,8 @@ void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float t
 
     const float textSize = std::floor(cell * 0.7f);
     const ImVec2 textPos(p0.x + std::floor(0.35f * cell), p0.y + std::floor((p1.y - p0.y - textSize) * 0.5f));
-    dl->AddText(fonts.hud, textSize, ImVec2(textPos.x + bevel, textPos.y + bevel), color(darken(darken(base)), 1.0f),
-                name);
-    dl->AddText(fonts.hud, textSize, textPos, IM_COL32(255, 255, 255, 255), name);
+    drawShadowText(dl, fonts, textSize, textPos, IM_COL32(255, 255, 255, 255), name, bevel,
+                   color(darken(darken(base)), 1.0f));
 
     const float pip = std::floor(cell * 0.5f);
     const float gap = std::floor(cell * 0.2f);
