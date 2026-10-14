@@ -11,7 +11,7 @@ Solo play and the desktop build are unchanged. Where this spec contradicts the L
 
 ## Goals and non-goals
 - **Goals:** bomb garbage with chain detonation; bomb rows counted as cleared lines for the attack; KO-and-reset on top-out; first to 3 KOs wins; a 2:00 match timer decided by KOs, then lines sent; the server deciding the result so both players always see the same outcome; the layout A duel screen.
-- **Non-goals:** a configurable timer length in the UI, showing the opponent's hold and next queue, T-spin/combo/back-to-back bonuses, avatars or player names (bars say YOU / FOE), sound, changes to solo mode.
+- **Non-goals:** a configurable timer length in the UI, showing the opponent's hold and next queue (added later, see `2026-10-14-opponent-hold-next-design.md`), T-spin/combo/back-to-back bonuses, avatars or player names (bars say YOU / FOE), sound, changes to solo mode.
 
 ## 1. Bomb garbage (`tetris_core`)
 
@@ -148,7 +148,7 @@ Solo mode keeps its current look. The duel view (Countdown, Playing and Result) 
    Your number is always on the left.
 6. **The opponent's garbage meter**, on the inner edge of their well.
 7. **The opponent's well, the same cell size as yours**, with a red-to-orange "FOE" name bar and KO pips.
-8. **The opponent's SCORE and LINES.** There is no hold or next for the opponent; the snapshot doesn't carry them.
+8. **The opponent's SCORE and LINES.** There is no hold or next for the opponent; the snapshot doesn't carry them. (Added later: `2026-10-14-opponent-hold-next-design.md` stacks HOLD and NEXT above these.)
 
 `computeDuelLayout` budgets about 45 cell-widths (hold 5, well 10, next 5, meter 1, center 7, meter 1, well 10, stats 5, plus gutters) and 22 rows plus the name bar. The cell size is the smaller of the width fit and the height fit, so phone landscape works at a smaller scale. The reference mockup is `.superpowers/brainstorm/*/content/duel-layout-a-v2.html` (local only, gitignored).
 
