@@ -51,6 +51,14 @@ int attackLines(const std::vector<Message>& messages) {
     return lines;
 }
 
+// A match ends with OVER, then PLAYERS with nobody in a match. Returns the OVER.
+MatchOver endOf(const std::vector<Message>& got) {
+    REQUIRE(got.size() >= 2);
+    REQUIRE(std::holds_alternative<MatchOver>(got[got.size() - 2]));
+    REQUIRE(std::holds_alternative<Roster>(got.back()));
+    return std::get<MatchOver>(got[got.size() - 2]);
+}
+
 // Creates a room and runs out the countdown; drops what was received so far.
 void startPlaying(LocalMatch& match) {
     match.send(encode(CreateRoom{1, false}));
@@ -106,11 +114,11 @@ TEST_CASE("local match: three deaths lose by KOs") {
     startPlaying(match);
     for (int i = 0; i < 3; ++i) match.send(encode(Dead{}));
     const auto got = drain(match);
-    REQUIRE(got.size() == 4);
+    REQUIRE(got.size() == 5);
     CHECK(std::get<KoCounts>(got[0]) == KoCounts{0, 1});
     CHECK(std::get<KoCounts>(got[1]) == KoCounts{0, 2});
     CHECK(std::get<KoCounts>(got[2]) == KoCounts{0, 3});
-    const MatchOver over = std::get<MatchOver>(got[3]);
+    const MatchOver over = endOf(got);
     CHECK(over.result == MatchResult::Lose);
     CHECK(over.reason == MatchReason::KOs);
 }
@@ -130,8 +138,7 @@ TEST_CASE("local match: burying the bot wins by KOs") {
     REQUIRE(!kos.empty());
     CHECK(kos.back().mine == 3);
     CHECK(kos.back().theirs == 0);
-    REQUIRE(std::holds_alternative<MatchOver>(got.back()));
-    const MatchOver over = std::get<MatchOver>(got.back());
+    const MatchOver over = endOf(got);
     CHECK(over.result == MatchResult::Win);
     CHECK(over.reason == MatchReason::KOs);
     CHECK(over.mySent == sent);
@@ -148,12 +155,10 @@ TEST_CASE("local match: time up gives the verdict on the totals") {
     CHECK(countOf<MatchOver>(got) == 0);
     match.update(1);
     for (const Message& m : drain(match)) got.push_back(m);
-    REQUIRE(!got.empty());
-    REQUIRE(std::holds_alternative<MatchOver>(got.back()));
+    const MatchOver over = endOf(got);
     CHECK(countOf<MatchOver>(got) == 1);
     const std::vector<KoCounts> kos = allOf<KoCounts>(got);
     const KoCounts last = kos.empty() ? KoCounts{} : kos.back();
-    const MatchOver over = std::get<MatchOver>(got.back());
     CHECK(over.reason == MatchReason::Time);
     CHECK(over == verdictFor(last.mine, last.theirs, 3, attackLines(got), MatchReason::Time));
 }
@@ -177,8 +182,8 @@ TEST_CASE("local match: the bot stops at 0:00 and waits out the grace like the h
     CHECK(match.botGame()->active().rotation == pieceAtZero.rotation);
     match.update(1);
     const auto end = drain(match);
-    REQUIRE(end.size() == 1);
-    CHECK(std::get<MatchOver>(end[0]).reason == MatchReason::Time);
+    REQUIRE(end.size() == 2);
+    CHECK(endOf(end).reason == MatchReason::Time);
 }
 
 TEST_CASE("local match: a long update still plays and ends on time") {
@@ -192,9 +197,7 @@ TEST_CASE("local match: a long update still plays and ends on time") {
     CHECK(snapshots.back().score > 0);  // pieces were hard-dropped
     REQUIRE(match.botGame() != nullptr);
     CHECK(match.botGame()->lines() > 0);
-    REQUIRE(!got.empty());
-    REQUIRE(std::holds_alternative<MatchOver>(got.back()));
-    CHECK(std::get<MatchOver>(got.back()).reason == MatchReason::Time);
+    CHECK(endOf(got).reason == MatchReason::Time);
 }
 
 TEST_CASE("local match: late and early messages are ignored") {
@@ -238,13 +241,40 @@ TEST_CASE("local match: BEGIN after OVER starts the next match") {
 
     match.send(encode(Begin{}));
     const auto again = drain(match);
-    REQUIRE(again.size() == 1);  // no new ROOM or PLAYERS
+    REQUIRE(again.size() == 2);  // START, then PLAYERS with the flags set; no new ROOM
     const StartMatch restart = std::get<StartMatch>(again[0]);
     CHECK(restart.seed != start.seed);
     CHECK(restart.startLevel == 2);
     CHECK(restart.players == std::vector<int>{1, 2});
     REQUIRE(match.botGame() != nullptr);
     CHECK(match.botGame()->score() == 0);
+}
+
+TEST_CASE("local match: OVER is followed by PLAYERS with nobody in a match") {
+    LocalMatch match(BotLevel::Easy, 10);
+    match.send(encode(Hello{"Sam"}));
+    startPlaying(match);
+    for (int i = 0; i < 3; ++i) match.send(encode(Dead{}));
+    const auto got = drain(match);
+    REQUIRE(got.size() >= 2);
+    REQUIRE(std::holds_alternative<MatchOver>(got[got.size() - 2]));
+    CHECK(std::get<Roster>(got.back()) == Roster{1, {{1, "Sam", false}, {2, "Bot-Easy", false}}});
+}
+
+TEST_CASE("local match: each later START is followed by PLAYERS with both in the match") {
+    LocalMatch match(BotLevel::Easy, 11);
+    match.send(encode(Hello{"Sam"}));
+    startPlaying(match);
+    for (int round = 0; round < 2; ++round) {
+        for (int i = 0; i < 3; ++i) match.send(encode(Dead{}));
+        drain(match);
+        match.send(encode(Begin{}));
+        const auto got = drain(match);
+        REQUIRE(got.size() == 2);
+        CHECK(std::holds_alternative<StartMatch>(got[0]));
+        CHECK(std::get<Roster>(got[1]) == Roster{1, {{1, "Sam", true}, {2, "Bot-Easy", true}}});
+        match.update(kCountdownMs);
+    }
 }
 
 TEST_CASE("local match: a real duel session plays the bot") {

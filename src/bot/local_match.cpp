@@ -33,7 +33,7 @@ void LocalMatch::send(const std::string& text) {
                 startLevel_ = m.startLevel;
                 if (!entered_) {
                     queue(RoomEntered{"BOTS", 1});
-                    queue(Roster{1, {{1, humanName_, true}, {2, botName(level_), true}}});
+                    queueRoster(true);
                     entered_ = true;
                 }
                 start();
@@ -44,7 +44,9 @@ void LocalMatch::send(const std::string& text) {
             } else if constexpr (std::is_same_v<T, Dead>) {
                 if (playing()) knockOut(false);
             } else if constexpr (std::is_same_v<T, Begin>) {
-                if (over_) start();
+                if (!over_) return;
+                start();
+                queueRoster(true);  // the server's order: START, then PLAYERS with the in-match flags
             }
         },
         *message);
@@ -113,7 +115,12 @@ void LocalMatch::knockOut(bool humanScores) {
 
 void LocalMatch::finish(MatchReason reason) {
     queue(verdictFor(kosHuman_, kosBot_, sentHuman_, sentBot_, reason));
+    queueRoster(false);  // like the server's PLAYERS after OVER: back between matches
     over_ = true;
+}
+
+void LocalMatch::queueRoster(bool inMatch) {
+    queue(Roster{1, {{1, humanName_, inMatch}, {2, botName(level_), inMatch}}});
 }
 
 }  // namespace tetris

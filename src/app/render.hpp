@@ -151,8 +151,9 @@ void drawSoloStatus(const SoloSession& solo, const Fonts& fonts);
 UiCommand drawSoloOverlay(const SoloSession& solo, bool newBest, const Fonts& fonts, StartMenu& menu);
 // A small MUTED label in the top-right corner, over every screen.
 void drawMutedBadge(const Fonts& fonts);
-// Lobby, waiting room, countdown, both boards and the result menu, depending on the session phase. `menu`
-// supplies our name, and the lobby writes the clicked room to it.
+// Lobby, connecting, the room screen with its roster, countdown, both boards and the result menu, depending on
+// the session phase. Room and Result end with the host's Start, or the wait for it, and Leave. `menu` supplies our
+// name, and the lobby writes the clicked room to it.
 UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
                    const AttackTrails& trails, StartMenu& menu);
 

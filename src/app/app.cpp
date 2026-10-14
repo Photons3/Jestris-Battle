@@ -290,6 +290,7 @@ void App::openDuel() {
 void App::openBotDuel() {
     if (connection) closeDuel();
     connection = std::make_unique<LocalMatch>(menu.botLevel, static_cast<std::uint32_t>(SDL_GetTicksNS()));
+    connection->send(encode(Hello{menu.playerName}));  // the roster shows our name, not "You"
     menu.error.clear();
     screen = Screen::Duel;
     duel.createRoom(menu.startLevel);

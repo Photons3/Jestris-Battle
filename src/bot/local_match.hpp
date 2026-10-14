@@ -38,6 +38,7 @@ private:
     void step();
     void knockOut(bool humanScores);
     void finish(MatchReason reason);
+    void queueRoster(bool inMatch);  // PLAYERS: the human hosts, and both are or aren't in a match
     void queue(const Message& message) { outbox_.push_back(encode(message)); }
 
     BotLevel level_;
