@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -125,22 +127,86 @@ func (c *client) expect(want string) {
 	}
 }
 
-// pair puts two fresh clients in room AAAA and consumes the first START.
+// next returns the next message c receives.
+func (c *client) next() string {
+	c.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, data, err := c.conn.Read(ctx)
+	if err != nil {
+		c.t.Fatalf("waiting for a message: %v", err)
+	}
+	return string(data)
+}
+
+// flush proves that everything c sent before has been handled and that nothing came back to c meanwhile:
+// a JOIN from inside a room always gets this error, and each connection is read in order.
+func (c *client) flush() {
+	c.t.Helper()
+	c.send("JOIN ZZZZ")
+	c.expect("ERR already in a room")
+}
+
+// createRoom dials a client named name that creates a room with the CREATE arguments args.
+func createRoom(t *testing.T, srv *httptest.Server, name, args string) *client {
+	t.Helper()
+	c := dial(t, srv)
+	c.send("HELLO " + name)
+	c.send("CREATE " + args)
+	c.expect("ROOM AAAA 1")
+	c.expect("PLAYERS 1 1:" + name + ":0")
+	return c
+}
+
+// joinRoom dials a client named name that joins room code and gets its ROOM line with an ID.
+func joinRoom(t *testing.T, srv *httptest.Server, code, name string) *client {
+	t.Helper()
+	c := dial(t, srv)
+	c.send("HELLO " + name)
+	c.send("JOIN " + code)
+	got := c.next()
+	id, err := strconv.Atoi(strings.TrimPrefix(got, "ROOM "+code+" "))
+	if !strings.HasPrefix(got, "ROOM "+code+" ") || err != nil || id < 1 || id > maxRoomPlayers {
+		t.Fatalf("got %q, want ROOM %s <id>", got, code)
+	}
+	return c
+}
+
+// pair puts Ann (host, ID 1) and Bob (ID 2) in room AAAA at level 3 and starts a duel, consuming START and PLAYERS.
 func pair(t *testing.T, srv *httptest.Server) (a, b *client) {
 	t.Helper()
-	a, b = dial(t, srv), dial(t, srv)
-	a.send("CREATE 3")
-	a.expect("ROOM AAAA")
-	b.send("JOIN AAAA")
-	a.expect("OPP Player")
-	b.expect("OPP Player")
-	a.expect("START 101 3")
-	b.expect("START 101 3")
+	a = createRoom(t, srv, "Ann", "3")
+	b = joinRoom(t, srv, "AAAA", "Bob")
+	a.expect("PLAYERS 1 1:Ann:0 2:Bob:0")
+	b.expect("PLAYERS 1 1:Ann:0 2:Bob:0")
+	a.send("BEGIN")
+	a.expect("START 101 3 1 2")
+	b.expect("START 101 3 1 2")
+	a.expect("PLAYERS 1 1:Ann:1 2:Bob:1")
+	b.expect("PLAYERS 1 1:Ann:1 2:Bob:1")
 	return a, b
 }
 
-func TestCreateAndJoinStartBothPlayers(t *testing.T) {
+// expectAll expects want on every client, in order.
+func expectAll(want string, clients ...*client) {
+	for _, c := range clients {
+		c.t.Helper()
+		c.expect(want)
+	}
+}
+
+func TestCreateJoinAndBeginStartBothPlayers(t *testing.T) {
 	pair(t, newTestServer(t))
+}
+
+func TestJoinSendsRoomAndRoster(t *testing.T) {
+	srv := newTestServer(t)
+	a := createRoom(t, srv, "Ann", "1")
+	b := dial(t, srv)
+	b.send("HELLO Bob")
+	b.send("JOIN AAAA")
+	b.expect("ROOM AAAA 2")
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
 }
 
 func TestGameMessagesAreRelayed(t *testing.T) {
@@ -148,41 +214,132 @@ func TestGameMessagesAreRelayed(t *testing.T) {
 	a.send("ATK 2")
 	b.expect("ATK 2")
 	b.send("SNAP 0 0 0 board")
-	a.expect("SNAP 0 0 0 board")
+	a.expect("SNAP 2 0 0 0 board")
 }
 
 func TestServerOnlyVerbsAreNotRelayed(t *testing.T) {
 	a, b := pair(t, newTestServer(t))
-	for _, forged := range []string{"ROOM ZZZZ", "START 1 1", "LEFT", "ERR boom", "KO 3 0", "OVER WIN KO 0 0", "OPP Zed"} {
+	for _, forged := range []string{"ROOM ZZZZ 1", "START 1 1 1 2", "LEFT", "ERR boom", "KO 3 0", "OVER WIN KO 0 0", "OPP Zed"} {
 		a.send(forged)
 	}
 	a.send("ATK 1")
 	b.expect("ATK 1")
 }
 
+func TestUnknownVerbsAreNotRelayed(t *testing.T) {
+	a, b := pair(t, newTestServer(t))
+	a.send("HELLO2 x")
+	a.send("ATK 1")
+	b.expect("ATK 1")
+	a.flush()
+}
+
 func TestJoinErrors(t *testing.T) {
-	srv := newTestServer(t)
-	c := dial(t, srv)
+	c := dial(t, newTestServer(t))
 	c.send("JOIN ZZZZ")
 	c.expect("ERR unknown room")
-	pair(t, srv)
+}
+
+func TestSixteenPlayersFitAndTheSeventeenthIsRefused(t *testing.T) {
+	srv := newTestServer(t)
+	createRoom(t, srv, "Ann", "1")
+	for i := 2; i <= maxRoomPlayers; i++ {
+		c := dial(t, srv)
+		c.send("JOIN AAAA")
+		c.expect(fmt.Sprintf("ROOM AAAA %d", i))
+	}
+	c := dial(t, srv)
+	c.send("JOIN AAAA")
+	c.expect("ERR room is full")
+}
+
+func TestDuplicateNamesGetSuffixes(t *testing.T) {
+	srv := newTestServer(t)
+	createRoom(t, srv, "Sam", "1")
+	joinRoom(t, srv, "AAAA", "Sam")
+	c := joinRoom(t, srv, "AAAA", "Sam")
+	c.expect("PLAYERS 1 1:Sam:0 2:Sam2:0 3:Sam3:0")
 	d := dial(t, srv)
-	d.send("JOIN AAAA")
-	d.expect("ERR room is full")
+	d.send("HELLO ABCDEFGHIJKL")
+	d.send("CREATE 1")
+	d.expect("ROOM AAAB 1")
+	d.expect("PLAYERS 1 1:ABCDEFGHIJKL:0")
+	e := joinRoom(t, srv, "AAAB", "ABCDEFGHIJKL")
+	e.expect("PLAYERS 1 1:ABCDEFGHIJKL:0 2:ABCDEFGHIJK2:0")
 }
 
-func TestBadStartLevelIsRejected(t *testing.T) {
-	c := dial(t, newTestServer(t))
-	c.send("CREATE 99")
-	c.expect("ERR bad start level")
+func TestUniqueName(t *testing.T) {
+	takenSet := func(names ...string) func(string) bool {
+		return func(s string) bool { return slices.Contains(names, s) }
+	}
+	cases := []struct {
+		base  string
+		taken []string
+		want  string
+	}{
+		{"Sam", nil, "Sam"},
+		{"Sam", []string{"Sam"}, "Sam2"},
+		{"Sam", []string{"Sam", "Sam2"}, "Sam3"},
+		{"Sam", []string{"Sam", "Sam3"}, "Sam2"},
+		{"ABCDEFGHIJKL", []string{"ABCDEFGHIJKL"}, "ABCDEFGHIJK2"},
+		{"ABCDEFGHIJKL", []string{"ABCDEFGHIJKL", "ABCDEFGHIJK2", "ABCDEFGHIJK3", "ABCDEFGHIJK4", "ABCDEFGHIJK5",
+			"ABCDEFGHIJK6", "ABCDEFGHIJK7", "ABCDEFGHIJK8", "ABCDEFGHIJK9"}, "ABCDEFGHIJ10"},
+	}
+	for _, tc := range cases {
+		if got := uniqueName(tc.base, takenSet(tc.taken...)); got != tc.want {
+			t.Errorf("uniqueName(%q, %v) = %q, want %q", tc.base, tc.taken, got, tc.want)
+		}
+	}
 }
 
-func TestMessagesOutsideARoomAreDropped(t *testing.T) {
-	c := dial(t, newTestServer(t))
-	c.send("ATK 2")
-	c.send("REMATCH")
-	c.send("CREATE 1")
-	c.expect("ROOM AAAA") // nothing was sent back for the first two
+func TestOnlyTheHostCanBegin(t *testing.T) {
+	srv, clock := newTestHub(t)
+	a := createRoom(t, srv, "Ann", "1")
+	a.send("BEGIN") // alone: nothing happens
+	a.flush()
+	b := joinRoom(t, srv, "AAAA", "Bob")
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
+	b.send("BEGIN") // not the host: nothing happens
+	b.flush()
+	a.send("BEGIN now") // BEGIN takes no arguments
+	a.flush()
+	a.send("BEGIN")
+	expectAll("START 101 1 1 2", a, b)
+	expectAll("PLAYERS 1 1:Ann:1 2:Bob:1", a, b)
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	if len(clock.timers) != 1 {
+		t.Errorf("%d timers armed, want 1", len(clock.timers))
+	}
+}
+
+func TestBeginDuringAMatchIsIgnored(t *testing.T) {
+	srv, clock := newTestHub(t)
+	a, b := pair(t, srv)
+	a.send("BEGIN")
+	a.flush()
+	a.send("ATK 1")
+	b.expect("ATK 1") // a second START would have reached b first
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	if len(clock.timers) != 1 {
+		t.Errorf("%d timers armed, want 1", len(clock.timers))
+	}
+}
+
+func TestLateJoinerWaitsForTheNextMatch(t *testing.T) {
+	srv, clock := newTestHub(t)
+	a, b := pair(t, srv)
+	c := joinRoom(t, srv, "AAAA", "Cat")
+	expectAll("PLAYERS 1 1:Ann:1 2:Bob:1 3:Cat:0", a, b, c)
+	b.send("SNAP 0 0 0 board")
+	a.expect("SNAP 2 0 0 0 board")
+	clock.timer(0).fire()
+	expectAll("OVER DRAW TIME 0 0", a, b)
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0 3:Cat:0", a, b, c) // c got no START or SNAP before this
+	a.send("BEGIN")
+	expectAll("START 102 3 1 2 3", a, b, c)
+	expectAll("PLAYERS 1 1:Ann:1 2:Bob:1 3:Cat:1", a, b, c)
 }
 
 func TestDisconnectTellsOpponent(t *testing.T) {
@@ -191,18 +348,47 @@ func TestDisconnectTellsOpponent(t *testing.T) {
 	b.expect("LEFT")
 }
 
-func TestRematchNeedsBothPlayers(t *testing.T) {
-	srv, clock := newTestHub(t)
+func TestDuelLeftEndsTheMatchButKeepsTheRoom(t *testing.T) {
+	srv := newTestServer(t)
 	a, b := pair(t, srv)
-	clock.timer(0).fire()
-	a.expect("OVER DRAW TIME 0 0")
-	b.expect("OVER DRAW TIME 0 0")
-	a.send("REMATCH")
-	b.send("SNAP probe") // proves nothing was sent to a after a's REMATCH alone
-	a.expect("SNAP probe")
-	b.send("REMATCH")
-	a.expect("START 102 3")
-	b.expect("START 102 3")
+	a.conn.Close(websocket.StatusNormalClosure, "")
+	b.expect("LEFT")
+	b.expect("PLAYERS 2 2:Bob:0")
+	b.send("BEGIN") // alone: nothing happens
+	b.flush()
+	c := joinRoom(t, srv, "AAAA", "Cat")
+	expectAll("PLAYERS 2 2:Bob:0 1:Cat:0", b, c) // Cat gets the lowest free ID
+	b.send("BEGIN")
+	expectAll("START 102 3 2 1", b, c)
+}
+
+func TestHostLeavingMovesTheHost(t *testing.T) {
+	srv := newTestServer(t)
+	a := createRoom(t, srv, "Ann", "1")
+	b := joinRoom(t, srv, "AAAA", "Bob")
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
+	c := joinRoom(t, srv, "AAAA", "Cat")
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0 3:Cat:0", a, b, c)
+	a.conn.Close(websocket.StatusNormalClosure, "")
+	expectAll("PLAYERS 2 2:Bob:0 3:Cat:0", b, c)
+	d := joinRoom(t, srv, "AAAA", "Dan")
+	expectAll("PLAYERS 2 2:Bob:0 3:Cat:0 1:Dan:0", b, c, d)
+	c.send("BEGIN") // not the host
+	c.flush()
+	b.send("BEGIN")
+	expectAll("START 101 1 2 3 1", b, c, d)
+}
+
+func TestLastPlayerLeavingDeletesTheRoom(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a := createRoom(t, srv, "Ann", "2 PUB")
+	w.expect("ROOMS AAAA:2:Ann:1")
+	a.conn.Close(websocket.StatusNormalClosure, "")
+	w.expect("ROOMS")
+	c := dial(t, srv)
+	c.send("JOIN AAAA")
+	c.expect("ERR unknown room")
 }
 
 func TestAttacksAreCountedAndMalformedOnesDropped(t *testing.T) {
@@ -220,6 +406,7 @@ func TestAttacksAreCountedAndMalformedOnesDropped(t *testing.T) {
 	clock.timer(0).fire()
 	a.expect("OVER WIN TIME 5 1")
 	b.expect("OVER LOSE TIME 1 5")
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
 }
 
 func TestDeadIsAKOAndThreeKOsWin(t *testing.T) {
@@ -232,6 +419,7 @@ func TestDeadIsAKOAndThreeKOsWin(t *testing.T) {
 	}
 	a.expect("OVER WIN KO 0 0")
 	b.expect("OVER LOSE KO 0 0")
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
 	if !clock.timer(0).isStopped() {
 		t.Error("match timer still running after a KO win")
 	}
@@ -294,41 +482,51 @@ func TestMessagesAfterOverAreIgnored(t *testing.T) {
 	srv, clock := newTestHub(t)
 	a, b := pair(t, srv)
 	clock.timer(0).fire()
-	a.expect("OVER DRAW TIME 0 0")
-	b.expect("OVER DRAW TIME 0 0")
+	expectAll("OVER DRAW TIME 0 0", a, b)
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
 	a.send("ATK 2")
 	a.send("DEAD")
+	a.send("SNAP 0 0 0 board")
 	clock.timer(0).fire() // firing again changes nothing
-	a.send("SNAP probe")
-	b.expect("SNAP probe")
+	a.send("BEGIN")
+	expectAll("START 102 3 1 2", a, b) // nothing reached either player before this
 }
 
-func TestRematchBeforeOverIsIgnored(t *testing.T) {
-	a, b := pair(t, newTestServer(t))
-	a.send("REMATCH")
-	a.send("SNAP from a")
-	b.expect("SNAP from a") // a's REMATCH has been handled
-	b.send("REMATCH")
-	b.send("SNAP from b")
-	a.expect("SNAP from b") // a START would have reached a before this
-}
-
-func TestStaleTimerAfterRematchIsIgnored(t *testing.T) {
+func TestStaleTimerAfterBeginIsIgnored(t *testing.T) {
 	srv, clock := newTestHub(t)
 	a, b := pair(t, srv)
 	clock.timer(0).fire()
-	a.expect("OVER DRAW TIME 0 0")
-	b.expect("OVER DRAW TIME 0 0")
-	a.send("REMATCH")
-	b.send("REMATCH")
-	a.expect("START 102 3")
-	b.expect("START 102 3")
-	clock.timer(0).fire() // the first match's timer, racing the rematch
+	expectAll("OVER DRAW TIME 0 0", a, b)
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
+	a.send("BEGIN")
+	expectAll("START 102 3 1 2", a, b)
+	expectAll("PLAYERS 1 1:Ann:1 2:Bob:1", a, b)
+	clock.timer(0).fire() // the first match's timer, racing the new match
 	a.send("SNAP probe")
-	b.expect("SNAP probe")
+	b.expect("SNAP 1 probe")
 	clock.timer(1).fire()
-	a.expect("OVER DRAW TIME 0 0")
-	b.expect("OVER DRAW TIME 0 0")
+	expectAll("OVER DRAW TIME 0 0", a, b)
+}
+
+// A duel that ends by LEFT stops its timer without a verdict, so a timer that fired just before the stop
+// must not end the next match.
+func TestStaleTimerAfterLeftAndBeginIsIgnored(t *testing.T) {
+	srv, clock := newTestHub(t)
+	a, b := pair(t, srv)
+	c := joinRoom(t, srv, "AAAA", "Cat")
+	expectAll("PLAYERS 1 1:Ann:1 2:Bob:1 3:Cat:0", a, b, c)
+	b.conn.Close(websocket.StatusNormalClosure, "")
+	a.expect("LEFT")
+	expectAll("PLAYERS 1 1:Ann:0 3:Cat:0", a, c)
+	a.send("BEGIN")
+	expectAll("START 102 3 1 3", a, c)
+	expectAll("PLAYERS 1 1:Ann:1 3:Cat:1", a, c)
+	clock.timer(0).fire() // the first match's timer
+	a.send("SNAP probe")
+	c.expect("SNAP 1 probe") // an OVER would have reached c first
+	a.flush()
+	clock.timer(1).fire()
+	expectAll("OVER DRAW TIME 0 0", a, c)
 }
 
 func TestLeavingStopsTheMatchTimer(t *testing.T) {
@@ -339,21 +537,9 @@ func TestLeavingStopsTheMatchTimer(t *testing.T) {
 	if !clock.timer(0).isStopped() {
 		t.Error("match timer still running after a player left")
 	}
-	clock.timer(0).fire() // the room is gone; this must do nothing
-}
-
-func TestNamesAreSentBeforeStart(t *testing.T) {
-	srv := newTestServer(t)
-	a, b := dial(t, srv), dial(t, srv)
-	a.send("HELLO Sam")
-	a.send("CREATE 3")
-	a.expect("ROOM AAAA")
-	b.send("HELLO Kai")
-	b.send("JOIN AAAA")
-	a.expect("OPP Kai")
-	a.expect("START 101 3")
-	b.expect("OPP Sam")
-	b.expect("START 101 3")
+	clock.timer(0).fire() // the match is over; this must do nothing
+	b.expect("PLAYERS 2 2:Bob:0")
+	b.flush()
 }
 
 func TestBadHelloLeavesTheDefaultName(t *testing.T) {
@@ -361,11 +547,12 @@ func TestBadHelloLeavesTheDefaultName(t *testing.T) {
 	a, b := dial(t, srv), dial(t, srv)
 	a.send("HELLO two words")
 	a.send("CREATE 3")
-	a.expect("ROOM AAAA")
+	a.expect("ROOM AAAA 1")
+	a.expect("PLAYERS 1 1:Player:0")
 	b.send("HELLO abcdefghijklm")
 	b.send("JOIN AAAA")
-	a.expect("OPP Player")
-	b.expect("OPP Player")
+	b.expect("ROOM AAAA 2")
+	expectAll("PLAYERS 1 1:Player:0 2:Player2:0", a, b)
 }
 
 func TestHelloInsideARoomIsIgnored(t *testing.T) {
@@ -376,11 +563,9 @@ func TestHelloInsideARoomIsIgnored(t *testing.T) {
 	b.expect("ATK 1") // a's HELLO was handled before b leaves; each connection is read in order
 	b.conn.Close(websocket.StatusNormalClosure, "")
 	a.expect("LEFT")
-	a.send("CREATE 1")
-	a.expect("ROOM AAAB")
-	c := dial(t, srv)
-	c.send("JOIN AAAB")
-	c.expect("OPP Player")
+	a.expect("PLAYERS 1 1:Ann:0")
+	c := joinRoom(t, srv, "AAAA", "Cat")
+	c.expect("PLAYERS 1 1:Ann:0 2:Cat:0")
 }
 
 // watch dials a lobby watcher and consumes its first (empty) list.
@@ -392,16 +577,32 @@ func watch(t *testing.T, srv *httptest.Server) *client {
 	return w
 }
 
-func TestPublicRoomsAreListedUntilFull(t *testing.T) {
+func TestPublicRoomsListPlayerCountUntilFull(t *testing.T) {
 	srv := newTestServer(t)
 	w := watch(t, srv)
-	a, b := dial(t, srv), dial(t, srv)
-	a.send("HELLO Sam")
-	a.send("CREATE 3 PUB")
-	a.expect("ROOM AAAA")
-	w.expect("ROOMS AAAA:3:Sam")
-	b.send("JOIN AAAA")
-	w.expect("ROOMS")
+	createRoom(t, srv, "Ann", "1 PUB")
+	w.expect("ROOMS AAAA:1:Ann:1")
+	var last *client
+	for n := 2; n <= maxRoomPlayers; n++ {
+		last = joinRoom(t, srv, "AAAA", "Bob")
+		if n < maxRoomPlayers {
+			w.expect(fmt.Sprintf("ROOMS AAAA:1:Ann:%d", n))
+		}
+	}
+	w.expect("ROOMS") // full rooms are not listed
+	last.conn.Close(websocket.StatusNormalClosure, "")
+	w.expect("ROOMS AAAA:1:Ann:15")
+}
+
+func TestPublicRoomsListTheCurrentHost(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a := createRoom(t, srv, "Sam", "1 PUB")
+	w.expect("ROOMS AAAA:1:Sam:1")
+	joinRoom(t, srv, "AAAA", "Sam")
+	w.expect("ROOMS AAAA:1:Sam:2")
+	a.conn.Close(websocket.StatusNormalClosure, "")
+	w.expect("ROOMS AAAA:1:Sam2:1")
 }
 
 func TestPrivateRoomsAreNotListed(t *testing.T) {
@@ -409,34 +610,24 @@ func TestPrivateRoomsAreNotListed(t *testing.T) {
 	w := watch(t, srv)
 	a, b := dial(t, srv), dial(t, srv)
 	a.send("CREATE 3")
-	a.expect("ROOM AAAA")
+	a.expect("ROOM AAAA 1")
 	b.send("CREATE 5 PUB")
-	b.expect("ROOM AAAB")
-	w.expect("ROOMS AAAB:5:Player") // the private room sent nothing before this
-}
-
-func TestHostLeavingRemovesTheRoom(t *testing.T) {
-	srv := newTestServer(t)
-	w := watch(t, srv)
-	a := dial(t, srv)
-	a.send("CREATE 2 PUB")
-	a.expect("ROOM AAAA")
-	w.expect("ROOMS AAAA:2:Player")
-	a.conn.Close(websocket.StatusNormalClosure, "")
-	w.expect("ROOMS")
+	b.expect("ROOM AAAB 1")
+	w.expect("ROOMS AAAB:5:Player:1") // the private room sent nothing before this
 }
 
 func TestCreatingUnsubscribes(t *testing.T) {
 	srv := newTestServer(t)
 	w := watch(t, srv)
 	w.send("CREATE 1 PUB")
-	w.expect("ROOM AAAA") // no ROOMS: w stopped watching
+	w.expect("ROOM AAAA 1") // no ROOMS: w stopped watching
+	w.expect("PLAYERS 1 1:Player:0")
 	x := dial(t, srv)
 	x.send("CREATE 2 PUB")
-	x.expect("ROOM AAAB")
+	x.expect("ROOM AAAB 1")
 	y := dial(t, srv)
 	y.send("JOIN AAAA")
-	w.expect("OPP Player") // still nothing in between
+	w.expect("PLAYERS 1 1:Player:0 2:Player2:0") // still nothing in between
 }
 
 func TestUnlistStopsUpdates(t *testing.T) {
@@ -447,11 +638,11 @@ func TestUnlistStopsUpdates(t *testing.T) {
 	w.expect("ERR bad start level") // UNLIST was handled; a bad level never reaches the watcher set
 	a, b := dial(t, srv), dial(t, srv)
 	a.send("CREATE 1 PUB")
-	a.expect("ROOM AAAA")
+	a.expect("ROOM AAAA 1")
 	b.send("CREATE 1 PUB")
-	b.expect("ROOM AAAB")
+	b.expect("ROOM AAAB 1")
 	w.send("LIST")
-	w.expect("ROOMS AAAA:1:Player AAAB:1:Player") // a push would have arrived first with one room
+	w.expect("ROOMS AAAA:1:Player:1 AAAB:1:Player:1") // a push would have arrived first with one room
 }
 
 func TestListIsOldestFirstAndCapped(t *testing.T) {
@@ -459,14 +650,14 @@ func TestListIsOldestFirstAndCapped(t *testing.T) {
 	for i := 0; i < maxListedRooms+1; i++ {
 		c := dial(t, srv)
 		c.send("CREATE 1 PUB")
-		c.expect(fmt.Sprintf("ROOM AAA%c", 'A'+i))
+		c.expect(fmt.Sprintf("ROOM AAA%c 1", 'A'+i))
 	}
 	w := dial(t, srv)
 	w.send("LIST")
 	var want strings.Builder
 	want.WriteString("ROOMS")
 	for i := 0; i < maxListedRooms; i++ {
-		fmt.Fprintf(&want, " AAA%c:1:Player", 'A'+i)
+		fmt.Fprintf(&want, " AAA%c:1:Player:1", 'A'+i)
 	}
 	w.expect(want.String())
 }
@@ -477,7 +668,7 @@ func TestBadRoomOptionsAndFullServer(t *testing.T) {
 	a.send("CREATE 3 OPEN")
 	a.expect("ERR bad room options")
 	a.send("CREATE 3")
-	a.expect("ROOM AAAA")
+	a.expect("ROOM AAAA 1")
 	b.send("CREATE 3 PUB")
 	b.expect("ERR server is full")
 }
@@ -486,7 +677,7 @@ func TestLobbyVerbsInsideARoomAreNotRelayed(t *testing.T) {
 	a, b := pair(t, newTestServer(t))
 	a.send("LIST")
 	a.send("UNLIST")
-	a.send("ROOMS AAAA:1:Sam")
+	a.send("ROOMS AAAA:1:Sam:1")
 	a.send("ATK 1")
 	b.expect("ATK 1")
 }
@@ -496,41 +687,64 @@ func TestQuickOpensAPublicRoomWhenNoneIsOpen(t *testing.T) {
 	w := watch(t, srv)
 	a := dial(t, srv)
 	a.send("QUICK 4")
-	a.expect("ROOM AAAA")
-	w.expect("ROOMS AAAA:4:Player")
+	a.expect("ROOM AAAA 1")
+	w.expect("ROOMS AAAA:4:Player:1")
 }
 
 func TestQuickJoinsTheOldestOpenRoomAtItsLevel(t *testing.T) {
 	srv := newTestServer(t)
-	a, b, c := dial(t, srv), dial(t, srv), dial(t, srv)
-	a.send("CREATE 3 PUB")
-	a.expect("ROOM AAAA")
+	a := createRoom(t, srv, "Ann", "3 PUB")
+	b := dial(t, srv)
 	b.send("CREATE 5 PUB")
-	b.expect("ROOM AAAB")
+	b.expect("ROOM AAAB 1")
+	c := dial(t, srv)
+	c.send("HELLO Cat")
 	c.send("QUICK 9")
-	c.expect("OPP Player")
-	c.expect("START 101 3")
-	a.expect("OPP Player")
-	a.expect("START 101 3")
+	c.expect("ROOM AAAA 2")
+	expectAll("PLAYERS 1 1:Ann:0 2:Cat:0", a, c)
+	a.send("BEGIN")
+	expectAll("START 101 3 1 2", a, c)
+}
+
+func TestQuickPrefersARoomWithNoMatch(t *testing.T) {
+	srv := newTestServer(t)
+	a := createRoom(t, srv, "Ann", "3 PUB")
+	b := joinRoom(t, srv, "AAAA", "Bob")
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
+	a.send("BEGIN")
+	expectAll("START 101 3 1 2", a, b)
+	c := dial(t, srv)
+	c.send("HELLO Cat")
+	c.send("CREATE 5 PUB")
+	c.expect("ROOM AAAB 1")
+	c.expect("PLAYERS 1 1:Cat:0")
+	d := dial(t, srv)
+	d.send("HELLO Dan")
+	d.send("QUICK 9")
+	d.expect("ROOM AAAB 2")
+	expectAll("PLAYERS 1 1:Cat:0 2:Dan:0", c, d)
 }
 
 func TestQuickIgnoresPrivateRooms(t *testing.T) {
 	srv := newTestServer(t)
 	a, b := dial(t, srv), dial(t, srv)
 	a.send("CREATE 3")
-	a.expect("ROOM AAAA")
+	a.expect("ROOM AAAA 1")
 	b.send("QUICK 2")
-	b.expect("ROOM AAAB")
+	b.expect("ROOM AAAB 1")
 }
 
 func TestTwoQuicksPairUp(t *testing.T) {
 	srv := newTestServer(t)
 	a, b := dial(t, srv), dial(t, srv)
 	a.send("QUICK 2")
-	a.expect("ROOM AAAA")
+	a.expect("ROOM AAAA 1")
+	a.expect("PLAYERS 1 1:Player:0")
 	b.send("QUICK 7")
-	b.expect("OPP Player")
-	b.expect("START 101 2")
+	b.expect("ROOM AAAA 2")
+	expectAll("PLAYERS 1 1:Player:0 2:Player2:0", a, b)
+	a.send("BEGIN")
+	expectAll("START 101 2 1 2", a, b)
 }
 
 func TestQuickErrors(t *testing.T) {
@@ -543,4 +757,19 @@ func TestQuickErrors(t *testing.T) {
 	c.expect("ERR bad start level")
 	c.send("QUICK 1")
 	c.expect("ERR server is full")
+}
+
+func TestMessagesOutsideARoomAreDropped(t *testing.T) {
+	c := dial(t, newTestServer(t))
+	c.send("ATK 2")
+	c.send("REMATCH")
+	c.send("BEGIN")
+	c.send("CREATE 1")
+	c.expect("ROOM AAAA 1") // nothing was sent back for the first three
+}
+
+func TestBadStartLevelIsRejected(t *testing.T) {
+	c := dial(t, newTestServer(t))
+	c.send("CREATE 99")
+	c.expect("ERR bad start level")
 }
