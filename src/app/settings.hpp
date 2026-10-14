@@ -9,11 +9,15 @@
 
 namespace tetris {
 
+inline constexpr int kMaxVolume = 100;  // the volume sliders run 0 to 100 percent
+
 // What is remembered between launches.
 struct Settings {
     Keymap keys = defaultKeymap();
     bool muted = false;
     bool musicOff = false;
+    int soundVolume = kMaxVolume;  // percent, 0 to kMaxVolume
+    int musicVolume = kMaxVolume;
     std::string playerName;  // empty until one is chosen or generated
     bool publicRooms = false;  // Create room makes a public room
     Handling handling;

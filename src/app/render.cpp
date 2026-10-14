@@ -727,6 +727,28 @@ bool musicButton(bool off, float width = menuButtonWidth()) {
     return menuButton(off ? "Music: Off###music" : "Music: On###music", width);
 }
 
+// A volume slider in percent. Dragging returns ChangeVolume so the change is heard at once; letting go
+// returns SaveVolume.
+UiCommand volumeSlider(const char* id, const char* format, int& volume, float width) {
+    ImGui::SetNextItemWidth(width);
+    const bool changed = ImGui::SliderInt(id, &volume, 0, kMaxVolume, format, ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit()) return UiCommand::SaveVolume;
+    return changed ? UiCommand::ChangeVolume : UiCommand::None;
+}
+
+// The Sound and Music buttons, each with its volume slider under it.
+UiCommand audioControls(StartMenu& menu, float width = menuButtonWidth()) {
+    UiCommand command = UiCommand::None;
+    auto take = [&command](UiCommand c) {
+        if (c != UiCommand::None) command = c;
+    };
+    if (soundButton(menu.muted, width)) command = UiCommand::ToggleSound;
+    take(volumeSlider("##soundvol", "Sound volume: %d%%", menu.soundVolume, width));
+    if (musicButton(menu.musicOff, width)) command = UiCommand::ToggleMusic;
+    take(volumeSlider("##musicvol", "Music volume: %d%%", menu.musicVolume, width));
+    return command;
+}
+
 void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
                     const AttackTrails& trails, const StartMenu& menu) {
     const Game& game = *duel.game();
@@ -1018,8 +1040,7 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     }
     if (menuButton("vs Bot", width)) command = UiCommand::PlayBot;
     ImGui::Spacing();
-    if (soundButton(menu.muted, width)) command = UiCommand::ToggleSound;
-    if (musicButton(menu.musicOff, width)) command = UiCommand::ToggleMusic;
+    if (const UiCommand audio = audioControls(menu, width); audio != UiCommand::None) command = audio;
     if (menuButton("Controls", width)) command = UiCommand::OpenControls;
     if (menu.duelsEnabled) {
         ImGui::Spacing();
@@ -1144,15 +1165,14 @@ void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo, con
     ImGui::End();
 }
 
-UiCommand drawOverlay(const Game& game, const Fonts& fonts, bool muted, bool musicOff) {
+UiCommand drawOverlay(const Game& game, const Fonts& fonts, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     if (game.state() == GameState::Paused) {
         beginMenu("##paused");
         menuTitle(fonts, "PAUSED");
         if (menuButton("Resume")) command = UiCommand::Resume;
         if (menuButton("Restart")) command = UiCommand::Restart;
-        if (soundButton(muted)) command = UiCommand::ToggleSound;
-        if (musicButton(musicOff)) command = UiCommand::ToggleMusic;
+        if (const UiCommand audio = audioControls(menu); audio != UiCommand::None) command = audio;
         if (menuButton("Controls")) command = UiCommand::OpenControls;
         if (menuButton("Quit to menu")) command = UiCommand::QuitToMenu;
         ImGui::End();
@@ -1218,15 +1238,14 @@ void drawSoloStatus(const SoloSession& solo, const Fonts& fonts) {
     ImGui::End();
 }
 
-UiCommand drawSoloOverlay(const SoloSession& solo, const PersonalBests& bests, bool newBest, const Fonts& fonts,
-                          bool muted, bool musicOff) {
+UiCommand drawSoloOverlay(const SoloSession& solo, bool newBest, const Fonts& fonts, StartMenu& menu) {
     const SoloPhase phase = solo.phase();
     if (phase == SoloPhase::Countdown) {
         drawCountdown(solo.countdownMs(), fonts);
         return UiCommand::None;
     }
     if (!isTimed(solo.mode()) || (phase != SoloPhase::Finished && phase != SoloPhase::ToppedOut))
-        return drawOverlay(solo.game(), fonts, muted, musicOff);
+        return drawOverlay(solo.game(), fonts, menu);
 
     const bool blitz = solo.mode() == SoloMode::Blitz;
     auto format = [blitz](int value) { return blitz ? formatScore(value) : formatClock(value); };
@@ -1242,7 +1261,7 @@ UiCommand drawSoloOverlay(const SoloSession& solo, const PersonalBests& bests, b
     if (phase == SoloPhase::ToppedOut) ImGui::TextDisabled("not recorded");
     if (newBest)
         ImGui::TextColored(colorVec(kKoPipColor), "NEW PB!");
-    else if (const std::optional<int> best = bests.best(solo.mode()))
+    else if (const std::optional<int> best = menu.bests.best(solo.mode()))
         ImGui::TextDisabled("PB %s", format(*best).c_str());
     ImGui::Spacing();
     if (menuButton("Retry", width) || ImGui::IsKeyPressed(ImGuiKey_R, false)) command = UiCommand::Restart;

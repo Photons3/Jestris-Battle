@@ -54,7 +54,8 @@ struct App {
     void toggleMusic();                   // flips the music on or off and saves it
     void syncMusic(const MusicCue& cue);  // starts, pauses, retimes or stops the music to match `cue`
     void toggleSound();  // flips mute and saves it
-    void saveSettings();  // stores the keymap, handling, mute, music and bests for the next launch
+    void saveSettings();  // stores the keymap, handling, mute, music, volumes and bests for the next launch
+    void applyVolumes();  // hands the menu's volume sliders to the mixer
     Game* activeGame();  // the game the keys control: solo, or the duel game while a match is running
 };
 

@@ -135,6 +135,57 @@ TEST_CASE("audio: muting silences, drops playing voices and ignores play") {
     CHECK(mixer.activeVoices() == 1);
 }
 
+TEST_CASE("audio: the sound volume scales the effects") {
+    Mixer full(kRate);
+    Mixer half(kRate);
+    Mixer silent(kRate);
+    half.setSoundVolume(0.5f);
+    silent.setSoundVolume(0.0f);
+    for (Mixer* m : {&full, &half, &silent}) m->play(Sound::Move);
+    const std::vector<float> a = mixFrames(full, 512);
+    const std::vector<float> b = mixFrames(half, 512);
+    CHECK(peakOf(a) > 0.0f);
+    for (std::size_t i = 0; i < a.size(); ++i) CHECK(b[i] == doctest::Approx(0.5f * a[i]));
+    CHECK(peakOf(mixFrames(silent, 512)) == 0.0f);
+}
+
+TEST_CASE("audio: the music volume scales only the music") {
+    Mixer full(kRate);
+    Mixer half(kRate);
+    half.setMusicVolume(0.5f);
+    for (Mixer* m : {&full, &half}) m->startMusic();
+    const std::vector<float> a = mixFrames(full, 4800);
+    const std::vector<float> b = mixFrames(half, 4800);
+    CHECK(peakOf(a) > 0.0f);
+    for (std::size_t i = 0; i < a.size(); ++i) CHECK(b[i] == doctest::Approx(0.5f * a[i]));
+
+    Mixer effects(kRate);
+    Mixer effectsNoMusic(kRate);
+    effectsNoMusic.setMusicVolume(0.0f);  // no music is playing, so the effects must be untouched
+    for (Mixer* m : {&effects, &effectsNoMusic}) m->play(Sound::Move);
+    CHECK(mixFrames(effects, 512) == mixFrames(effectsNoMusic, 512));
+}
+
+TEST_CASE("audio: the sound volume leaves the music alone") {
+    Mixer full(kRate);
+    Mixer quietEffects(kRate);
+    quietEffects.setSoundVolume(0.0f);
+    for (Mixer* m : {&full, &quietEffects}) m->startMusic();
+    CHECK(mixFrames(full, 4800) == mixFrames(quietEffects, 4800));
+}
+
+TEST_CASE("audio: volumes are clamped to [0, 1]") {
+    Mixer loud(kRate);
+    Mixer full(kRate);
+    loud.setSoundVolume(5.0f);
+    for (Mixer* m : {&loud, &full}) m->play(Sound::Move);
+    CHECK(mixFrames(loud, 512) == mixFrames(full, 512));
+    Mixer negative(kRate);
+    negative.setSoundVolume(-1.0f);
+    negative.play(Sound::Move);
+    CHECK(peakOf(mixFrames(negative, 512)) == 0.0f);
+}
+
 namespace {
 
 std::vector<float> playMusic(Music& music, int frames, float gain = 1.0f) {

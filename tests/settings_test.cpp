@@ -110,6 +110,29 @@ TEST_CASE("settings: out-of-range handling is clamped and junk keeps the default
     CHECK(parseSettings("version=1\ndas=abc\narr=12x\nsdf=\n").handling == Handling{});
 }
 
+TEST_CASE("settings: the volumes round-trip and default to 100") {
+    CHECK(Settings{}.soundVolume == 100);
+    CHECK(Settings{}.musicVolume == 100);
+    Settings settings;
+    settings.soundVolume = 35;
+    settings.musicVolume = 0;
+    const Settings loaded = parseSettings(serializeSettings(settings));
+    CHECK(loaded.soundVolume == 35);
+    CHECK(loaded.musicVolume == 0);
+}
+
+TEST_CASE("settings: out-of-range volumes are clamped, junk and old files keep 100") {
+    const Settings clamped = parseSettings("version=1\nsoundvol=250\nmusicvol=-4\n");
+    CHECK(clamped.soundVolume == 100);
+    CHECK(clamped.musicVolume == 0);
+    const Settings junk = parseSettings("version=1\nsoundvol=loud\nmusicvol=\n");
+    CHECK(junk.soundVolume == 100);
+    CHECK(junk.musicVolume == 100);
+    const Settings old = parseSettings("version=1\nsound=off\nmusic=on\n");
+    CHECK(old.soundVolume == 100);
+    CHECK(old.musicVolume == 100);
+}
+
 TEST_CASE("settings: a file saved before handling existed loads the default handling") {
     CHECK(parseSettings("version=1\nsound=off\npublic=on\n").handling == Handling{});
 }

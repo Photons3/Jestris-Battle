@@ -36,6 +36,13 @@ void applyCommand(App& app, UiCommand command) {
     case UiCommand::ToggleMusic:
         app.toggleMusic();
         break;
+    case UiCommand::ChangeVolume:
+        app.applyVolumes();
+        break;
+    case UiCommand::SaveVolume:
+        app.applyVolumes();
+        app.saveSettings();
+        break;
     case UiCommand::Resume:
         if (app.solo) app.solo->game().resume();
         break;
@@ -229,6 +236,8 @@ App::App()
     input.setHandling(handling);
     menu.muted = saved.muted;
     menu.musicOff = saved.musicOff;
+    menu.soundVolume = saved.soundVolume;
+    menu.musicVolume = saved.musicVolume;
     menu.publicRooms = saved.publicRooms;
     menu.playerName = saved.playerName;
     if (menu.playerName.empty()) {
@@ -244,11 +253,17 @@ App::App()
     menu.canCopyLink = canCopyToClipboard();
     audio.setMuted(menu.muted);
     audio.setMusicMuted(menu.musicOff);
+    applyVolumes();
 }
 
 void App::saveSettings() {
-    saveSettingsText(serializeSettings(
-        {keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms, handling, menu.bests}));
+    saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.soundVolume, menu.musicVolume,
+                                        menu.playerName, menu.publicRooms, handling, menu.bests}));
+}
+
+void App::applyVolumes() {
+    audio.setSoundVolume(static_cast<float>(menu.soundVolume) / kMaxVolume);
+    audio.setMusicVolume(static_cast<float>(menu.musicVolume) / kMaxVolume);
 }
 
 void App::newSolo(SoloMode mode) {
@@ -392,7 +407,7 @@ void drawFrame(App& app, const Fonts& fonts) {
     case Screen::Playing:
         drawGame(app.solo->game(), fonts, app.combo, app.callout);
         drawSoloStatus(*app.solo, fonts);
-        command = drawSoloOverlay(*app.solo, app.menu.bests, app.newBest, fonts, app.menu.muted, app.menu.musicOff);
+        command = drawSoloOverlay(*app.solo, app.newBest, fonts, app.menu);
         break;
     case Screen::Duel:
         command = drawDuel(app.duel, fonts, app.combo, app.callout, app.trails, app.menu);
