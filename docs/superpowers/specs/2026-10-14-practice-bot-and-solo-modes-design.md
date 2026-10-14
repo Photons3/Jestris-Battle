@@ -67,8 +67,8 @@ Rules:
 
 ## 3. Personal bests (in the existing `Settings`)
 PBs go into the settings that are already saved between launches (`src/app/settings.{hpp,cpp}`, stored by `settings_store_desktop.cpp` / `settings_store_web.cpp`). That means no new storage files.
-- `Settings` gains `std::optional<int> sprintBestMs, cheeseBestMs, blitzBest`. `serializeSettings` writes them as three more `name=value` lines, only when set. `parseSettings` reads them and skips bad values, as it already does for every other entry.
-- `bool submitRecord(Settings&, SoloMode, int result)` (in `solo.cpp`) returns true when the run is a new PB: a lower time, or a higher score. The first finished run is always a PB.
+- `solo.hpp` defines `struct PersonalBests { std::optional<int> sprintMs, cheeseMs, blitzScore; }` with `std::optional<int> best(SoloMode) const` and `bool submit(SoloMode, int result)`. `submit` returns true when the run is a new PB: a lower time, or a higher score. The first finished run is always a PB. The struct sits in `tetris_duel` because `tetris_settings` already depends on that library, so the reverse would be circular.
+- `Settings` gains `PersonalBests bests`. `serializeSettings` writes `sprint=`, `cheese=` and `blitz=` lines, only when set. `parseSettings` reads them and skips values that aren't positive integers, as it already does for every other bad entry.
 - After a new PB, `App` calls the existing `saveSettings()`. Corrupt or missing values just read as "no PB".
 
 ## 4. Screens and app wiring
@@ -99,6 +99,7 @@ PBs go into the settings that are already saved between launches (`src/app/setti
 - **Duel screen:** unchanged. The bot's name arrives through the existing `OpponentName` message (section 6), so the name bar, the VS line and "… left" all show it with no render changes.
 
 ## 5. Bot brain (`src/bot/`, new `tetris_bot` library: depends on `tetris_core` only)
+`planner` and `bot_player` make up `tetris_bot`. `local_match` (section 6) needs `protocol` and `makeDuelGame`, so it builds in `tetris_duel`, which links `tetris_bot`.
 
 ### Planner
 - For the active piece, and for the hold option (the held piece, or the next piece if hold is empty), it lists the input sequences `[Hold] + {none, CW, CW×2, CCW} + 0–9 × Left/Right + HardDrop`.
@@ -188,4 +189,4 @@ All tests use doctest and live in `tetris_tests` unless noted.
   - A rematch restarts with a new seed.
   - The session's `opponentName()` is the bot's name.
   - Nothing is accepted after `MatchOver`.
-- **UI** (`tetris_ui_tests`): the start screen lists the five solo modes and vs Bot on the desktop build. `PlayBot` reaches `DuelPhase::Countdown`.
+- **UI** (`tetris_ui_tests`): the pure text helpers (`formatClock`, `formatScore`) are unit-tested. The bot path from the menu (`LocalMatch` reaching `DuelPhase::Countdown` with a real `DuelSession`) is covered by the LocalMatch tests, because `app.cpp` is not linked into any test target. The menu is checked by hand on the desktop build.
