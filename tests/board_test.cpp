@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <random>
 #include <vector>
 
 #include "core/board.hpp"
@@ -144,4 +145,33 @@ TEST_CASE("board: touching batches that share a column chain together") {
     REQUIRE(board.pushGarbage(2, 4));
     REQUIRE(board.pushGarbage(2, 4));
     CHECK(board.bombRowsHitBy(oAt(4, 4)) == std::vector<int>{0, 1, 2, 3});
+}
+
+TEST_CASE("board: cheese rows have one hole each, never stacked, and no bombs") {
+    std::mt19937 rng(42);
+    Board board;
+    board.pushCheese(10, rng);
+    int previousHole = -1;
+    for (int y = 0; y < 10; ++y) {
+        int holes = 0, hole = -1;
+        for (int x = 0; x < kBoardWidth; ++x) {
+            if (!board.at(x, y)) { ++holes; hole = x; }
+            else CHECK(board.at(x, y) == PieceType::Garbage);
+        }
+        CHECK(holes == 1);
+        CHECK(hole != previousHole);
+        previousHole = hole;
+    }
+    for (int x = 0; x < kBoardWidth; ++x) CHECK_FALSE(board.at(x, 10));
+    CHECK(board.garbageRows() == 10);
+    CHECK(board.fullRows().empty());
+}
+
+TEST_CASE("board: garbage rows count rows with garbage, not bombs or pieces") {
+    Board board;
+    board.set(0, 0, PieceType::Garbage);
+    board.set(1, 1, PieceType::Bomb);
+    board.set(2, 2, PieceType::T);
+    board.set(3, 3, PieceType::Garbage);
+    CHECK(board.garbageRows() == 2);
 }

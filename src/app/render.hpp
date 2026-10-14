@@ -9,6 +9,8 @@
 #include "app/duel.hpp"
 #include "app/fonts.hpp"
 #include "app/keymap.hpp"
+#include "app/solo.hpp"
+#include "bot/bot_player.hpp"
 #include "core/game.hpp"
 
 struct ImGuiIO;
@@ -17,10 +19,13 @@ struct ImGuiStyle;
 namespace tetris {
 
 enum class Screen { Start, Playing, Duel, Controls };
-enum class UiCommand { None, Play, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
+enum class UiCommand { None, PlaySolo, PlayBot, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
 
 struct StartMenu {
     int startLevel = 1;
+    SoloMode soloMode = SoloMode::Marathon;   // the solo button last clicked, for PlaySolo
+    BotLevel botLevel = BotLevel::Medium;     // the practice bot's strength, for PlayBot
+    PersonalBests bests;                      // shown beside the timed modes; saved with the settings
     bool duelsEnabled = false;                // browser build only
     char joinCode[kRoomCodeLength + 1] = {};  // typed room code, uppercase
     std::string error;                        // why the last duel attempt ended, e.g. "unknown room"
@@ -129,6 +134,13 @@ int sdfFromSlider(int value);
 void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout);
 // Pause and game-over menus; draws nothing while playing.
 UiCommand drawOverlay(const Game& game, const Fonts& fonts, bool muted, bool musicOff);
+std::string formatClock(int ms);     // "0:42.18": minutes, seconds and hundredths
+std::string formatScore(int score);  // "48,200"
+// The mode line under the side-panel stats: the clock and lines left, the Blitz time left, or ZEN.
+void drawSoloStatus(const SoloSession& solo, const Fonts& fonts);
+// The countdown, the result of a timed run (Retry, or R, returns Restart), else the pause and game-over menus.
+UiCommand drawSoloOverlay(const SoloSession& solo, const PersonalBests& bests, bool newBest, const Fonts& fonts,
+                          bool muted, bool musicOff);
 // A small MUTED label in the top-right corner, over every screen.
 void drawMutedBadge(const Fonts& fonts);
 // Lobby, waiting room, countdown, both boards and the result menu, depending on the session phase. `menu`

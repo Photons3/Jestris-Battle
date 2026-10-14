@@ -77,12 +77,21 @@ add_library(tetris_input STATIC
 target_link_libraries(tetris_input PUBLIC tetris_core)
 target_compile_options(tetris_input PRIVATE ${TETRIS_WARNINGS})
 
+add_library(tetris_bot STATIC
+  src/bot/planner.cpp
+  src/bot/bot_player.cpp)
+target_include_directories(tetris_bot PUBLIC src)
+target_link_libraries(tetris_bot PUBLIC tetris_core)
+target_compile_options(tetris_bot PRIVATE ${TETRIS_WARNINGS})
+
 add_library(tetris_duel STATIC
   src/net/protocol.cpp
   src/app/duel.cpp
-  src/app/sound_cues.cpp)
+  src/app/solo.cpp
+  src/app/sound_cues.cpp
+  src/bot/local_match.cpp)
 target_include_directories(tetris_duel PUBLIC src)
-target_link_libraries(tetris_duel PUBLIC tetris_core tetris_audio)
+target_link_libraries(tetris_duel PUBLIC tetris_core tetris_audio tetris_bot)
 target_compile_options(tetris_duel PRIVATE ${TETRIS_WARNINGS})
 
 add_library(tetris_settings STATIC
@@ -127,12 +136,16 @@ add_executable(tetris_tests
   tests/input_test.cpp
   tests/protocol_test.cpp
   tests/duel_test.cpp
+  tests/solo_test.cpp
+  tests/planner_test.cpp
+  tests/bot_player_test.cpp
+  tests/local_match_test.cpp
   tests/audio_test.cpp
   tests/sound_cues_test.cpp
   tests/keymap_test.cpp
   tests/settings_test.cpp)
 target_include_directories(tetris_tests PRIVATE tests)
-target_link_libraries(tetris_tests PRIVATE tetris_input tetris_duel tetris_audio tetris_settings doctest::doctest)
+target_link_libraries(tetris_tests PRIVATE tetris_input tetris_duel tetris_bot tetris_audio tetris_settings doctest::doctest)
 target_compile_options(tetris_tests PRIVATE ${TETRIS_WARNINGS})
 add_test(NAME tetris_tests COMMAND tetris_tests)
 

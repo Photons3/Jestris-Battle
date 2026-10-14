@@ -61,7 +61,7 @@ inline constexpr int kMaxStartLevel = 15;
 double gravityMsPerRow(int level);
 // Points for clearing `lines` (1–4) rows at `level`.
 int lineClearScore(int lines, int level);
-int levelFor(int startLevel, int lines);
+int levelFor(int startLevel, int lines, int linesPerLevel = kLinesPerLevel);
 // Clamps a requested start level into the selectable range.
 int clampStartLevel(int level);
 
@@ -88,6 +88,7 @@ std::vector<int> bombColumnsFor(int rows, int aboveX, int aboveRun, std::mt19937
 
 struct GameOptions {
     bool allowPause = true;  // duels turn pausing off so one player can't freeze the match
+    int linesPerLevel = kLinesPerLevel;  // Blitz levels up faster
 };
 
 class Game {

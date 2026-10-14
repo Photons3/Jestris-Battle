@@ -2,6 +2,7 @@
 
 #include <array>
 #include <optional>
+#include <random>
 #include <vector>
 
 #include "core/piece.hpp"
@@ -31,6 +32,11 @@ public:
     bool pushGarbage(int rows, int bombX);
     // The same, one garbage row per entry, bottom row first, each with its bomb in the given column.
     bool pushGarbage(const std::vector<int>& bombColumns);
+    // Fills rows 0..rows-1 with garbage, one hole each; a row's hole differs from the one below it.
+    // Expects an empty board above those rows. No bombs.
+    void pushCheese(int rows, std::mt19937& rng);
+    // Number of rows holding at least one garbage cell (bombs and pieces don't count).
+    int garbageRows() const;
     // Rows a just-locked `piece` sets off: each bomb directly under one of its cells, plus every bomb
     // touching that one below it in the same column. Sorted bottom-up, without duplicates.
     std::vector<int> bombRowsHitBy(const Piece& piece) const;

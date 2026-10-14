@@ -1041,3 +1041,18 @@ TEST_CASE("game events: a combo is reported from the second clear in a row") {
     game.apply(Action::HardDrop);
     CHECK(game.takeEvents() == Events{kHardDropped, cleared(2), comboOf(1)});
 }
+
+TEST_CASE("game: lines per level is settable") {
+    CHECK(levelFor(1, 9) == 1);
+    CHECK(levelFor(1, 10) == 2);
+    CHECK(levelFor(1, 5, 5) == 2);
+    CHECK(levelFor(3, 12, 5) == 5);
+}
+
+TEST_CASE("game: a faster level curve levels up after fewer lines") {
+    Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5), GameOptions{.linesPerLevel = 2});
+    dropUprightI(game);
+    game.tick(kClearDelayMs);
+    CHECK(game.lines() == 4);
+    CHECK(game.level() == 3);
+}

@@ -237,8 +237,16 @@ void drawLabel(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, const
 constexpr float kMiniScale = 0.7f;        // HOLD and NEXT pieces, in cells
 constexpr float kLockedHoldAlpha = 0.35f;  // the held piece while hold is locked
 
+constexpr int kSideStats = 3;            // SCORE, LEVEL, LINES under NEXT
+constexpr float kStatPitch = 3.5f;       // each stat's height, in text sizes
+
+float sideTextSize(const Layout& l) { return l.cell * 0.6f; }
+float statsTop(const Layout& l) {
+    return cellTopLeft(l, 0, kVisibleHeight - 1).y + l.cell + 5 * 2.5f * l.cell * kMiniScale + l.cell;
+}
+
 void drawSidePanels(ImDrawList* dl, const Layout& l, const Game& game, const Fonts& fonts) {
-    const float textSize = l.cell * 0.6f;
+    const float textSize = sideTextSize(l);
     const float mini = l.cell * kMiniScale;
     const float top = cellTopLeft(l, 0, kVisibleHeight - 1).y;
 
@@ -253,15 +261,15 @@ void drawSidePanels(ImDrawList* dl, const Layout& l, const Game& game, const Fon
     for (int i = 0; i < static_cast<int>(next.size()); ++i)
         drawMiniPiece(dl, ImVec2(rightX, top + l.cell + i * 2.5f * mini), mini, next[i], 1.0f);
 
-    float y = top + l.cell + 5 * 2.5f * mini + l.cell;
-    const std::array<std::pair<const char*, int>, 3> stats{
+    float y = statsTop(l);
+    const std::array<std::pair<const char*, int>, kSideStats> stats{
         {{"SCORE", game.score()}, {"LEVEL", game.level()}, {"LINES", game.lines()}}};
     char value[32];
     for (const auto& [label, number] : stats) {
         drawLabel(dl, fonts, textSize, ImVec2(rightX, y), label);
         std::snprintf(value, sizeof value, "%d", number);
         drawLabel(dl, fonts, textSize, ImVec2(rightX, y + textSize * 1.4f), value);
-        y += textSize * 3.5f;
+        y += textSize * kStatPitch;
     }
 }
 
@@ -527,7 +535,7 @@ void drawOpponent(ImDrawList* dl, const DuelLayout& layout, const Snapshot& snap
         drawLabel(dl, fonts, textSize, ImVec2(statsX, y), label);
         std::snprintf(value, sizeof value, "%d", number);
         drawLabel(dl, fonts, textSize, ImVec2(statsX, y + textSize * 1.4f), value);
-        y += textSize * 3.5f;
+        y += textSize * kStatPitch;
     }
 }
 
@@ -931,10 +939,44 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     beginMenu("##start");
     // Every row spans the title's width, so the menu is one even column under it.
     const float width = std::max(menuTitle(fonts, "JESTRIS BATTLE"), menuButtonWidth());
+    ImGui::SeparatorText("SOLO");
+    constexpr std::array<std::pair<SoloMode, const char*>, 5> kSoloButtons{{{SoloMode::Marathon, "Marathon"},
+                                                                          {SoloMode::Sprint, "Sprint 40L"},
+                                                                          {SoloMode::Blitz, "Blitz 2:00"},
+                                                                          {SoloMode::Cheese, "Cheese 10L"},
+                                                                          {SoloMode::Zen, "Zen"}}};
+    for (const auto& [mode, label] : kSoloButtons) {
+        if (menuButton(label, width)) {
+            menu.soloMode = mode;
+            command = UiCommand::PlaySolo;
+        }
+        if (const std::optional<int> best = menu.bests.best(mode)) {  // dim, right-aligned on the button row
+            const std::string text =
+                "PB " + (mode == SoloMode::Blitz ? formatScore(*best) : formatClock(*best));
+            const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+            const ImVec2 max = ImGui::GetItemRectMax();
+            const ImVec2 min = ImGui::GetItemRectMin();
+            const ImVec2 pos(max.x - ImGui::GetStyle().FramePadding.x - size.x,
+                             min.y + (max.y - min.y - size.y) * 0.5f);
+            ImGui::GetWindowDrawList()->AddText(pos, ImGui::GetColorU32(ImGuiCol_TextDisabled), text.c_str());
+        }
+    }
     ImGui::SetNextItemWidth(width);
     ImGui::SliderInt("##level", &menu.startLevel, kMinStartLevel, kMaxStartLevel, "Start level: %d",
                      ImGuiSliderFlags_AlwaysClamp);
-    if (menuButton(menu.duelsEnabled ? "Solo" : "Play", width)) command = UiCommand::Play;
+    ImGui::TextDisabled("Marathon, Blitz, Zen, vs Bot");
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::SeparatorText("PRACTICE");
+    constexpr std::array<std::pair<BotLevel, const char*>, 3> kBotLevels{
+        {{BotLevel::Easy, "Easy"}, {BotLevel::Medium, "Medium"}, {BotLevel::Hard, "Hard"}}};
+    for (std::size_t i = 0; i < kBotLevels.size(); ++i) {
+        if (i > 0) ImGui::SameLine();
+        if (ImGui::RadioButton(kBotLevels[i].second, menu.botLevel == kBotLevels[i].first))
+            menu.botLevel = kBotLevels[i].first;
+    }
+    if (menuButton("vs Bot", width)) command = UiCommand::PlayBot;
+    ImGui::Spacing();
     if (soundButton(menu.muted, width)) command = UiCommand::ToggleSound;
     if (musicButton(menu.musicOff, width)) command = UiCommand::ToggleMusic;
     if (menuButton("Controls", width)) command = UiCommand::OpenControls;
@@ -1081,6 +1123,90 @@ UiCommand drawOverlay(const Game& game, const Fonts& fonts, bool muted, bool mus
         if (menuButton("Quit to menu")) command = UiCommand::QuitToMenu;
         ImGui::End();
     }
+    return command;
+}
+
+std::string formatClock(int ms) {
+    ms = std::max(0, ms);
+    char text[32];
+    std::snprintf(text, sizeof text, "%d:%02d.%02d", ms / 60000, ms / 1000 % 60, ms / 10 % 100);
+    return text;
+}
+
+std::string formatScore(int score) {
+    std::string digits = std::to_string(score);
+    const std::size_t first = digits.front() == '-' ? 1 : 0;
+    for (std::size_t i = digits.size(); i > first + 3; i -= 3) digits.insert(i - 3, ",");
+    return digits;
+}
+
+void drawSoloStatus(const SoloSession& solo, const Fonts& fonts) {
+    if (solo.game().state() == GameState::Paused) return;  // hidden with the panels it sits under
+    std::string first;
+    std::string second;
+    ImU32 firstColor = IM_COL32(230, 230, 240, 255);
+    switch (solo.mode()) {
+    case SoloMode::Sprint:
+        first = formatClock(solo.clockMs());
+        second = std::to_string(solo.progress()) + " / " + std::to_string(kSprintLines);
+        break;
+    case SoloMode::Cheese:
+        first = formatClock(solo.clockMs());
+        second = std::to_string(solo.progress()) + " left";
+        break;
+    case SoloMode::Blitz: {
+        const int seconds = (solo.clockMs() + 999) / 1000;
+        char text[16];
+        std::snprintf(text, sizeof text, "%d:%02d", seconds / 60, seconds % 60);
+        first = text;
+        if (seconds < kTimeWarningSeconds) firstColor = IM_COL32(255, 70, 70, 255);
+        break;
+    }
+    case SoloMode::Zen:
+        first = "ZEN";
+        break;
+    case SoloMode::Marathon:
+        return;
+    }
+    const Layout l = computeLayout();
+    const float textSize = sideTextSize(l);
+    const ImVec2 pos(l.origin.x + (kBoardWidth + 1) * l.cell, statsTop(l) + kSideStats * textSize * kStatPitch);
+    ImDrawList* dl = beginBoardWindow();
+    dl->AddText(fonts.hud, textSize, pos, firstColor, first.c_str());
+    if (!second.empty()) drawLabel(dl, fonts, textSize, ImVec2(pos.x, pos.y + textSize * 1.4f), second.c_str());
+    ImGui::End();
+}
+
+UiCommand drawSoloOverlay(const SoloSession& solo, const PersonalBests& bests, bool newBest, const Fonts& fonts,
+                          bool muted, bool musicOff) {
+    const SoloPhase phase = solo.phase();
+    if (phase == SoloPhase::Countdown) {
+        drawCountdown(solo.countdownMs(), fonts);
+        return UiCommand::None;
+    }
+    if (!isTimed(solo.mode()) || (phase != SoloPhase::Finished && phase != SoloPhase::ToppedOut))
+        return drawOverlay(solo.game(), fonts, muted, musicOff);
+
+    const bool blitz = solo.mode() == SoloMode::Blitz;
+    auto format = [blitz](int value) { return blitz ? formatScore(value) : formatClock(value); };
+    UiCommand command = UiCommand::None;
+    beginMenu("##soloresult");
+    const float width = std::max(menuTitle(fonts, phase == SoloPhase::Finished ? "FINISHED" : "TOPPED OUT"),
+                                 menuButtonWidth());
+    // A top-out has no result: show how far the run got.
+    const std::string result = format(solo.result().value_or(blitz ? solo.game().score() : solo.clockMs()));
+    ImGui::PushFont(fonts.hud, ImGui::GetFontSize() * 2.5f);
+    ImGui::TextUnformatted(result.c_str());
+    ImGui::PopFont();
+    if (phase == SoloPhase::ToppedOut) ImGui::TextDisabled("not recorded");
+    if (newBest)
+        ImGui::TextColored(colorVec(kKoPipColor), "NEW PB!");
+    else if (const std::optional<int> best = bests.best(solo.mode()))
+        ImGui::TextDisabled("PB %s", format(*best).c_str());
+    ImGui::Spacing();
+    if (menuButton("Retry", width) || ImGui::IsKeyPressed(ImGuiKey_R, false)) command = UiCommand::Restart;
+    if (menuButton("Quit to menu", width)) command = UiCommand::QuitToMenu;
+    ImGui::End();
     return command;
 }
 

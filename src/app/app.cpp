@@ -11,6 +11,7 @@
 #include "app/settings.hpp"
 #include "app/settings_store.hpp"
 #include "app/sound_cues.hpp"
+#include "bot/local_match.hpp"
 #include "imgui.h"
 
 namespace tetris {
@@ -20,9 +21,14 @@ void applyCommand(App& app, UiCommand command) {
     switch (command) {
     case UiCommand::None:
         break;
-    case UiCommand::Play:
+    case UiCommand::PlaySolo:
+        app.newSolo(app.menu.soloMode);
+        break;
+    case UiCommand::PlayBot:
+        app.openBotDuel();
+        break;
     case UiCommand::Restart:
-        app.newGame();
+        if (app.solo) app.newSolo(app.solo->mode());
         break;
     case UiCommand::ToggleSound:
         app.toggleSound();
@@ -31,10 +37,10 @@ void applyCommand(App& app, UiCommand command) {
         app.toggleMusic();
         break;
     case UiCommand::Resume:
-        if (app.game) app.game->resume();
+        if (app.solo) app.solo->game().resume();
         break;
     case UiCommand::QuitToMenu:
-        app.game.reset();
+        app.solo.reset();
         app.screen = Screen::Start;
         break;
     case UiCommand::QuitApp:
@@ -113,7 +119,7 @@ void applyCommand(App& app, UiCommand command) {
 // The local game on screen: the solo game, or our duel game.
 Game* shownGame(App& app) {
     if (app.screen == Screen::Duel) return app.duel.game();
-    return app.game ? &*app.game : nullptr;
+    return app.solo ? &app.solo->game() : nullptr;
 }
 
 float middleRow(const std::vector<int>& rows) {
@@ -127,6 +133,21 @@ float stackTopRow(const Snapshot& snapshot) {
         for (int x = 0; x < kBoardWidth; ++x)
             if (snapshot.cells[y * kBoardWidth + x]) return static_cast<float>(std::min(y + 1, kVisibleHeight - 1));
     return 0.0f;
+}
+
+// Plays what the solo run reported this frame, and records a finished run's result if it is a new best. Only
+// Finished has a result: quitting, restarting or topping out never records one.
+void playSoloEvents(App& app) {
+    if (!app.solo) return;
+    for (SoloEvent event : app.solo->takeEvents()) {
+        if (const auto sound = soundFor(event); sound && !app.hidden) app.audio.play(*sound);
+        if (event != SoloEvent::Finished) continue;
+        const std::optional<int> result = app.solo->result();
+        if (!result || !app.menu.bests.submit(app.solo->mode(), *result)) continue;
+        app.newBest = true;
+        app.saveSettings();
+        if (const auto sound = soundFor(DuelEvent::Won); sound && !app.hidden) app.audio.play(*sound);
+    }
 }
 
 // Plays what the solo or duel game and the duel session reported this frame, and launches attack trails.
@@ -149,7 +170,7 @@ void playEvents(App& app) {
 
 // What the music should be doing for the current screen.
 MusicCue musicCue(App& app) {
-    if (app.screen == Screen::Playing && app.game) return soloMusic(*app.game);
+    if (app.screen == Screen::Playing && app.solo) return soloMusic(*app.solo);
     if (app.screen == Screen::Duel) return duelMusic(app.duel.phase());
     return {};
 }
@@ -204,6 +225,7 @@ App::App()
     const Settings saved = parseSettings(loadSettingsText());
     keymap = saved.keys;
     handling = saved.handling;
+    menu.bests = saved.bests;
     input.setHandling(handling);
     menu.muted = saved.muted;
     menu.musicOff = saved.musicOff;
@@ -224,12 +246,16 @@ App::App()
     audio.setMusicMuted(menu.musicOff);
 }
 
-void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms, handling})); }
+void App::saveSettings() {
+    saveSettingsText(serializeSettings(
+        {keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms, handling, menu.bests}));
+}
 
-void App::newGame() {
+void App::newSolo(SoloMode mode) {
     syncMusic({});  // a new game always starts the song from the top
     menu.startLevel = clampStartLevel(menu.startLevel);
-    game.emplace(static_cast<std::uint32_t>(SDL_GetTicksNS()), menu.startLevel);
+    solo.emplace(rulesFor(mode), makeSoloGame(mode, static_cast<std::uint32_t>(SDL_GetTicksNS()), menu.startLevel));
+    newBest = false;
     input.releaseAll();
     pending.clear();
     combo = {};
@@ -244,6 +270,14 @@ void App::openDuel() {
     }
     menu.error.clear();
     screen = Screen::Duel;
+}
+
+void App::openBotDuel() {
+    if (connection) closeDuel();
+    connection = std::make_unique<LocalMatch>(menu.botLevel, static_cast<std::uint32_t>(SDL_GetTicksNS()));
+    menu.error.clear();
+    screen = Screen::Duel;
+    duel.createRoom(menu.startLevel);
 }
 
 void App::toggleSound() {
@@ -276,7 +310,8 @@ void App::closeDuel() {
 }
 
 Game* App::activeGame() {
-    if (screen == Screen::Playing) return game ? &*game : nullptr;
+    // Not during the countdown or the result; while paused it still takes the Pause key that resumes it.
+    if (screen == Screen::Playing) return solo && !solo->frozen() ? &solo->game() : nullptr;
     if (screen == Screen::Duel && duel.phase() == DuelPhase::Playing && !duel.frozen()) return duel.game();
     return nullptr;
 }
@@ -287,7 +322,7 @@ void handleEvent(App& app, SDL_Window* window, const SDL_Event& event) {
         app.quit = true;
         break;
     case SDL_EVENT_WINDOW_FOCUS_LOST:
-        if (app.game) app.game->pause();
+        if (app.solo) app.solo->pause();  // in the countdown it waits for play to start
         app.input.releaseAll();  // key-up events are lost while unfocused
         break;
     case SDL_EVENT_KEY_DOWN:
@@ -336,7 +371,10 @@ void step(App& app, int ms) {
             game->tick(1);
         }
     }
+    if (app.screen == Screen::Playing && app.solo) app.solo->update(ms);
     if (app.screen == Screen::Duel) app.duel.update(ms);
+    if (app.connection) app.connection->update(ms);
+    playSoloEvents(app);
     playEvents(app);
     const Game* shown = shownGame(app);
     app.combo.update(shown != nullptr ? shown->combo() : -1, ms);
@@ -352,8 +390,9 @@ void drawFrame(App& app, const Fonts& fonts) {
         command = drawStartScreen(fonts, app.menu);
         break;
     case Screen::Playing:
-        drawGame(*app.game, fonts, app.combo, app.callout);
-        command = drawOverlay(*app.game, fonts, app.menu.muted, app.menu.musicOff);
+        drawGame(app.solo->game(), fonts, app.combo, app.callout);
+        drawSoloStatus(*app.solo, fonts);
+        command = drawSoloOverlay(*app.solo, app.menu.bests, app.newBest, fonts, app.menu.muted, app.menu.musicOff);
         break;
     case Screen::Duel:
         command = drawDuel(app.duel, fonts, app.combo, app.callout, app.trails, app.menu);

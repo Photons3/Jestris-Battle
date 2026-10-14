@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include "app/solo.hpp"
 #include "app/sound_cues.hpp"
 #include "test_helpers.hpp"
 
@@ -90,4 +91,19 @@ TEST_CASE("cues: duel music plays only while the match runs") {
         CAPTURE(static_cast<int>(phase));
         CHECK(duelMusic(phase).mode == MusicMode::Stopped);
     }
+}
+
+TEST_CASE("cues: solo events use the duel's countdown sounds and finish silently") {
+    CHECK(soundFor(SoloEvent::CountdownTick) == soundFor(DuelEvent::CountdownTick));
+    CHECK(soundFor(SoloEvent::Start) == soundFor(DuelEvent::MatchStart));
+    CHECK_FALSE(soundFor(SoloEvent::Finished).has_value());
+}
+
+TEST_CASE("cues: solo session music is stopped during the countdown and follows the game once playing") {
+    SoloSession solo(rulesFor(SoloMode::Sprint), makeSoloGame(SoloMode::Sprint, 1, 1));
+    CHECK(soloMusic(solo).mode == MusicMode::Stopped);
+    solo.update(kCountdownMs);
+    REQUIRE(solo.phase() == SoloPhase::Playing);
+    CHECK(soloMusic(solo) == soloMusic(solo.game()));
+    CHECK(soloMusic(solo).mode == MusicMode::Playing);
 }

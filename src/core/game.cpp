@@ -19,7 +19,7 @@ int lineClearScore(int lines, int level) {
     return kBase[lines] * level;
 }
 
-int levelFor(int startLevel, int lines) { return startLevel + lines / kLinesPerLevel; }
+int levelFor(int startLevel, int lines, int linesPerLevel) { return startLevel + lines / linesPerLevel; }
 
 int clampStartLevel(int level) { return std::clamp(level, kMinStartLevel, kMaxStartLevel); }
 
@@ -399,7 +399,7 @@ void Game::finishClear() {
     outgoingAttack_ += attack - cancelled;
     score_ += awardScore(award_, combo_, level_);
     lines_ += cleared;
-    level_ = levelFor(startLevel_, lines_);
+    level_ = levelFor(startLevel_, lines_, options_.linesPerLevel);
     if (level_ > levelBefore) emit(GameEventType::LevelUp);
     board_.removeRows(clearingRows_);
     clearingRows_.clear();

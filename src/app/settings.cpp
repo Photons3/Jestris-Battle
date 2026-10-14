@@ -53,6 +53,12 @@ std::optional<int> parseInt(std::string_view text) {
     return value;
 }
 
+// A personal best is a whole number above zero; anything else is skipped.
+std::optional<int> parseBest(std::string_view text) {
+    const std::optional<int> value = parseInt(text);
+    return value && *value > 0 ? value : std::nullopt;
+}
+
 }  // namespace
 
 std::string defaultPlayerName(std::uint32_t random) {
@@ -72,6 +78,9 @@ std::string serializeSettings(const Settings& settings) {
     out += settings.handling.softDropFactor == kSoftDropInstant
                ? std::string("sdf=instant\n")
                : "sdf=" + std::to_string(settings.handling.softDropFactor) + "\n";
+    if (settings.bests.sprintMs) out += "sprint=" + std::to_string(*settings.bests.sprintMs) + "\n";
+    if (settings.bests.cheeseMs) out += "cheese=" + std::to_string(*settings.bests.cheeseMs) + "\n";
+    if (settings.bests.blitzScore) out += "blitz=" + std::to_string(*settings.bests.blitzScore) + "\n";
     for (int i = 0; i < kActionCount; ++i) {
         out += kActionKeys[i];
         out += '=';
@@ -114,6 +123,12 @@ Settings parseSettings(std::string_view text) {
         } else if (name == "sdf") {
             settings.handling.softDropFactor =
                 value == "instant" ? kSoftDropInstant : parseInt(value).value_or(settings.handling.softDropFactor);
+        } else if (name == "sprint") {
+            if (const std::optional<int> ms = parseBest(value)) settings.bests.sprintMs = ms;
+        } else if (name == "cheese") {
+            if (const std::optional<int> ms = parseBest(value)) settings.bests.cheeseMs = ms;
+        } else if (name == "blitz") {
+            if (const std::optional<int> score = parseBest(value)) settings.bests.blitzScore = score;
         } else if (const std::optional<int> action = actionIndex(name)) {
             loaded.keys[*action] = parseSlots(value);
         }

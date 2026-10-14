@@ -266,3 +266,13 @@ TEST_CASE("ui: the handling sliders change from the keyboard and ask to be saved
     CHECK_FALSE(controls.capturing);
     ImGui::DestroyContext();
 }
+
+TEST_CASE("ui: solo clocks and scores read naturally") {
+    CHECK(formatClock(0) == "0:00.00");
+    CHECK(formatClock(42180) == "0:42.18");
+    CHECK(formatClock(62310) == "1:02.31");
+    CHECK(formatClock(600000) == "10:00.00");
+    CHECK(formatScore(0) == "0");
+    CHECK(formatScore(48200) == "48,200");
+    CHECK(formatScore(1234567) == "1,234,567");
+}

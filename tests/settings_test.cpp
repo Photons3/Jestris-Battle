@@ -113,3 +113,20 @@ TEST_CASE("settings: out-of-range handling is clamped and junk keeps the default
 TEST_CASE("settings: a file saved before handling existed loads the default handling") {
     CHECK(parseSettings("version=1\nsound=off\npublic=on\n").handling == Handling{});
 }
+
+TEST_CASE("settings: personal bests load back, and unset ones stay unset") {
+    Settings saved;
+    saved.bests.sprintMs = 62310;
+    saved.bests.blitzScore = 48200;
+    const Settings loaded = parseSettings(serializeSettings(saved));
+    CHECK(loaded.bests == saved.bests);
+    CHECK_FALSE(loaded.bests.cheeseMs);
+    CHECK(serializeSettings(Settings{}).find("sprint=") == std::string::npos);
+}
+
+TEST_CASE("settings: bad personal bests are skipped") {
+    const std::string good = serializeSettings(Settings{});
+    const Settings loaded = parseSettings(good + "sprint=-5\nblitz=abc\ncheese=0\n");
+    CHECK(loaded.bests == PersonalBests{});
+    CHECK(loaded.keys.keys == defaultKeymap().keys);
+}

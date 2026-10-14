@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "app/duel.hpp"
+#include "app/solo.hpp"
 #include "audio/sound.hpp"
 #include "core/game.hpp"
 
@@ -11,6 +12,7 @@ namespace tetris {
 // In a duel a top-out is a KO against us, not the end of the game. A plain tetris has no special-clear sound of
 // its own: its LinesCleared event already plays one.
 std::optional<Sound> soundFor(const GameEvent& event, bool inDuel);
+std::optional<Sound> soundFor(SoloEvent event);  // the countdown sounds as the duel's; finishing has none
 std::optional<Sound> soundFor(DuelEvent event);  // nothing for Sent: the clear already made a sound
 
 enum class MusicMode { Stopped, Playing, Paused };
@@ -25,6 +27,7 @@ inline constexpr float kDuelBpm = 150.0f;
 
 float soloBpm(int level);               // 120, plus 8 per level above 1, at most 200
 MusicCue soloMusic(const Game& game);   // plays while the game runs or clears, pauses with it
+MusicCue soloMusic(const SoloSession& solo);  // stopped unless Playing, then soloMusic(game)
 MusicCue duelMusic(DuelPhase phase);    // plays only while the match runs
 
 }  // namespace tetris
