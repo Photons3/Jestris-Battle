@@ -234,15 +234,18 @@ void drawLabel(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, const
     dl->AddText(fonts.hud, size, pos, IM_COL32(230, 230, 240, 255), text);
 }
 
+constexpr float kMiniScale = 0.7f;        // HOLD and NEXT pieces, in cells
+constexpr float kLockedHoldAlpha = 0.35f;  // the held piece while hold is locked
+
 void drawSidePanels(ImDrawList* dl, const Layout& l, const Game& game, const Fonts& fonts) {
     const float textSize = l.cell * 0.6f;
-    const float mini = l.cell * 0.7f;
+    const float mini = l.cell * kMiniScale;
     const float top = cellTopLeft(l, 0, kVisibleHeight - 1).y;
 
     const float holdX = l.origin.x - 5.5f * l.cell;
     drawLabel(dl, fonts, textSize, ImVec2(holdX, top), "HOLD");
     if (const auto held = game.hold())
-        drawMiniPiece(dl, ImVec2(holdX, top + l.cell), mini, *held, game.canHold() ? 1.0f : 0.35f);
+        drawMiniPiece(dl, ImVec2(holdX, top + l.cell), mini, *held, game.canHold() ? 1.0f : kLockedHoldAlpha);
 
     const float rightX = l.origin.x + (kBoardWidth + 1) * l.cell;
     drawLabel(dl, fonts, textSize, ImVec2(rightX, top), "NEXT");
@@ -496,7 +499,7 @@ void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout
     drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, text, value);
 }
 
-// The opponent's well at full size, then SCORE and LINES; the snapshot carries no hold or next.
+// The opponent's well at full size, then one column right of it: HOLD, NEXT, SCORE and LINES.
 void drawOpponent(ImDrawList* dl, const DuelLayout& layout, const Snapshot& snapshot, const Fonts& fonts) {
     const Layout& l = layout.theirs;
     drawWell(dl, l);
@@ -506,7 +509,18 @@ void drawOpponent(ImDrawList* dl, const DuelLayout& layout, const Snapshot& snap
 
     const float statsX = layout.left + kStatsCol * l.cell;
     const float textSize = l.cell * 0.6f;
+    const float mini = l.cell * kMiniScale;
     float y = wellTop(l);
+    drawLabel(dl, fonts, textSize, ImVec2(statsX, y), "HOLD");
+    if (snapshot.hold)
+        drawMiniPiece(dl, ImVec2(statsX, y + l.cell), mini, *snapshot.hold,
+                      snapshot.holdLocked ? kLockedHoldAlpha : 1.0f);
+    y += 3.0f * l.cell;
+    drawLabel(dl, fonts, textSize, ImVec2(statsX, y), "NEXT");
+    for (int i = 0; i < kSnapshotNext; ++i)
+        if (const Cell piece = snapshot.next[i])
+            drawMiniPiece(dl, ImVec2(statsX, y + l.cell + i * 2.5f * mini), mini, *piece, 1.0f);
+    y += l.cell + kSnapshotNext * 2.5f * mini + l.cell;
     const std::array<std::pair<const char*, int>, 2> stats{{{"SCORE", snapshot.score}, {"LINES", snapshot.lines}}};
     char value[32];
     for (const auto& [label, number] : stats) {
