@@ -105,22 +105,23 @@ std::optional<Message> decodeSnapshot(const std::vector<std::string_view>& parts
     const auto score = parseNumber(parts[1], 0, kMaxInt);
     const auto lines = parseNumber(parts[2], 0, kMaxInt);
     const auto pending = parseNumber(parts[3], 0, kMaxInt);
-    const std::string_view next = parts[12];
-    const std::string_view cells = parts[13];
-    if (!score || !lines || !pending || static_cast<int>(next.size()) != kSnapshotNext ||
+    const auto ready = pending ? parseNumber(parts[4], 0, *pending) : std::nullopt;
+    const std::string_view next = parts[13];
+    const std::string_view cells = parts[14];
+    if (!score || !lines || !pending || !ready || static_cast<int>(next.size()) != kSnapshotNext ||
         static_cast<int>(cells.size()) != kSnapshotCells)
         return std::nullopt;
-    Snapshot snapshot{.score = *score, .lines = *lines, .pending = *pending};
+    Snapshot snapshot{.score = *score, .lines = *lines, .pending = *pending, .ready = *ready};
     int* const stats[] = {&snapshot.stats.pieces,   &snapshot.stats.attack, &snapshot.stats.garbageCleared,
                           &snapshot.stats.cancelled, &snapshot.stats.tetrises, &snapshot.stats.tSpins,
                           &snapshot.stats.maxCombo};
-    int part = 4;  // the stats follow pending, in GameStats order
+    int part = 5;  // the stats follow ready, in GameStats order
     for (int* stat : stats) {
         const auto value = parseNumber(parts[part++], 0, kMaxInt);
         if (!value) return std::nullopt;
         *stat = *value;
     }
-    if (!parseHold(parts[11], snapshot.hold, snapshot.holdLocked)) return std::nullopt;
+    if (!parseHold(parts[12], snapshot.hold, snapshot.holdLocked)) return std::nullopt;
     for (int i = 0; i < kSnapshotNext; ++i)
         if (!parsePiece(next[i], snapshot.next[i])) return std::nullopt;
     for (int i = 0; i < kSnapshotCells; ++i)
@@ -159,7 +160,10 @@ bool isValidName(std::string_view text) {
 }
 
 Snapshot snapshotOf(const Game& game) {
-    Snapshot snapshot{.score = game.score(), .lines = game.lines(), .pending = game.pendingGarbage()};
+    Snapshot snapshot{.score = game.score(),
+                      .lines = game.lines(),
+                      .pending = game.pendingGarbage(),
+                      .ready = game.readyGarbage()};
     snapshot.stats = game.stats();
     for (int y = 0; y < kVisibleHeight; ++y)
         for (int x = 0; x < kBoardWidth; ++x) snapshot.cells[y * kBoardWidth + x] = game.board().at(x, y);
@@ -196,7 +200,7 @@ std::string encode(const Message& message) {
                 return "ATK " + std::to_string(m.lines);
             } else if constexpr (std::is_same_v<T, Snapshot>) {
                 std::string text = "SNAP " + std::to_string(m.score) + " " + std::to_string(m.lines) + " " +
-                                   std::to_string(m.pending) + " ";
+                                   std::to_string(m.pending) + " " + std::to_string(m.ready) + " ";
                 for (int stat : {m.stats.pieces, m.stats.attack, m.stats.garbageCleared, m.stats.cancelled,
                                  m.stats.tetrises, m.stats.tSpins, m.stats.maxCombo})
                     text += std::to_string(stat) + " ";
@@ -271,7 +275,7 @@ std::optional<Message> decode(std::string_view text) {
         if (seed && level) return StartMatch{*seed, *level};
     } else if (verb == "ATK" && args == 1) {
         if (const auto lines = parseNumber(parts[1], 1, kBoardHeight)) return Attack{*lines};
-    } else if (verb == "SNAP" && args == 13) {
+    } else if (verb == "SNAP" && args == 14) {
         return decodeSnapshot(parts);
     } else if (verb == "KO" && args == 2) {
         const auto mine = parseNumber(parts[1], 0, kKosToWin);

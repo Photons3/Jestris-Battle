@@ -12,7 +12,7 @@
 using namespace tetris;
 
 TEST_CASE("protocol: every message survives an encode/decode round trip") {
-    Snapshot snapshot{.score = 1200, .lines = 7, .pending = 3};
+    Snapshot snapshot{.score = 1200, .lines = 7, .pending = 3, .ready = 2};
     snapshot.cells[0] = PieceType::Garbage;
     snapshot.cells[kSnapshotCells - 1] = PieceType::I;
     snapshot.cells[1] = PieceType::Bomb;
@@ -65,33 +65,35 @@ TEST_CASE("protocol: the wire format is plain text") {
     CHECK(encode(MatchOver{MatchResult::Draw, MatchReason::Time, 4, 4}) == "OVER DRAW TIME 4 4");
     CHECK(encode(StartMatch{42, 1}) == "START 42 1");
     const std::string empty(kSnapshotCells, '.');
-    CHECK(encode(Snapshot{}) == "SNAP 0 0 0 0 0 0 0 0 0 0 . ..... " + empty);
+    CHECK(encode(Snapshot{}) == "SNAP 0 0 0 0 0 0 0 0 0 0 0 . ..... " + empty);
     Snapshot bomb{};
     bomb.cells[0] = PieceType::Bomb;
-    CHECK(encode(bomb) == "SNAP 0 0 0 0 0 0 0 0 0 0 . ..... B" + std::string(kSnapshotCells - 1, '.'));
+    CHECK(encode(bomb) == "SNAP 0 0 0 0 0 0 0 0 0 0 0 . ..... B" + std::string(kSnapshotCells - 1, '.'));
     Snapshot ghost{};
     ghost.ghost[0] = PieceType::T;  // ghost cells are the lowercase piece letter
-    CHECK(encode(ghost) == "SNAP 0 0 0 0 0 0 0 0 0 0 . ..... t" + std::string(kSnapshotCells - 1, '.'));
+    CHECK(encode(ghost) == "SNAP 0 0 0 0 0 0 0 0 0 0 0 . ..... t" + std::string(kSnapshotCells - 1, '.'));
     Snapshot held{};
     held.hold = PieceType::T;
     held.holdLocked = true;
     held.next = {PieceType::I, PieceType::O, PieceType::S, PieceType::Z, PieceType::L};
-    CHECK(encode(held) == "SNAP 0 0 0 0 0 0 0 0 0 0 t IOSZL " + empty);
+    CHECK(encode(held) == "SNAP 0 0 0 0 0 0 0 0 0 0 0 t IOSZL " + empty);
     held.holdLocked = false;
-    CHECK(encode(held) == "SNAP 0 0 0 0 0 0 0 0 0 0 T IOSZL " + empty);
+    CHECK(encode(held) == "SNAP 0 0 0 0 0 0 0 0 0 0 0 T IOSZL " + empty);
     Snapshot counted{};
     counted.stats = {40, 12, 5, 3, 2, 1, 4};
-    CHECK(encode(counted) == "SNAP 0 0 0 40 12 5 3 2 1 4 . ..... " + empty);
+    CHECK(encode(counted) == "SNAP 0 0 0 0 40 12 5 3 2 1 4 . ..... " + empty);
+    Snapshot incoming{.pending = 5, .ready = 3};
+    CHECK(encode(incoming) == "SNAP 0 0 5 3 0 0 0 0 0 0 0 . ..... " + empty);
 }
 
 TEST_CASE("protocol: malformed messages are rejected") {
     for (std::string_view text : {"", "HELLO", "DEAD ", "DEAD now", "ATK", "ATK 0", "ATK -1", "ATK x", "ATK 41",
                                   "JOIN abcd", "JOIN ABC", "JOIN ABCDE", "CREATE 0", "CREATE 16", "START 1",
-                                  "START -1 1", "SNAP 0 0 0 0 0 0 0 0 0 0 . ..... ...", "ERR", "ERR "}) {
+                                  "START -1 1", "SNAP 0 0 0 0 0 0 0 0 0 0 0 . ..... ...", "ERR", "ERR "}) {
         CAPTURE(text);
         CHECK_FALSE(decode(text).has_value());
     }
-    std::string badCell = "SNAP 0 0 0 0 0 0 0 0 0 0 . ..... " + std::string(kSnapshotCells, '.');
+    std::string badCell = "SNAP 0 0 0 0 0 0 0 0 0 0 0 . ..... " + std::string(kSnapshotCells, '.');
     badCell.back() = 'Q';
     CHECK_FALSE(decode(badCell).has_value());
     for (char ghostOfBlock : {'g', 'b'}) {  // garbage and bombs never fall, so they have no ghost
@@ -102,25 +104,34 @@ TEST_CASE("protocol: malformed messages are rejected") {
 
 TEST_CASE("protocol: malformed snapshot hold and next fields are rejected") {
     const std::string cells(kSnapshotCells, '.');
-    CHECK(decode("SNAP 0 0 0 0 0 0 0 0 0 0 t IOSZL " + cells).has_value());
-    CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 0 0 0 " + cells).has_value());  // the old form, without hold and next
+    CHECK(decode("SNAP 0 0 0 0 0 0 0 0 0 0 0 t IOSZL " + cells).has_value());
+    CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 0 0 0 0 " + cells).has_value());  // the old form, without hold and next
     for (std::string_view hold : {"G", "B", "g", "b", "x", "TT", ""}) {
         CAPTURE(hold);
-        CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 0 0 0 " + std::string(hold) + " IOSZL " + cells).has_value());
+        CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 0 0 0 0 " + std::string(hold) + " IOSZL " + cells).has_value());
     }
     for (std::string_view next : {"IOSZ", "IOSZLJ", "IOSZG", "IOSZB", "iosz l", "ioszl"}) {
         CAPTURE(next);
-        CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 0 0 0 . " + std::string(next) + " " + cells).has_value());
+        CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 0 0 0 0 . " + std::string(next) + " " + cells).has_value());
     }
 }
 
 TEST_CASE("protocol: malformed snapshot stats are rejected") {
     const std::string cells(kSnapshotCells, '.');
-    CHECK(decode("SNAP 0 0 0 0 0 0 0 0 0 0 . ..... " + cells).has_value());
+    CHECK(decode("SNAP 0 0 0 0 0 0 0 0 0 0 0 . ..... " + cells).has_value());
     CHECK_FALSE(decode("SNAP 0 0 0 . ..... " + cells).has_value());          // the 6-argument form
-    CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 0 0 . ..... " + cells).has_value());  // one stat short
-    CHECK_FALSE(decode("SNAP 0 0 0 0 -1 0 0 0 0 0 . ..... " + cells).has_value());
-    CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 x 0 0 0 . ..... " + cells).has_value());
+    CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 0 0 0 . ..... " + cells).has_value());  // one stat short
+    CHECK_FALSE(decode("SNAP 0 0 0 0 0 -1 0 0 0 0 0 . ..... " + cells).has_value());
+    CHECK_FALSE(decode("SNAP 0 0 0 0 0 0 0 x 0 0 0 . ..... " + cells).has_value());
+}
+
+TEST_CASE("protocol: malformed snapshot ready counts are rejected") {
+    const std::string cells(kSnapshotCells, '.');
+    CHECK(decode("SNAP 0 0 3 3 0 0 0 0 0 0 0 . ..... " + cells).has_value());
+    CHECK_FALSE(decode("SNAP 0 0 2 3 0 0 0 0 0 0 0 . ..... " + cells).has_value());   // more ready than pending
+    CHECK_FALSE(decode("SNAP 0 0 2 -1 0 0 0 0 0 0 0 . ..... " + cells).has_value());
+    CHECK_FALSE(decode("SNAP 0 0 2 x 0 0 0 0 0 0 0 . ..... " + cells).has_value());
+    CHECK_FALSE(decode("SNAP 0 0 2 0 0 0 0 0 0 0 . ..... " + cells).has_value());     // the old form, without ready
 }
 
 TEST_CASE("protocol: malformed KO and OVER messages are rejected") {
@@ -138,6 +149,9 @@ TEST_CASE("protocol: a snapshot shows the visible field with the falling piece m
     for (Cell cell : snapshotOf(game).cells) CHECK_FALSE(cell);  // the spawned piece is above the visible field
     game.receiveGarbage(3);
     CHECK(snapshotOf(game).pending == 3);
+    CHECK(snapshotOf(game).ready == 0);
+    game.tick(kGarbageTravelMs);
+    CHECK(snapshotOf(game).ready == 3);
     dropToFloor(game);
     int filled = 0;
     for (Cell cell : snapshotOf(game).cells) {
