@@ -86,6 +86,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int, char**) {
     configureImGuiIo(ImGui::GetIO());
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
+    applyArcadeStyle(style);
     style.ScaleAllSizes(scale);
     style.FontScaleDpi = scale;
     if (!gfxInit(host->window)) return SDL_APP_FAILURE;

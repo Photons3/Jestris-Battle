@@ -130,3 +130,35 @@ TEST_CASE("ui: the lobby draws its room list") {
     CHECK(menu.pickedRoom.empty());
     ImGui::DestroyContext();
 }
+
+TEST_CASE("ui: each countdown digit pops in, then settles") {
+    CHECK(countdownPopScale(3000) == doctest::Approx(1.3f));  // "3" just appeared
+    CHECK(countdownPopScale(3000 - kCountdownPopMs / 2) == doctest::Approx(1.15f));
+    CHECK(countdownPopScale(3000 - kCountdownPopMs) == doctest::Approx(1.0f));
+    CHECK(countdownPopScale(2500) == doctest::Approx(1.0f));
+    CHECK(countdownPopScale(2000) == doctest::Approx(1.3f));  // "2" just appeared
+}
+
+TEST_CASE("ui: GO! shows only at the very start of the match") {
+    CHECK(showGoBanner(kMatchMs));
+    CHECK(showGoBanner(kMatchMs - kGoBannerMs + 1));
+    CHECK_FALSE(showGoBanner(kMatchMs - kGoBannerMs));
+    CHECK_FALSE(showGoBanner(0));
+}
+
+TEST_CASE("ui: the garbage meter warns from four pending lines") {
+    CHECK_FALSE(garbageMeterDanger(0));
+    CHECK_FALSE(garbageMeterDanger(kGarbageDangerLines - 1));
+    CHECK(garbageMeterDanger(kGarbageDangerLines));
+}
+
+TEST_CASE("ui: the arcade style has square corners and the plate colors") {
+    ImGui::CreateContext();
+    ImGuiStyle& style = ImGui::GetStyle();
+    applyArcadeStyle(style);
+    CHECK(style.WindowRounding == 0.0f);
+    CHECK(style.FrameRounding == 0.0f);
+    CHECK(style.GrabRounding == 0.0f);
+    CHECK(style.FrameBorderSize > 0.0f);
+    ImGui::DestroyContext();
+}

@@ -36,9 +36,14 @@ constexpr std::array<Rgb, kPieceTypeCount> kPieceColors{{
 }};
 
 ImU32 color(Rgb c, float alpha) { return IM_COL32(c.r, c.g, c.b, static_cast<int>(alpha * 255.0f)); }
+ImVec4 colorVec(Rgb c, float alpha = 1.0f) { return ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, alpha); }
 Rgb lighten(Rgb c) { return {c.r + (255 - c.r) * 2 / 5, c.g + (255 - c.g) * 2 / 5, c.b + (255 - c.b) * 2 / 5}; }
 Rgb darken(Rgb c) { return {c.r * 3 / 5, c.g * 3 / 5, c.b * 3 / 5}; }
 constexpr Rgb kGarbageColor{128, 128, 136};
+constexpr Rgb kWellFill{18, 18, 26};
+constexpr Rgb kWellBorder{110, 110, 140};
+constexpr Rgb kLabelColor{150, 160, 190};
+constexpr Rgb kTextColor{235, 235, 245};
 Rgb pieceRgb(PieceType type) {
     if (type == PieceType::Garbage || type == PieceType::Bomb) return kGarbageColor;
     return kPieceColors[static_cast<int>(type)];
@@ -62,15 +67,29 @@ ImVec2 cellTopLeft(const Layout& l, int x, int y) {
     return ImVec2(l.origin.x + x * l.cell, l.origin.y + (kDrawnRows - 1 - y) * l.cell);
 }
 
+float bevelFor(float size) { return std::max(1.0f, std::floor(size * 0.12f)); }
+
+// A filled rect with a lit top-left edge and a shaded bottom-right one; swap the edges to make it look sunken.
+void drawBevelRect(ImDrawList* dl, ImVec2 p, ImVec2 q, float bevel, Rgb fill, Rgb topLeft, Rgb bottomRight,
+                   float alpha = 1.0f) {
+    dl->AddRectFilled(p, q, color(fill, alpha));
+    dl->AddRectFilled(p, ImVec2(q.x, p.y + bevel), color(topLeft, alpha));       // top
+    dl->AddRectFilled(p, ImVec2(p.x + bevel, q.y), color(topLeft, alpha));       // left
+    dl->AddRectFilled(ImVec2(p.x, q.y - bevel), q, color(bottomRight, alpha));  // bottom
+    dl->AddRectFilled(ImVec2(q.x - bevel, p.y), q, color(bottomRight, alpha));  // right
+}
+
+// Text with a hard, unblurred shadow `offset` points down and right, like the nameplates.
+void drawShadowText(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, ImU32 col, const char* text,
+                    float offset, ImU32 shadow = IM_COL32(0, 0, 0, 220)) {
+    pos = ImVec2(std::floor(pos.x), std::floor(pos.y));
+    dl->AddText(fonts.hud, size, ImVec2(pos.x + offset, pos.y + offset), shadow, text);
+    dl->AddText(fonts.hud, size, pos, col, text);
+}
+
 void drawCell(ImDrawList* dl, ImVec2 p, float size, PieceType type, float alpha) {
     const Rgb base = pieceRgb(type);
-    const float bevel = std::max(1.0f, std::floor(size * 0.12f));
-    const ImVec2 q(p.x + size, p.y + size);
-    dl->AddRectFilled(p, q, color(base, alpha));
-    dl->AddRectFilled(p, ImVec2(q.x, p.y + bevel), color(lighten(base), alpha));  // top
-    dl->AddRectFilled(p, ImVec2(p.x + bevel, q.y), color(lighten(base), alpha));  // left
-    dl->AddRectFilled(ImVec2(p.x, q.y - bevel), q, color(darken(base), alpha));   // bottom
-    dl->AddRectFilled(ImVec2(q.x - bevel, p.y), q, color(darken(base), alpha));   // right
+    drawBevelRect(dl, p, ImVec2(p.x + size, p.y + size), bevelFor(size), base, lighten(base), darken(base), alpha);
     if (type == PieceType::Bomb) {
         const int a = static_cast<int>(alpha * 255.0f);
         dl->AddCircleFilled(ImVec2(p.x + size * 0.5f, p.y + size * 0.55f), size * 0.28f, IM_COL32(25, 25, 32, a));
@@ -82,9 +101,9 @@ void drawCell(ImDrawList* dl, ImVec2 p, float size, PieceType type, float alpha)
 void drawWell(ImDrawList* dl, const Layout& l) {
     const ImVec2 top = cellTopLeft(l, 0, kVisibleHeight - 1);
     const ImVec2 bottom(top.x + kBoardWidth * l.cell, top.y + kVisibleHeight * l.cell);
-    dl->AddRectFilled(top, bottom, IM_COL32(18, 18, 26, 255));
-    dl->AddRect(ImVec2(top.x - 2, top.y - 2), ImVec2(bottom.x + 2, bottom.y + 2), IM_COL32(110, 110, 140, 255),
-                0.0f, 0, 2.0f);
+    dl->AddRectFilled(top, bottom, color(kWellFill, 1.0f));
+    dl->AddRect(ImVec2(top.x - 2, top.y - 2), ImVec2(bottom.x + 2, bottom.y + 2), color(kWellBorder, 1.0f), 0.0f, 0,
+                2.0f);
 }
 
 void drawBoardCells(ImDrawList* dl, const Layout& l, const Game& game) {
@@ -169,14 +188,15 @@ void drawComboLabel(ImDrawList* dl, const Layout& l, const Fonts& fonts, const C
     dl->AddText(fonts.hud, l.cell * 0.6f, pos, IM_COL32(255, 220, 60, static_cast<int>(combo.alpha() * 255.0f)), text);
 }
 
+// `comboUnderHold` is false in duels, where the combo sits in the center column instead.
 void drawPlayfield(ImDrawList* dl, const Layout& layout, const Game& game, const Fonts& fonts,
-                   const ComboLabel& combo) {
+                   const ComboLabel& combo, bool comboUnderHold) {
     drawWell(dl, layout);
     if (game.state() == GameState::Paused) return;
     drawBoardCells(dl, layout, game);
     if (game.state() == GameState::Playing) drawActivePiece(dl, layout, game);
     drawSidePanels(dl, layout, game, fonts);
-    drawComboLabel(dl, layout, fonts, combo);
+    if (comboUnderHold) drawComboLabel(dl, layout, fonts, combo);
 }
 
 // Layout A, left to right, in cells: hold 5 | your well 10 | meter | next 5 | center 7 | meter | their well 10 |
@@ -216,41 +236,75 @@ DuelLayout computeDuelLayout() {
 float wellBottom(const Layout& l) { return cellTopLeft(l, 0, 0).y + l.cell; }
 float wellTop(const Layout& l) { return cellTopLeft(l, 0, kVisibleHeight - 1).y; }
 
-// Red bar showing garbage waiting to rise, one cell tall per line, with its left edge at `x`.
-void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending) {
-    if (pending <= 0) return;
-    const float height = static_cast<float>(std::min(pending, kVisibleHeight)) * cell;
-    dl->AddRectFilled(ImVec2(x, bottom - height), ImVec2(x + 0.35f * cell, bottom), IM_COL32(230, 40, 40, 255));
-}
+constexpr Rgb kMyPlateColor{30, 90, 220};
+constexpr Rgb kTheirPlateColor{220, 70, 30};
+constexpr Rgb kKoPipColor{255, 210, 40};
+constexpr Rgb kBackdropColor{6, 10, 28};
+constexpr Rgb kPanelColor{14, 20, 44};  // menu windows, a step lighter than the backdrop
+constexpr Rgb kGridColor{16, 24, 50};
+constexpr Rgb kDangerColor{230, 40, 40};
 
-// ImGui has no radial gradient, so stacked translucent discs fake one over a dark navy fill.
-void drawDuelBackground() {
+// A flat dark fill with a faint one-cell grid. One line passes through `anchor`, so the grid lines up with a well.
+// The lines are 1px filled rects rather than AddLine, which would anti-alias them across two pixels.
+void drawGridBackground(float cell, ImVec2 anchor) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImDrawList* bg = ImGui::GetBackgroundDrawList();
-    bg->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), IM_COL32(6, 10, 28, 255));
-    constexpr int kRings = 16;
-    const float radius = std::max(vp->Size.x, vp->Size.y) * 0.6f;
-    for (int i = 0; i < kRings; ++i)
-        bg->AddCircleFilled(vp->GetCenter(), radius * (1.0f - static_cast<float>(i) / kRings),
-                            IM_COL32(30, 50, 110, 14));
+    const ImVec2 end(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
+    bg->AddRectFilled(vp->Pos, end, color(kBackdropColor, 1.0f));
+    if (cell < 2.0f) return;  // a window too small for the board; the steps below would never advance
+    const ImU32 line = color(kGridColor, 1.0f);
+    const float startX = anchor.x - std::ceil((anchor.x - vp->Pos.x) / cell) * cell;
+    for (float x = std::floor(startX); x < end.x; x += cell)
+        bg->AddRectFilled(ImVec2(x, vp->Pos.y), ImVec2(x + 1.0f, end.y), line);
+    const float startY = anchor.y - std::ceil((anchor.y - vp->Pos.y) / cell) * cell;
+    for (float y = std::floor(startY); y < end.y; y += cell)
+        bg->AddRectFilled(ImVec2(vp->Pos.x, y), ImVec2(end.x, y + 1.0f), line);
 }
 
-void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float top, const char* name, ImU32 from,
-                 ImU32 to, int kos) {
+// Garbage waiting to rise, as a stack of beveled garbage cells, one per line, with its left edge at `x`. From
+// kGarbageDangerLines it turns red and blinks every 250 ms.
+void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending) {
+    if (pending <= 0) return;
+    const bool danger = garbageMeterDanger(pending);
+    const Rgb base = danger ? kDangerColor : kGarbageColor;
+    const float alpha = danger && static_cast<int>(ImGui::GetTime() * 4.0) % 2 != 0 ? 0.45f : 1.0f;
+    const float width = std::floor(cell * 0.5f);
+    const float bevel = bevelFor(cell);
+    x = std::floor(x);
+    for (int i = 0; i < std::min(pending, kVisibleHeight); ++i) {
+        const float lower = std::floor(bottom - static_cast<float>(i) * cell);
+        drawBevelRect(dl, ImVec2(x, lower - cell), ImVec2(x + width, lower), bevel, base, lighten(base), darken(base),
+                      alpha);
+    }
+}
+
+// A nameplate built like one wide mino: flat player color, the cells' bevel, the name with a hard drop shadow,
+// and a row of KO slots on the right that fill with gold mini-blocks as KOs land.
+void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float top, const char* name, Rgb base,
+                 int kos) {
     const float cell = well.cell;
-    const ImVec2 p0(well.origin.x, top);
-    const ImVec2 p1(well.origin.x + kBoardWidth * cell, top + 1.1f * cell);
-    dl->AddRectFilledMultiColor(p0, p1, from, to, to, from);
-    const float textSize = cell * 0.7f;
-    dl->AddText(fonts.hud, textSize, ImVec2(p0.x + 0.3f * cell, p0.y + (p1.y - p0.y - textSize) * 0.5f),
-                IM_COL32(255, 255, 255, 255), name);
-    const float radius = cell * 0.25f;
+    const float bevel = bevelFor(cell);
+    const ImVec2 p0(std::floor(well.origin.x), std::floor(top));
+    const ImVec2 p1(p0.x + kBoardWidth * cell, p0.y + std::floor(1.1f * cell));
+    drawBevelRect(dl, p0, p1, bevel, base, lighten(base), darken(base));
+
+    const float textSize = std::floor(cell * 0.7f);
+    const ImVec2 textPos(p0.x + std::floor(0.35f * cell), p0.y + std::floor((p1.y - p0.y - textSize) * 0.5f));
+    drawShadowText(dl, fonts, textSize, textPos, IM_COL32(255, 255, 255, 255), name, bevel,
+                   color(darken(darken(base)), 1.0f));
+
+    const float pip = std::floor(cell * 0.5f);
+    const float gap = std::floor(cell * 0.2f);
+    const float pipBevel = std::max(1.0f, bevel - 1.0f);
+    const float pipTop = p0.y + std::floor((p1.y - p0.y - pip) * 0.5f);
     for (int i = 0; i < kKosToWin; ++i) {
-        const ImVec2 center(p1.x - cell * (0.5f + 0.8f * static_cast<float>(kKosToWin - 1 - i)), (p0.y + p1.y) * 0.5f);
+        const float x = p1.x - std::floor(0.35f * cell) - (pip + gap) * static_cast<float>(kKosToWin - i) + gap;
+        const ImVec2 a(x, pipTop);
+        const ImVec2 b(x + pip, pipTop + pip);
         if (i < kos)
-            dl->AddCircleFilled(center, radius, IM_COL32(255, 220, 60, 255));
-        else
-            dl->AddCircle(center, radius, IM_COL32(255, 255, 255, 200), 0, 1.5f);
+            drawBevelRect(dl, a, b, pipBevel, kKoPipColor, lighten(kKoPipColor), darken(kKoPipColor));
+        else  // sunken: the light edge moves to the bottom-right
+            drawBevelRect(dl, a, b, pipBevel, darken(darken(base)), darken(darken(darken(base))), lighten(base));
     }
 }
 
@@ -260,12 +314,19 @@ void drawCentered(ImDrawList* dl, const Fonts& fonts, float size, float centerX,
     dl->AddText(fonts.hud, size, ImVec2(centerX - extent.x * 0.5f, y), col, text);
 }
 
-// TIME, VS, KO and SENT, with your number on the left.
-void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout, const DuelSession& duel) {
+void drawCenteredShadow(ImDrawList* dl, const Fonts& fonts, float size, float centerX, float y, const char* text,
+                        ImU32 col, float offset, ImU32 shadow = IM_COL32(0, 0, 0, 220)) {
+    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    drawShadowText(dl, fonts, size, ImVec2(centerX - extent.x * 0.5f, y), col, text, offset, shadow);
+}
+
+// TIME, the match target, your COMBO and SENT, with your number on the left. The plates already show the KOs.
+void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout, const DuelSession& duel,
+                    const ComboLabel& combo) {
     const float cell = layout.mine.cell;
     const float cx = layout.left + (kCenterCol + kCenterColumns * 0.5f) * cell;
-    const ImU32 label = IM_COL32(150, 160, 190, 255);
-    const ImU32 value = IM_COL32(235, 235, 245, 255);
+    const ImU32 label = color(kLabelColor, 1.0f);
+    const ImU32 value = color(kTextColor, 1.0f);
     char text[32];
     float y = wellTop(layout.mine) + cell;
 
@@ -275,11 +336,16 @@ void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout
     drawCentered(dl, fonts, cell * 1.1f, cx, y + cell * 0.8f, text,
                  seconds < kTimeWarningSeconds ? IM_COL32(255, 70, 70, 255) : value);
     y += cell * 4.0f;
-    drawCentered(dl, fonts, cell * 1.4f, cx, y, "VS", IM_COL32(255, 200, 60, 255));
+    std::snprintf(text, sizeof text, "FIRST TO %d", kKosToWin);  // explains the pips on the plates
+    drawCenteredShadow(dl, fonts, cell * 0.45f, cx, y, text, color(kKoPipColor, 1.0f), bevelFor(cell * 0.45f));
     y += cell * 3.5f;
-    std::snprintf(text, sizeof text, "%d : %d", duel.kosMine(), duel.kosTheirs());
-    drawCentered(dl, fonts, cell * 0.5f, cx, y, "KO", label);
-    drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, text, value);
+    drawCentered(dl, fonts, cell * 0.5f, cx, y, "COMBO", label);
+    if (combo.shown > 0) {  // fades like the solo label once the combo breaks
+        std::snprintf(text, sizeof text, "x%d", combo.shown);
+        drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, text, color(kKoPipColor, combo.alpha()));
+    } else {
+        drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, "-", label);
+    }
     y += cell * 3.5f;
     std::snprintf(text, sizeof text, "%d : %d", duel.sentMine(), duel.sentTheirs());
     drawCentered(dl, fonts, cell * 0.5f, cx, y, "SENT", label);
@@ -307,6 +373,20 @@ void drawOpponent(ImDrawList* dl, const DuelLayout& layout, const Snapshot& snap
     }
 }
 
+// `fill` text with an `outline` copy drawn `thickness` points away in all eight directions.
+void drawOutlinedText(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, const char* text, ImU32 fill,
+                      ImU32 outline, float thickness) {
+    pos = ImVec2(std::floor(pos.x), std::floor(pos.y));
+    for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+            if (dx != 0 || dy != 0)
+                dl->AddText(fonts.hud, size, ImVec2(pos.x + dx * thickness, pos.y + dy * thickness), outline, text);
+    dl->AddText(fonts.hud, size, pos, fill, text);
+}
+
+constexpr ImU32 kFlashFill = IM_COL32(255, 230, 40, 255);
+constexpr ImU32 kFlashOutline = IM_COL32(255, 120, 0, 200);
+
 // A large yellow "KO!" with an orange glow, centered on the well.
 void drawKoFlash(ImDrawList* dl, const Fonts& fonts, const Layout& well) {
     const char* text = "KO!";
@@ -314,13 +394,18 @@ void drawKoFlash(ImDrawList* dl, const Fonts& fonts, const Layout& well) {
     const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
     const ImVec2 pos(well.origin.x + (kBoardWidth * well.cell - extent.x) * 0.5f,
                      (wellTop(well) + wellBottom(well) - extent.y) * 0.5f);
-    const float glow = std::max(1.0f, std::floor(well.cell * 0.15f));
-    for (int dx = -1; dx <= 1; ++dx)
-        for (int dy = -1; dy <= 1; ++dy)
-            if (dx != 0 || dy != 0)
-                dl->AddText(fonts.hud, size, ImVec2(pos.x + dx * glow, pos.y + dy * glow), IM_COL32(255, 120, 0, 200),
-                            text);
-    dl->AddText(fonts.hud, size, pos, IM_COL32(255, 230, 40, 255), text);
+    drawOutlinedText(dl, fonts, size, pos, text, kFlashFill, kFlashOutline, std::max(1.0f, std::floor(well.cell * 0.15f)));
+}
+
+// "GO!" in the KO flash style, centered on the screen, as play starts.
+void drawGo(const Fonts& fonts) {
+    const char* text = "GO!";
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float size = vp->Size.y * 0.15f;
+    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    const ImVec2 pos(vp->Pos.x + (vp->Size.x - extent.x) * 0.5f, vp->Pos.y + (vp->Size.y - extent.y) * 0.5f);
+    drawOutlinedText(ImGui::GetForegroundDrawList(), fonts, size, pos, text, kFlashFill, kFlashOutline,
+                     std::max(1.0f, std::floor(size * 0.05f)));
 }
 
 // Drops typed characters a name can't contain, so the field only ever holds a valid name or nothing.
@@ -332,6 +417,8 @@ int nameCharFilter(ImGuiInputTextCallbackData* data) {
 void beginMenu(const char* id) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    // Never taller than the screen: a menu that doesn't fit scrolls (wheel or keyboard focus) instead of clipping.
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), vp->WorkSize);
     ImGui::Begin(id, nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings);
@@ -347,10 +434,30 @@ float menuTitle(const Fonts& fonts, const char* title) {
     return width;
 }
 
-float menuButtonWidth() { return ImGui::GetFontSize() * 12.0f; }
+// Press Start 2P is one em per character: wide enough for "Create public room" plus the frame padding.
+float menuButtonWidth() { return ImGui::GetFontSize() * 21.0f; }
 
-bool menuButton(const char* label, float width = menuButtonWidth()) {
-    return ImGui::Button(label, ImVec2(width, 0.0f));
+// A button with the minos' bevel: light top-left, dark bottom-right, swapped while held down. `base` is the
+// button's fill color, and the edges follow the disabled alpha.
+bool bevelButton(const char* label, ImVec2 size, Rgb base = kMyPlateColor) {
+    const bool pressed = ImGui::Button(label, size);
+    const ImVec2 p(std::floor(ImGui::GetItemRectMin().x), std::floor(ImGui::GetItemRectMin().y));
+    const ImVec2 q(std::floor(ImGui::GetItemRectMax().x), std::floor(ImGui::GetItemRectMax().y));
+    const float alpha = ImGui::GetStyle().Alpha;
+    const bool held = ImGui::IsItemActive();
+    const ImU32 topLeft = color(held ? darken(base) : lighten(base), alpha);
+    const ImU32 bottomRight = color(held ? lighten(base) : darken(base), alpha);
+    constexpr float kEdge = 2.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(q.x, p.y + kEdge), topLeft);
+    dl->AddRectFilled(p, ImVec2(p.x + kEdge, q.y), topLeft);
+    dl->AddRectFilled(ImVec2(p.x, q.y - kEdge), q, bottomRight);
+    dl->AddRectFilled(ImVec2(q.x - kEdge, p.y), q, bottomRight);
+    return pressed;
+}
+
+bool menuButton(const char* label, float width = menuButtonWidth(), Rgb base = kMyPlateColor) {
+    return bevelButton(label, ImVec2(width, 0.0f), base);
 }
 
 // The ### keeps one ImGui ID while the label flips, so keyboard focus stays on the item.
@@ -367,44 +474,49 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     const char* theirs = duel.opponentName().empty() ? "FOE" : duel.opponentName().c_str();
     const DuelLayout layout = computeDuelLayout();
     const float cell = layout.mine.cell;
-    drawDuelBackground();
+    drawGridBackground(cell, layout.mine.origin);
     ImDrawList* dl = beginBoardWindow();
-    drawNameBar(dl, fonts, layout.mine, layout.top, mine, IM_COL32(40, 110, 255, 255), IM_COL32(150, 60, 230, 255),
-                duel.kosMine());
-    drawPlayfield(dl, layout.mine, game, fonts, combo);
+    drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, duel.kosMine());
+    drawPlayfield(dl, layout.mine, game, fonts, combo, false);
     drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage());
-    drawScoreboard(dl, fonts, layout, duel);
+    drawScoreboard(dl, fonts, layout, duel, combo);
     drawGarbageMeter(dl, layout.left + kTheirMeterCol * cell, wellBottom(layout.theirs), cell,
                      duel.opponent().pending);
-    drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, IM_COL32(230, 40, 40, 255), IM_COL32(255, 150, 30, 255),
-                duel.kosTheirs());
+    drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, kTheirPlateColor, duel.kosTheirs());
     drawOpponent(dl, layout, duel.opponent(), fonts);
     if (duel.koFlashMs() > 0) drawKoFlash(dl, fonts, layout.mine);
     ImGui::End();
 }
 
+// The digit pops in at 1.3x and settles, centered on the screen, with a hard shadow.
 void drawCountdown(int ms, const Fonts& fonts) {
-    char text[8];
+    char text[12];
     std::snprintf(text, sizeof text, "%d", (ms + 999) / 1000);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float size = vp->Size.y * 0.15f;
-    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    ImGui::GetForegroundDrawList()->AddText(
-        fonts.hud, size,
-        ImVec2(vp->Pos.x + (vp->Size.x - extent.x) * 0.5f, vp->Pos.y + (vp->Size.y - extent.y) * 0.5f),
-        IM_COL32(255, 255, 255, 255), text);
+    const float base = vp->Size.y * 0.15f;
+    const float size = base * countdownPopScale(ms);
+    const float height = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).y;
+    drawCenteredShadow(ImGui::GetForegroundDrawList(), fonts, size, vp->GetCenter().x,
+                       vp->Pos.y + (vp->Size.y - height) * 0.5f, text, IM_COL32(255, 255, 255, 255),
+                       std::max(1.0f, std::floor(base * 0.06f)));
 }
 
-// "Sam vs Kai" under the countdown digit; nothing until both names are known.
+// "SAM VS KAI" under the countdown digit with a gold VS; nothing until both names are known.
 void drawVersus(const Fonts& fonts, const std::string& mine, const std::string& theirs) {
     if (mine.empty() || theirs.empty()) return;
-    const std::string text = mine + " vs " + theirs;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float size = vp->Size.y * 0.04f;
-    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str());
-    ImGui::GetForegroundDrawList()->AddText(
-        fonts.hud, size, ImVec2(vp->Pos.x + (vp->Size.x - extent.x) * 0.5f, vp->Pos.y + vp->Size.y * 0.62f),
-        IM_COL32(255, 255, 255, 230), text.c_str());
+    const float offset = std::max(1.0f, std::floor(size * 0.1f));
+    const std::array<std::pair<const char*, ImU32>, 3> pieces{{{mine.c_str(), IM_COL32(255, 255, 255, 255)},
+                                                               {" VS ", color(kKoPipColor, 1.0f)},
+                                                               {theirs.c_str(), IM_COL32(255, 255, 255, 255)}}};
+    float width = 0.0f;
+    for (const auto& [text, col] : pieces) width += fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x;
+    ImVec2 pos(vp->Pos.x + (vp->Size.x - width) * 0.5f, vp->Pos.y + vp->Size.y * 0.62f);
+    for (const auto& [text, col] : pieces) {
+        drawShadowText(ImGui::GetForegroundDrawList(), fonts, size, pos, col, text, offset);
+        pos.x += fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x;
+    }
 }
 
 const char* resultTitle(DuelOutcome outcome) {
@@ -443,7 +555,12 @@ constexpr int kLobbyVisibleRows = 8;  // the list scrolls past this many
 UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     beginMenu("##lobby");
-    const float width = std::max(menuTitle(fonts, "OPEN ROOMS"), menuButtonWidth());
+    // Wide enough for the longest name next to the Level and Join columns.
+    const std::string widest = std::string(kMaxNameLength, 'M') + " Level Join";
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float tableWidth = ImGui::CalcTextSize(widest.c_str()).x + style.CellPadding.x * 6.0f +
+                             style.FramePadding.x * 2.0f + style.ScrollbarSize;
+    const float width = std::max({menuTitle(fonts, "OPEN ROOMS"), menuButtonWidth(), tableWidth});
     if (!duel.error().empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", duel.error().c_str());
     if (duel.rooms().empty()) {
         ImGui::TextUnformatted("No open rooms yet.");
@@ -482,10 +599,57 @@ UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu
 
 }  // namespace
 
+void applyArcadeStyle(ImGuiStyle& style) {
+    style.FontSizeBase = 12.0f;  // Press Start 2P is wide; 12 keeps the menus on a phone held sideways
+    style.WindowRounding = style.ChildRounding = style.PopupRounding = style.FrameRounding = 0.0f;
+    style.ScrollbarRounding = style.GrabRounding = style.TabRounding = style.ImageRounding = 0.0f;
+    style.TreeLinesRounding = style.MenuItemRounding = 0.0f;
+    style.WindowBorderSize = 2.0f;
+    style.FrameBorderSize = 2.0f;
+    // Tighter than chunky arcade padding, so the start screen's dozen rows still fit a phone held sideways.
+    style.WindowPadding = ImVec2(16.0f, 10.0f);
+    style.FramePadding = ImVec2(10.0f, 4.0f);
+    style.ItemSpacing = ImVec2(8.0f, 4.0f);
+
+    ImVec4* c = style.Colors;
+    c[ImGuiCol_WindowBg] = colorVec(kPanelColor);
+    c[ImGuiCol_Border] = colorVec(kWellBorder);
+    c[ImGuiCol_Separator] = colorVec(kWellBorder);
+    c[ImGuiCol_Button] = colorVec(kMyPlateColor);
+    c[ImGuiCol_ButtonHovered] = colorVec(lighten(kMyPlateColor));
+    c[ImGuiCol_ButtonActive] = colorVec(darken(kMyPlateColor));
+    c[ImGuiCol_FrameBg] = colorVec(kWellFill);
+    c[ImGuiCol_FrameBgHovered] = colorVec(lighten(kWellFill));
+    c[ImGuiCol_FrameBgActive] = colorVec(lighten(lighten(kWellFill)));
+    c[ImGuiCol_SliderGrab] = colorVec(kKoPipColor);
+    c[ImGuiCol_SliderGrabActive] = colorVec(lighten(kKoPipColor));
+    c[ImGuiCol_CheckMark] = colorVec(kKoPipColor);
+    c[ImGuiCol_NavCursor] = colorVec(kKoPipColor);
+    c[ImGuiCol_Header] = colorVec(kMyPlateColor, 0.35f);
+    c[ImGuiCol_HeaderHovered] = colorVec(kMyPlateColor, 0.55f);
+    c[ImGuiCol_HeaderActive] = colorVec(kMyPlateColor, 0.75f);
+    c[ImGuiCol_TableHeaderBg] = colorVec(kMyPlateColor, 0.35f);
+    c[ImGuiCol_TableRowBgAlt] = colorVec(kMyPlateColor, 0.12f);
+    c[ImGuiCol_TextSelectedBg] = colorVec(kMyPlateColor, 0.6f);
+    c[ImGuiCol_Text] = colorVec(kTextColor);
+    c[ImGuiCol_TextDisabled] = colorVec(kLabelColor);
+}
+
 void configureImGuiIo(ImGuiIO& io) {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 }
+
+float countdownPopScale(int countdownMs) {
+    // The digit shown is ceil(ms / 1000); it appeared when ms was last a whole second.
+    const int sinceShown = (1000 - countdownMs % 1000) % 1000;
+    const float t = std::min(1.0f, static_cast<float>(sinceShown) / kCountdownPopMs);
+    return 1.3f - 0.3f * t;
+}
+
+bool showGoBanner(int matchClockMs) { return matchClockMs > kMatchMs - kGoBannerMs; }
+
+bool garbageMeterDanger(int pending) { return pending >= kGarbageDangerLines; }
 
 void ComboLabel::update(int combo, int ms) {
     if (combo >= 1) {
@@ -525,10 +689,14 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
             }
         }
         if (!menu.inviteCode.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.25f, 1.0f));
+            // Gold, so the invite stands out from the plate-blue buttons.
+            ImGui::PushStyleColor(ImGuiCol_Button, colorVec(kKoPipColor));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, colorVec(lighten(kKoPipColor)));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, colorVec(darken(kKoPipColor)));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
             const std::string label = "Join room " + menu.inviteCode;
-            if (menuButton(label.c_str(), width)) command = UiCommand::JoinInvite;
-            ImGui::PopStyleColor();
+            if (menuButton(label.c_str(), width, kKoPipColor)) command = UiCommand::JoinInvite;
+            ImGui::PopStyleColor(4);
         }
         if (menuButton("Quick match", width)) command = UiCommand::QuickMatch;
         if (menuButton("Browse rooms", width)) command = UiCommand::BrowseRooms;
@@ -546,7 +714,7 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
             ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank | ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SameLine();
         ImGui::BeginDisabled(!complete);
-        if ((ImGui::Button("Join room", ImVec2(half, 0.0f)) || entered) && complete) command = UiCommand::JoinRoom;
+        if ((menuButton("Join room", half) || entered) && complete) command = UiCommand::JoinRoom;
         ImGui::EndDisabled();
         if (!menu.error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", menu.error.c_str());
     } else if (menuButton("Quit", width)) {  // a browser tab has nothing to quit
@@ -593,8 +761,10 @@ UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsM
 }
 
 void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo) {
+    const Layout layout = computeLayout();
+    drawGridBackground(layout.cell, layout.origin);
     ImDrawList* dl = beginBoardWindow();
-    drawPlayfield(dl, computeLayout(), game, fonts, combo);
+    drawPlayfield(dl, layout, game, fonts, combo, true);
     ImGui::End();
 }
 
@@ -656,7 +826,10 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
                 static char link[256];  // InputText needs a mutable buffer even when read-only
                 std::snprintf(link, sizeof link, "%s%s", menu.inviteLinkBase.c_str(), duel.roomCode().c_str());
                 ImGui::SetNextItemWidth(menuButtonWidth());
+                // The one field left in the default font: a long URL in the pixel font is unreadable at this size.
+                ImGui::PushFont(fonts.ui, 0.0f);
                 ImGui::InputText("##link", link, sizeof link, ImGuiInputTextFlags_ReadOnly);
+                ImGui::PopFont();
                 if (menu.canCopyLink && menuButton("Copy link")) command = UiCommand::CopyInviteLink;
             }
         }
@@ -670,6 +843,7 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
         break;
     case DuelPhase::Playing:
         drawDuelBoards(duel, fonts, combo, menu);
+        if (showGoBanner(duel.matchClockMs())) drawGo(fonts);
         break;
     case DuelPhase::Result:
         drawDuelBoards(duel, fonts, combo, menu);

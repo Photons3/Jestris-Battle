@@ -10,6 +10,7 @@
 #include "core/game.hpp"
 
 struct ImGuiIO;
+struct ImGuiStyle;
 
 namespace tetris {
 
@@ -49,8 +50,20 @@ struct ComboLabel {
     float alpha() const { return shown > 0 ? static_cast<float>(fadeMs) / kComboFadeMs : 0.0f; }
 };
 
+inline constexpr int kCountdownPopMs = 150;  // each digit settles from 1.3x to 1x over this long
+inline constexpr int kGoBannerMs = 400;      // "GO!" shows for this long once play starts
+
+float countdownPopScale(int countdownMs);  // 1.3 the frame a digit appears, easing to 1.0
+bool showGoBanner(int matchClockMs);       // true for the first kGoBannerMs of the match clock
+
+inline constexpr int kGarbageDangerLines = 4;  // the meter turns red and blinks from this many pending lines
+bool garbageMeterDanger(int pending);
+
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
+// Square corners, beveled frames, the plate and gold colors, and Press Start 2P at a readable base size. Call
+// after StyleColorsDark and before ScaleAllSizes.
+void applyArcadeStyle(ImGuiStyle& style);
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu);
 // Each action with its two key buttons; clicking one sets `controls.capturing`.
 UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsMenu& controls);
