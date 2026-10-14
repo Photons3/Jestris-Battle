@@ -361,7 +361,7 @@ TEST_CASE("game: clearing lines cancels pending garbage before sending any") {
 
 TEST_CASE("game: pending garbage rises when a piece locks without clearing") {
     Game game(seedWithFirst(PieceType::T), 1);
-    game.receiveGarbage(2);
+    game.receiveGarbage(2, 0);
     CHECK(game.pendingGarbage() == 2);
     game.apply(Action::HardDrop);
     CHECK(game.pendingGarbage() == 0);
@@ -425,7 +425,7 @@ TEST_CASE("game: rising garbage never stacks a third bomb on a pair") {
     Board board;
     board.pushGarbage(2, 9);  // a pair in column 9 at the bottom, away from where the T lands
     Game game(seedWithFirst(PieceType::T), 1, board);
-    game.receiveGarbage(1);
+    game.receiveGarbage(1, 0);
     game.apply(Action::HardDrop);  // the T lands on the garbage and the new row goes under the pair
     REQUIRE(game.board().at(9, 1) == PieceType::Bomb);
     REQUIRE(game.board().at(9, 2) == PieceType::Bomb);
@@ -434,7 +434,7 @@ TEST_CASE("game: rising garbage never stacks a third bomb on a pair") {
 
 TEST_CASE("game: a clearing lock holds garbage back until the next lock") {
     Game game(seedWithFirst(PieceType::I), 1, boardWithWell(1, 5));
-    game.receiveGarbage(1);
+    game.receiveGarbage(1, 0);
     dropUprightI(game);
     game.tick(kClearDelayMs);
     CHECK(game.lines() == 1);
@@ -447,16 +447,97 @@ TEST_CASE("game: a clearing lock holds garbage back until the next lock") {
 
 TEST_CASE("game: garbage that pushes blocks off the top ends the game") {
     Game game(seedWithFirst(PieceType::T), 1);
-    game.receiveGarbage(kBoardHeight - 1);
-    game.apply(Action::HardDrop);
+    topOutWithGarbage(game);
     CHECK(game.state() == GameState::GameOver);
 }
 
 TEST_CASE("game: garbage that leaves no room to spawn ends the game") {
-    Game game(seedWithFirst(PieceType::T), 1);
-    game.receiveGarbage(25);
+    Game game(seedWithFirst(PieceType::T), 1, boardWithWell(kVisibleHeight - kMaxGarbagePerLock + 2, 0));
+    game.receiveGarbage(kMaxGarbagePerLock, 0);
     game.apply(Action::HardDrop);
     CHECK(game.state() == GameState::GameOver);
+}
+
+TEST_CASE("game: incoming garbage travels before it can rise") {
+    Game game(seedWithFirstTwo(PieceType::T, PieceType::O), 1);
+    game.receiveGarbage(2);
+    CHECK(game.pendingGarbage() == 2);
+    CHECK(game.readyGarbage() == 0);
+    game.apply(Action::HardDrop);  // locks while the garbage is still travelling
+    CHECK(game.board().garbageRows() == 0);
+    CHECK(game.pendingGarbage() == 2);
+    game.tick(kGarbageTravelMs - 1);
+    CHECK(game.readyGarbage() == 0);
+    game.tick(1);
+    CHECK(game.readyGarbage() == 2);
+    game.apply(Action::HardDrop);
+    CHECK(game.pendingGarbage() == 0);
+    CHECK(game.board().garbageRows() == 2);
+}
+
+TEST_CASE("game: nothing ready, nothing rises") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.receiveGarbage(3);
+    game.apply(Action::HardDrop);
+    const auto events = game.takeEvents();
+    CHECK(std::none_of(events.begin(), events.end(),
+                       [](const GameEvent& e) { return e.type == GameEventType::GarbageRose; }));
+    CHECK(game.pendingGarbage() == 3);
+    CHECK(game.board().garbageRows() == 0);
+}
+
+TEST_CASE("game: each batch travels on its own clock") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.receiveGarbage(1);
+    game.tick(200);
+    game.receiveGarbage(1);
+    game.tick(kGarbageTravelMs - 200);
+    CHECK(game.readyGarbage() == 1);
+    CHECK(game.pendingGarbage() == 2);
+    game.tick(200);
+    CHECK(game.readyGarbage() == 2);
+}
+
+TEST_CASE("game: at most kMaxGarbagePerLock lines rise per lock") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.receiveGarbage(12, 0);
+    game.apply(Action::HardDrop);
+    CHECK(game.pendingGarbage() == 4);
+    CHECK(game.board().garbageRows() == kMaxGarbagePerLock);
+    game.apply(Action::HardDrop);
+    CHECK(game.pendingGarbage() == 0);
+    CHECK(game.board().garbageRows() == 12);
+}
+
+TEST_CASE("game: clears cancel the oldest garbage first") {
+    Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
+    game.receiveGarbage(2, 0);
+    game.receiveGarbage(3);
+    dropUprightI(game);
+    game.tick(kClearDelayMs);  // a tetris attacks 4: the ready 2, then 2 of the travelling 3
+    CHECK(game.pendingGarbage() == 1);
+    CHECK(game.readyGarbage() == 0);  // the clear took 300 ms, so the last line is 33 ms from ready
+    CHECK(game.takeOutgoingAttack() == 0);
+}
+
+TEST_CASE("game: travel stops while paused") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.receiveGarbage(1);
+    game.pause();
+    game.tick(1000);
+    CHECK(game.readyGarbage() == 0);
+    game.resume();
+    game.tick(kGarbageTravelMs);
+    CHECK(game.readyGarbage() == 1);
+}
+
+TEST_CASE("game: resetBoard empties the garbage queue") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.receiveGarbage(2, 0);
+    game.receiveGarbage(3);
+    game.resetBoard();
+    CHECK(game.pendingGarbage() == 0);
+    CHECK(game.readyGarbage() == 0);
 }
 
 TEST_CASE("game: pausing can be turned off for duels") {
@@ -580,8 +661,7 @@ TEST_CASE("game: resetBoard after a top-out empties everything but keeps score, 
     dropUprightI(game);
     game.tick(kClearDelayMs);  // a tetris: 4 lines
     game.apply(Action::Hold);
-    game.receiveGarbage(kBoardHeight - 1);
-    game.apply(Action::HardDrop);
+    topOutWithGarbage(game);
     REQUIRE(game.state() == GameState::GameOver);
     const int score = game.score();
     const PieceType next = game.next(1)[0];
@@ -987,7 +1067,7 @@ TEST_CASE("game events: bomb rows are reported apart from full rows") {
 
 TEST_CASE("game events: garbage rising after a lock is reported") {
     Game game(seedWithFirst(PieceType::T), 1);
-    game.receiveGarbage(2);
+    game.receiveGarbage(2, 0);
     game.apply(Action::HardDrop);
     CHECK(game.takeEvents() == Events{kHardDropped, kGarbageRose});
 }
@@ -1018,8 +1098,7 @@ TEST_CASE("game events: every kind of top-out is reported once") {
     }
     SUBCASE("garbage overflow") {
         Game game(seedWithFirst(PieceType::T), 1);
-        game.receiveGarbage(kBoardHeight - 1);
-        game.apply(Action::HardDrop);
+        topOutWithGarbage(game);
         game.tick(1000);
         CHECK(game.takeEvents() == Events{kHardDropped, kToppedOut});
     }
@@ -1027,8 +1106,7 @@ TEST_CASE("game events: every kind of top-out is reported once") {
 
 TEST_CASE("game events: resetting the board keeps events not yet taken") {
     Game game(seedWithFirst(PieceType::T), 1);
-    game.receiveGarbage(kBoardHeight - 1);
-    game.apply(Action::HardDrop);
+    topOutWithGarbage(game);
     game.resetBoard();
     CHECK(game.takeEvents() == Events{kHardDropped, kToppedOut});
 }
