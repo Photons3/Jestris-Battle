@@ -39,6 +39,18 @@ std::optional<Sound> soundFor(const GameEvent& event, bool inDuel) {
     return std::nullopt;
 }
 
+std::optional<Sound> soundFor(SoloEvent event) {
+    switch (event) {
+    case SoloEvent::CountdownTick:
+        return Sound::CountdownTick;
+    case SoloEvent::Start:
+        return Sound::Go;
+    case SoloEvent::Finished:
+        break;
+    }
+    return std::nullopt;
+}
+
 std::optional<Sound> soundFor(DuelEvent event) {
     switch (event) {
     case DuelEvent::CountdownTick:
@@ -74,6 +86,11 @@ MusicCue soloMusic(const Game& game) {
         break;
     }
     return {};
+}
+
+MusicCue soloMusic(const SoloSession& solo) {
+    if (solo.phase() != SoloPhase::Playing) return {};
+    return soloMusic(solo.game());
 }
 
 MusicCue duelMusic(DuelPhase phase) {
