@@ -29,7 +29,13 @@ TEST_CASE("protocol: every message survives an encode/decode round trip") {
                                         MatchOver{MatchResult::Win, MatchReason::KOs, 12, 7},
                                         MatchOver{MatchResult::Draw, MatchReason::Time, 0, 0},
                                         Hello{"Sam"},
-                                        OpponentName{"x_y-z.9"}};
+                                        OpponentName{"x_y-z.9"},
+                                        CreateRoom{3, true},
+                                        ListRooms{},
+                                        UnlistRooms{},
+                                        QuickMatch{9},
+                                        RoomList{},
+                                        RoomList{{{"ABCD", 3, "Sam"}, {"WXYZ", 15, "Player0001"}}}};
     for (const Message& message : messages) {
         CAPTURE(encode(message));
         const auto decoded = decode(encode(message));
@@ -109,4 +115,28 @@ TEST_CASE("protocol: HELLO and OPP on the wire") {
         CAPTURE(text);
         CHECK_FALSE(decode(text).has_value());
     }
+}
+
+TEST_CASE("protocol: lobby messages on the wire") {
+    CHECK(encode(CreateRoom{3}) == "CREATE 3");  // private stays the old format
+    CHECK(encode(CreateRoom{3, true}) == "CREATE 3 PUB");
+    CHECK(decode("CREATE 3 PRIV") == Message{CreateRoom{3, false}});
+    CHECK(encode(ListRooms{}) == "LIST");
+    CHECK(encode(UnlistRooms{}) == "UNLIST");
+    CHECK(encode(QuickMatch{4}) == "QUICK 4");
+    CHECK(encode(RoomList{}) == "ROOMS");
+    CHECK(encode(RoomList{{{"ABCD", 3, "Sam"}, {"WXYZ", 12, "Kai"}}}) == "ROOMS ABCD:3:Sam WXYZ:12:Kai");
+}
+
+TEST_CASE("protocol: malformed lobby messages are rejected") {
+    for (std::string_view text : {"CREATE 3 OPEN", "CREATE 3 pub", "CREATE 3 PUB x", "LIST x", "UNLIST x", "QUICK",
+                                  "QUICK 0", "QUICK 16", "QUICK x", "ROOMS ", "ROOMS ABCD", "ROOMS ABCD:3",
+                                  "ROOMS ABCD:3:", "ROOMS abcd:3:Sam", "ROOMS ABCD:0:Sam", "ROOMS ABCD:3:Sam:x",
+                                  "ROOMS ABCD:3:a b", "ROOMS ABCD:x:Sam", "ROOMS ABCD:3:Sam "}) {
+        CAPTURE(text);
+        CHECK_FALSE(decode(text).has_value());
+    }
+    std::string tooMany = "ROOMS";
+    for (int i = 0; i <= kMaxListedRooms; ++i) tooMany += " ABCD:1:Sam";
+    CHECK_FALSE(decode(tooMany).has_value());
 }
