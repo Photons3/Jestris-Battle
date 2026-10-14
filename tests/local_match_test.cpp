@@ -138,6 +138,29 @@ TEST_CASE("local match: time up gives the verdict on the totals") {
     CHECK(over == verdictFor(last.mine, last.theirs, 3, attackLines(got), MatchReason::Time));
 }
 
+TEST_CASE("local match: the bot stops at 0:00 and waits out the grace like the human") {
+    LocalMatch match(BotLevel::Hard, 10);
+    startPlaying(match);
+    match.update(kMatchMs);  // the clock now reads 0:00
+    drain(match);
+    REQUIRE(match.botGame() != nullptr);
+    const Snapshot atZero = snapshotOf(*match.botGame());
+    const Piece pieceAtZero = match.botGame()->active();
+    match.update(kLocalMatchGraceMs - 1);
+    const auto during = drain(match);
+    CHECK(countOf<Attack>(during) == 0);
+    CHECK(countOf<KoCounts>(during) == 0);
+    CHECK(countOf<Snapshot>(during) == 0);
+    CHECK(snapshotOf(*match.botGame()) == atZero);
+    CHECK(match.botGame()->active().pos.x == pieceAtZero.pos.x);
+    CHECK(match.botGame()->active().pos.y == pieceAtZero.pos.y);
+    CHECK(match.botGame()->active().rotation == pieceAtZero.rotation);
+    match.update(1);
+    const auto end = drain(match);
+    REQUIRE(end.size() == 1);
+    CHECK(std::get<MatchOver>(end[0]).reason == MatchReason::Time);
+}
+
 TEST_CASE("local match: a long update still plays and ends on time") {
     LocalMatch match(BotLevel::Hard, 7);
     match.send(encode(CreateRoom{1, false}));

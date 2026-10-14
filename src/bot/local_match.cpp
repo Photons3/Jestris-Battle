@@ -69,7 +69,8 @@ void LocalMatch::update(int ms) {
 
 void LocalMatch::step() {
     ++clockMs_;
-    if (clockMs_ > kCountdownMs) {
+    // The bot plays from the end of the countdown to 0:00; through the grace after it, it is frozen like the human.
+    if (clockMs_ > kCountdownMs && clockMs_ <= kCountdownMs + kMatchMs) {
         if (koFlashMs_ > 0) {
             --koFlashMs_;
         } else {
