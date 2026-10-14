@@ -142,6 +142,17 @@ inline constexpr float kMiniCellCap = 0.75f;  // a mini board's cell, at most, a
 // The mini boards' cell in whole pixels: the grid's cell, capped so they stay smaller than your own well.
 float royaleMiniCell(float gridCell, float ownCell);
 
+// The room screen's line under the code: listed, private, or a neutral hint when this player can't know.
+const char* roomVisibilityText(RoomVisibility visibility);
+
+// One roster line on the room and result screens: a star on the host, " (next match)" on a player who isn't in
+// the running match, and `me` for our own row, drawn in our plate color.
+struct RosterRow {
+    std::string text;
+    bool me = false;
+};
+std::vector<RosterRow> rosterRows(const std::vector<RosterEntry>& roster, int hostId, int myId);
+
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
 // Square corners, beveled frames, the plate and gold colors, and Press Start 2P at a readable base size. Call

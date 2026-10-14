@@ -73,7 +73,7 @@ void applyCommand(App& app, UiCommand command) {
         app.duel.quickMatch(app.menu.startLevel);
         break;
     case UiCommand::JoinListedRoom:
-        app.duel.joinRoom(app.menu.pickedRoom);
+        app.duel.joinRoom(app.menu.pickedRoom, RoomVisibility::Public);  // it was in the public list
         break;
     case UiCommand::SavePublic:
         app.saveSettings();

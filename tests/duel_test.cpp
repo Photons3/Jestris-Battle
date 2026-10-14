@@ -627,7 +627,7 @@ TEST_CASE("duel: a public room from the lobby") {
     wire.sent.clear();
     duel.createRoom(4, true);
     CHECK(wire.sent == std::vector<std::string>{"CREATE 4 PUB"});
-    CHECK(duel.publicRoom());
+    CHECK(duel.visibility() == RoomVisibility::Public);
     CHECK_FALSE(duel.quickMatching());
 }
 
@@ -1210,4 +1210,108 @@ TEST_CASE("royale: a duel result has no standings or royale title") {
     REQUIRE(duel.phase() == DuelPhase::Result);
     CHECK(royaleStandings(duel).empty());
     CHECK(royaleResultTitle(duel).empty());
+}
+
+TEST_CASE("royale: the winner's board stays alive and is placed #1") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    duel.onMessage("OUT 2 4");
+    duel.onMessage("OUT 1 3");
+    duel.onMessage("OUT 3 2");
+    duel.onMessage("OUT 4 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    REQUIRE(duel.opponents()[2].id == 4);
+    CHECK(duel.opponents()[2].alive);
+    CHECK(duel.opponents()[2].place == 1);
+    CHECK_FALSE(duel.opponents()[1].alive);
+    CHECK(duel.opponents()[1].place == 2);
+}
+
+TEST_CASE("royale: surviving a simultaneous top-out wins and is no longer eliminated") {
+    Wire wire;
+    DuelSession duel(wire.sender(), [](const StartMatch& start) {
+        return Game(start.seed, start.startLevel, Board{},
+                    GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
+    });
+    startRoyale(duel, wire);
+    duel.onMessage("OUT 2 4");
+    duel.onMessage("OUT 3 3");
+    topOutWithGarbage(*duel.game());
+    duel.update(0);
+    REQUIRE(duel.eliminated());
+    duel.onMessage("OUT 4 2");  // Di's DEAD reached the server first
+    duel.onMessage("OUT 1 1");
+    CHECK(duel.phase() == DuelPhase::Result);
+    CHECK(duel.outcome() == DuelOutcome::Won);
+    CHECK(duel.myPlace() == 1);
+    CHECK_FALSE(duel.eliminated());  // no "OUT · #1" over the winner's well
+}
+
+TEST_CASE("royale: a late OUT on the result screen records the place without finishing again") {
+    SUBCASE("an opponent's") {
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startRoyale(duel, wire);
+        duel.onMessage("OUT 2 4");
+        duel.onMessage("OUT 1 3");
+        duel.onMessage("OUT 3 1");
+        REQUIRE(duel.phase() == DuelPhase::Result);
+        duel.takeEvents();
+        duel.onMessage("OUT 4 2");
+        CHECK(duel.phase() == DuelPhase::Result);
+        CHECK(duel.outcome() == DuelOutcome::Lost);
+        CHECK(duel.takeEvents().empty());
+        CHECK_FALSE(duel.opponents()[2].alive);
+        CHECK(duel.opponents()[2].place == 2);
+        std::vector<int> places;
+        for (const Standing& s : royaleStandings(duel)) places.push_back(s.place);
+        CHECK(places == std::vector<int>{1, 2, 3, 4});
+    }
+    SUBCASE("our own") {
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startRoyale(duel, wire);
+        duel.onMessage("OUT 2 4");
+        duel.onMessage("OUT 4 3");
+        duel.onMessage("OUT 3 1");
+        REQUIRE(duel.outcome() == DuelOutcome::Lost);
+        duel.takeEvents();
+        duel.onMessage("OUT 1 2");
+        CHECK(duel.myPlace() == 2);
+        CHECK(royaleResultTitle(duel) == "#2 of 4");
+        CHECK(duel.takeEvents().empty());
+    }
+}
+
+TEST_CASE("duel: the room's visibility comes from how it was entered") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    CHECK(duel.visibility() == RoomVisibility::Unknown);
+    duel.createRoom(1, false);
+    CHECK(duel.visibility() == RoomVisibility::Private);
+    duel.createRoom(1, true);
+    CHECK(duel.visibility() == RoomVisibility::Public);
+    duel.quickMatch(1);
+    CHECK(duel.visibility() == RoomVisibility::Public);
+    duel.openLobby();
+    duel.joinRoom("ABCD", RoomVisibility::Public);  // picked from Browse rooms, so it is listed
+    CHECK(duel.visibility() == RoomVisibility::Public);
+    duel.onMessage("ROOM ABCD 2");
+    CHECK(duel.phase() == DuelPhase::Room);
+    CHECK(duel.visibility() == RoomVisibility::Public);
+    duel.leave();
+    duel.joinRoom("ABCD");  // a typed code or an invite link: it could be either
+    CHECK(duel.visibility() == RoomVisibility::Unknown);
+    CHECK(wire.sent.back() == "JOIN ABCD");
+}
+
+TEST_CASE("duel: myName is our room name from the roster") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.joinRoom("ABCD");
+    duel.onMessage("ROOM ABCD 2");
+    CHECK(duel.myName().empty());
+    duel.onMessage("PLAYERS 1 1:Sam:0 2:Sam2:0");
+    CHECK(duel.myName() == "Sam2");
 }

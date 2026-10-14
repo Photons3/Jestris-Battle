@@ -57,6 +57,11 @@ const Snapshot& DuelSession::opponent() const {
     return opponents_.empty() ? kNoSnapshot : opponents_.front().snapshot;
 }
 
+const std::string& DuelSession::myName() const {
+    const auto me = std::ranges::find(roster_, myId_, &RosterEntry::id);
+    return me != roster_.end() ? me->name : kNoName;
+}
+
 const std::string& DuelSession::opponentName() const {
     return opponents_.empty() ? kNoName : opponents_.front().name;
 }
@@ -81,8 +86,8 @@ std::vector<Standing> royaleStandings(const DuelSession& duel) {
     std::vector<Standing> standings;
     for (const OpponentView& opponent : duel.opponents())
         standings.push_back({opponent.place, opponent.name, opponent.snapshot.stats.attack, false});
-    const auto me = std::ranges::find(duel.roster(), duel.myId(), &RosterEntry::id);  // our name stays while we're in
-    standings.push_back({duel.myPlace(), me != duel.roster().end() ? me->name : std::string("You"),
+    // Our name stays in the roster while we're in the room.
+    standings.push_back({duel.myPlace(), duel.myName().empty() ? std::string("You") : duel.myName(),
                          duel.game() ? duel.game()->stats().attack : 0, true});
     // An unplaced player (place 0) can't happen once OUT ... 1 arrives, but would sort last rather than first.
     std::ranges::stable_sort(standings, {}, [](const Standing& s) { return s.place > 0 ? s.place : INT_MAX; });
@@ -128,27 +133,27 @@ void DuelSession::openLobby() {
 }
 
 // Resets for a new room request, remembering whether it came from the lobby.
-void DuelSession::beginRequest(bool isPublic, bool quick) {
+void DuelSession::beginRequest(RoomVisibility visibility, bool quick) {
     const bool fromLobby = phase_ == DuelPhase::Lobby;
     reset();
     phase_ = DuelPhase::Waiting;
     fromLobby_ = fromLobby;
-    publicRoom_ = isPublic;
+    visibility_ = visibility;
     quick_ = quick;
 }
 
 void DuelSession::createRoom(int startLevel, bool isPublic) {
-    beginRequest(isPublic, false);
+    beginRequest(isPublic ? RoomVisibility::Public : RoomVisibility::Private, false);
     send(CreateRoom{clampStartLevel(startLevel), isPublic});
 }
 
-void DuelSession::joinRoom(const std::string& code) {
-    beginRequest(false, false);
+void DuelSession::joinRoom(const std::string& code, RoomVisibility visibility) {
+    beginRequest(visibility, false);
     send(JoinRoom{code});
 }
 
 void DuelSession::quickMatch(int startLevel) {
-    beginRequest(true, true);
+    beginRequest(RoomVisibility::Public, true);
     send(QuickMatch{clampStartLevel(startLevel)});
 }
 
@@ -220,14 +225,20 @@ void DuelSession::onMessage(std::string_view text) {
             finish(outcomeOf(over->result));
         }
     } else if (const auto* out = std::get_if<PlayerOut>(&*message)) {
-        if (inMatch() && mode_ == DuelMode::Royale) {
-            if (out->id == myId_) myPlace_ = out->place;
+        // A late OUT on the result screen still places a player nobody has placed yet, so the standings never
+        // show #0, but it doesn't end the match again.
+        const bool late = phase_ == DuelPhase::Result;
+        if ((inMatch() || late) && mode_ == DuelMode::Royale) {
+            if (out->id == myId_ && (!late || myPlace_ == 0)) {
+                myPlace_ = out->place;
+                if (out->place == 1) eliminated_ = false;  // survived a simultaneous top-out: the winner isn't out
+            }
             for (OpponentView& opponent : opponents_) {
-                if (opponent.id != out->id) continue;
-                opponent.alive = false;
+                if (opponent.id != out->id || (late && opponent.place != 0)) continue;
+                if (out->place > 1) opponent.alive = false;  // the winner's board stays lit
                 opponent.place = out->place;
             }
-            if (out->place == 1) finish(out->id == myId_ ? DuelOutcome::Won : DuelOutcome::Lost);
+            if (out->place == 1 && !late) finish(out->id == myId_ ? DuelOutcome::Won : DuelOutcome::Lost);
         }
     } else if (std::holds_alternative<OpponentLeft>(*message)) {
         if (inMatch() && mode_ == DuelMode::Duel) finish(DuelOutcome::OpponentLeft);  // only duels send LEFT
@@ -336,7 +347,7 @@ void DuelSession::reset() {
     startLevel_ = 1;
     rooms_.clear();
     fromLobby_ = false;
-    publicRoom_ = false;
+    visibility_ = RoomVisibility::Unknown;
     quick_ = false;
     error_.clear();
     countdownMs_ = 0;

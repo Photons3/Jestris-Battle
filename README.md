@@ -1,7 +1,8 @@
 # Jestris Battle
 
 C++20 Tetris on SDL3 and Dear ImGui. Plays solo on the desktop or in the browser, as a practice
-duel against a bot, and as a 1v1 duel between two browsers on the same LAN.
+duel against a bot, and in rooms of up to 16 browsers on the same LAN: a 1v1 duel for two players, and a
+battle royale for three or more.
 
 ## Desktop build and tests
 

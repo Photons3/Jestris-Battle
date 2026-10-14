@@ -30,6 +30,9 @@ int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch);
 enum class DuelPhase { Idle, Lobby, Waiting, Room, Countdown, Playing, Result };
 enum class DuelMode { Duel, Royale };  // from the number of players in START: 2 is a duel
 enum class DuelOutcome { None, Won, Lost, Draw, OpponentLeft };
+// Whether the room is listed in Browse rooms, as far as this player knows. A typed code or an invite link could
+// open either kind, and nothing on the wire says which.
+enum class RoomVisibility { Unknown, Public, Private };
 using DuelReason = MatchReason;  // why a Won, Lost or Draw match ended, from the server's OVER
 
 // Something that just happened in the duel, for sound and effects. Our own top-out is reported by the Game.
@@ -61,7 +64,8 @@ public:
 
     void openLobby();  // Idle -> Lobby; the server then pushes the room list
     void createRoom(int startLevel, bool isPublic = false);
-    void joinRoom(const std::string& code);
+    // `visibility` is Public for a room picked from Browse rooms, else Unknown.
+    void joinRoom(const std::string& code, RoomVisibility visibility = RoomVisibility::Unknown);
     void quickMatch(int startLevel);  // joins the oldest open public room, or waits in a new one
     void begin();  // BEGIN: only the host, in Room or Result, with 2 or more players in the room
     void leave();  // back to Idle; the caller closes the connection
@@ -79,6 +83,7 @@ public:
     int hostId() const { return hostId_; }                      // from PLAYERS; 0 before the first
     bool isHost() const { return myId_ != 0 && myId_ == hostId_; }
     const std::vector<RosterEntry>& roster() const { return roster_; }  // everyone in the room, in join order
+    const std::string& myName() const;  // our room name from the roster, or "" before it lists us
     DuelMode mode() const { return mode_; }
     const std::vector<OpponentView>& opponents() const { return opponents_; }  // the match's others, by id
     const Snapshot& opponent() const;         // the first opponent's board, or an empty Snapshot
@@ -89,7 +94,7 @@ public:
     int myPlace() const { return myPlace_; }  // royale: 0 until this player's OUT
     int countdownMs() const { return countdownMs_; }
     const std::vector<RoomInfo>& rooms() const { return rooms_; }      // the lobby list, while in Lobby
-    bool publicRoom() const { return publicRoom_; }                    // the room we wait in is listed
+    RoomVisibility visibility() const { return visibility_; }          // of the room we asked for or are in
     bool quickMatching() const { return quick_; }                      // waiting came from Quick match
     DuelReason reason() const { return reason_; }
     int kosMine() const { return kosMine_; }  // KOs this player has scored, from the server's KO messages
@@ -111,7 +116,7 @@ public:
     const Game* game() const { return game_ ? &*game_ : nullptr; }
 
 private:
-    void beginRequest(bool isPublic, bool quick);
+    void beginRequest(RoomVisibility visibility, bool quick);
     void send(const Message& message) { send_(encode(message)); }
     void startMatch(const StartMatch& start);
     void finish(DuelOutcome outcome);
@@ -134,7 +139,7 @@ private:
     int startLevel_ = 1;  // of the current match, for the royale level floor
     std::vector<RoomInfo> rooms_;
     bool fromLobby_ = false;  // Waiting was entered from Lobby, so a refusal goes back there
-    bool publicRoom_ = false;
+    RoomVisibility visibility_ = RoomVisibility::Unknown;
     bool quick_ = false;
     std::string error_;
     int countdownMs_ = 0;
