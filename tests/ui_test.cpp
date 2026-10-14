@@ -1,5 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <cstdio>
+#include <string>
+
 #include "app/render.hpp"
 #include "imgui.h"
 
@@ -85,5 +88,45 @@ TEST_CASE("ui: the controls screen draws, and a key button pressed from the keyb
     CHECK(controls.capturing->second == 0);
     CHECK(controls.note.empty());
     controlsFrame(keymap, controls);  // the "Press a key..." label keeps the same ID
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the start screen draws the Name field and keeps the saved name") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 900.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    StartMenu menu;
+    menu.duelsEnabled = true;
+    menu.playerName = "Sam";
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    for (int frame = 0; frame < 2; ++frame) {
+        ImGui::NewFrame();
+        CHECK(drawStartScreen(Fonts{}, menu) == UiCommand::None);
+        ImGui::EndFrame();
+    }
+    CHECK(menu.playerName == "Sam");
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the lobby draws its room list") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 900.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    DuelSession duel([](const std::string&) {});
+    duel.openLobby();
+    duel.onMessage("ROOMS ABCD:3:Sam WXYZ:5:Kai");
+    StartMenu menu;
+    for (int frame = 0; frame < 2; ++frame) {
+        ImGui::NewFrame();
+        CHECK(drawDuel(duel, Fonts{}, ComboLabel{}, menu) == UiCommand::None);
+        ImGui::EndFrame();
+    }
+    CHECK(menu.pickedRoom.empty());
     ImGui::DestroyContext();
 }

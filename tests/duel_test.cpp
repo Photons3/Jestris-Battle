@@ -517,3 +517,107 @@ TEST_CASE("duel: catching up after a hidden tab runs the clock and sends the new
     REQUIRE(wire.sent.size() == 1);
     CHECK(wire.sent[0].starts_with("SNAP "));
 }
+
+TEST_CASE("duel: OPP while waiting names the opponent, and leaving forgets it") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.joinRoom("ABCD");
+    duel.onMessage("OPP Kai");
+    CHECK(duel.opponentName() == "Kai");
+    duel.onMessage("START 7 1");
+    CHECK(duel.opponentName() == "Kai");
+    duel.leave();
+    CHECK(duel.opponentName().empty());
+}
+
+TEST_CASE("duel: OPP outside Waiting is ignored") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.onMessage("OPP Kai");  // Idle
+    CHECK(duel.opponentName().empty());
+    startMatch(duel, wire);
+    duel.onMessage("OPP Zed");  // Playing
+    CHECK(duel.opponentName().empty());
+}
+
+TEST_CASE("duel: the opponent-left line uses the name when known") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("OPP Kai");
+    duel.onMessage("START 7 1");
+    duel.onMessage("LEFT");
+    CHECK(resultReasonText(duel) == "Kai left the match");
+}
+
+TEST_CASE("duel: the lobby sends LIST and keeps the pushed list") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.openLobby();
+    CHECK(duel.phase() == DuelPhase::Lobby);
+    CHECK(wire.sent == std::vector<std::string>{"LIST"});
+    duel.onMessage("ROOMS ABCD:3:Sam");
+    REQUIRE(duel.rooms().size() == 1);
+    CHECK(duel.rooms()[0] == RoomInfo{"ABCD", 3, "Sam"});
+    duel.onMessage("ROOMS");
+    CHECK(duel.rooms().empty());
+}
+
+TEST_CASE("duel: ROOMS outside the lobby is ignored") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("ROOMS ABCD:3:Sam");
+    CHECK(duel.rooms().empty());
+}
+
+TEST_CASE("duel: a refused join from the lobby goes back to the lobby") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.openLobby();
+    duel.onMessage("ROOMS ABCD:3:Sam");
+    duel.joinRoom("ABCD");
+    CHECK(duel.phase() == DuelPhase::Waiting);
+    wire.sent.clear();
+    duel.onMessage("ERR room is full");
+    CHECK(duel.phase() == DuelPhase::Lobby);
+    CHECK(duel.error() == "room is full");
+    CHECK(wire.sent == std::vector<std::string>{"LIST"});
+}
+
+TEST_CASE("duel: a refused join from the start screen still goes to idle") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.joinRoom("ABCD");
+    duel.onMessage("ERR unknown room");
+    CHECK(duel.phase() == DuelPhase::Idle);
+}
+
+TEST_CASE("duel: a public room from the lobby") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.openLobby();
+    wire.sent.clear();
+    duel.createRoom(4, true);
+    CHECK(wire.sent == std::vector<std::string>{"CREATE 4 PUB"});
+    CHECK(duel.publicRoom());
+    CHECK_FALSE(duel.quickMatching());
+}
+
+TEST_CASE("duel: quick match waits as a host or starts as a joiner") {
+    Wire wire;
+    DuelSession host(wire.sender());
+    host.quickMatch(2);
+    CHECK(wire.sent == std::vector<std::string>{"QUICK 2"});
+    CHECK(host.quickMatching());
+    host.onMessage("ROOM ABCD");
+    CHECK(host.roomCode() == "ABCD");
+    CHECK(host.phase() == DuelPhase::Waiting);
+
+    DuelSession joiner(wire.sender());
+    joiner.quickMatch(9);
+    joiner.onMessage("OPP Sam");
+    joiner.onMessage("START 7 2");
+    CHECK(joiner.phase() == DuelPhase::Countdown);
+    CHECK(joiner.opponentName() == "Sam");
+}

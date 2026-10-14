@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "app/settings.hpp"
+#include "net/protocol.hpp"
 
 using namespace tetris;
 
@@ -67,4 +68,31 @@ TEST_CASE("settings: a key listed twice stays with the first action") {
 TEST_CASE("settings: Pause always ends up with a key") {
     const Settings loaded = parseSettings("version=1\nPause=0 0\n");
     CHECK(loaded.keys.at(Key::Pause, 0) == SDL_SCANCODE_ESCAPE);
+}
+
+TEST_CASE("settings: the player name round-trips") {
+    Settings settings;
+    settings.playerName = "Sam_99";
+    CHECK(parseSettings(serializeSettings(settings)).playerName == "Sam_99");
+}
+
+TEST_CASE("settings: a missing or invalid name loads as empty") {
+    CHECK(parseSettings("version=1\n").playerName.empty());
+    CHECK(parseSettings("version=1\nname=two words\n").playerName.empty());
+    CHECK(parseSettings("version=1\nname=abcdefghijklm\n").playerName.empty());
+    CHECK(parseSettings("version=1\nname=\n").playerName.empty());
+}
+
+TEST_CASE("settings: the default name is Player and four digits") {
+    CHECK(defaultPlayerName(4821) == "Player4821");
+    CHECK(defaultPlayerName(7) == "Player0007");
+    CHECK(defaultPlayerName(123456) == "Player3456");
+    CHECK(isValidName(defaultPlayerName(0xFFFFFFFFu)));
+}
+
+TEST_CASE("settings: the public-room choice round-trips and defaults to off") {
+    Settings settings;
+    CHECK_FALSE(parseSettings(serializeSettings(settings)).publicRooms);
+    settings.publicRooms = true;
+    CHECK(parseSettings(serializeSettings(settings)).publicRooms);
 }

@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "net/connection.hpp"
+#include "net/protocol.hpp"
 
 namespace tetris {
 namespace {
@@ -86,6 +87,32 @@ std::unique_ptr<Connection> connectToServer() {
     const std::string url =
         emscripten_run_script_string("(location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'");
     return std::make_unique<WebSocketConnection>(url);
+}
+
+std::string takeInviteCode() {
+    return emscripten_run_script_string(
+        "(function () {"
+        "  var url = new URL(location.href), code = url.searchParams.get('room') || '';"
+        "  if (code) {"
+        "    url.searchParams.delete('room');"  // a reload must not rejoin a room that is gone
+        "    history.replaceState(null, '', url.pathname + url.search + url.hash);"
+        "  }"
+        "  return code.slice(0, 8);"
+        "})()");
+}
+
+std::string inviteLinkBase() { return emscripten_run_script_string("location.origin + location.pathname + '?room='"); }
+
+// The Clipboard API exists only in secure contexts: https://, or localhost, never a plain-http LAN address.
+bool canCopyToClipboard() {
+    return emscripten_run_script_int("window.isSecureContext && navigator.clipboard ? 1 : 0") != 0;
+}
+
+void copyInviteLink(const std::string& code) {
+    if (!isRoomCode(code)) return;  // only A-Z ever reaches the script
+    const std::string script =
+        "navigator.clipboard.writeText(location.origin + location.pathname + '?room=" + code + "')";
+    emscripten_run_script(script.c_str());
 }
 
 }  // namespace tetris

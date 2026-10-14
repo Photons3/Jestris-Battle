@@ -89,7 +89,7 @@ add_library(tetris_settings STATIC
   src/app/keymap.cpp
   src/app/settings.cpp)
 target_include_directories(tetris_settings PUBLIC src)
-target_link_libraries(tetris_settings PUBLIC tetris_input SDL3::SDL3)
+target_link_libraries(tetris_settings PUBLIC tetris_input tetris_duel SDL3::SDL3)
 target_compile_options(tetris_settings PRIVATE ${TETRIS_WARNINGS})
 
 add_executable(tetris

@@ -42,7 +42,7 @@ struct App {
     bool hidden = false;  // tab hidden or window minimized: keep stepping, skip drawing and sound
 
     void newGame();
-    void openDuel();   // connects to the server and shows the duel screens
+    void openDuel();   // connects (once) and shows the duel screens
     void closeDuel();  // leaves the room, disconnects and returns to the start screen
     void toggleMusic();                   // flips the music on or off and saves it
     void syncMusic(const MusicCue& cue);  // starts, pauses, retimes or stops the music to match `cue`

@@ -323,6 +323,12 @@ void drawKoFlash(ImDrawList* dl, const Fonts& fonts, const Layout& well) {
     dl->AddText(fonts.hud, size, pos, IM_COL32(255, 230, 40, 255), text);
 }
 
+// Drops typed characters a name can't contain, so the field only ever holds a valid name or nothing.
+int nameCharFilter(ImGuiInputTextCallbackData* data) {
+    const ImWchar c = data->EventChar;
+    return c < 128 && isNameChar(static_cast<char>(c)) ? 0 : 1;
+}
+
 void beginMenu(const char* id) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -355,20 +361,22 @@ bool musicButton(bool off, float width = menuButtonWidth()) {
     return menuButton(off ? "Music: Off###music" : "Music: On###music", width);
 }
 
-void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo) {
+void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const StartMenu& menu) {
     const Game& game = *duel.game();
+    const char* mine = menu.playerName.empty() ? "YOU" : menu.playerName.c_str();
+    const char* theirs = duel.opponentName().empty() ? "FOE" : duel.opponentName().c_str();
     const DuelLayout layout = computeDuelLayout();
     const float cell = layout.mine.cell;
     drawDuelBackground();
     ImDrawList* dl = beginBoardWindow();
-    drawNameBar(dl, fonts, layout.mine, layout.top, "YOU", IM_COL32(40, 110, 255, 255), IM_COL32(150, 60, 230, 255),
+    drawNameBar(dl, fonts, layout.mine, layout.top, mine, IM_COL32(40, 110, 255, 255), IM_COL32(150, 60, 230, 255),
                 duel.kosMine());
     drawPlayfield(dl, layout.mine, game, fonts, combo);
     drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage());
     drawScoreboard(dl, fonts, layout, duel);
     drawGarbageMeter(dl, layout.left + kTheirMeterCol * cell, wellBottom(layout.theirs), cell,
                      duel.opponent().pending);
-    drawNameBar(dl, fonts, layout.theirs, layout.top, "FOE", IM_COL32(230, 40, 40, 255), IM_COL32(255, 150, 30, 255),
+    drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, IM_COL32(230, 40, 40, 255), IM_COL32(255, 150, 30, 255),
                 duel.kosTheirs());
     drawOpponent(dl, layout, duel.opponent(), fonts);
     if (duel.koFlashMs() > 0) drawKoFlash(dl, fonts, layout.mine);
@@ -385,6 +393,18 @@ void drawCountdown(int ms, const Fonts& fonts) {
         fonts.hud, size,
         ImVec2(vp->Pos.x + (vp->Size.x - extent.x) * 0.5f, vp->Pos.y + (vp->Size.y - extent.y) * 0.5f),
         IM_COL32(255, 255, 255, 255), text);
+}
+
+// "Sam vs Kai" under the countdown digit; nothing until both names are known.
+void drawVersus(const Fonts& fonts, const std::string& mine, const std::string& theirs) {
+    if (mine.empty() || theirs.empty()) return;
+    const std::string text = mine + " vs " + theirs;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float size = vp->Size.y * 0.04f;
+    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str());
+    ImGui::GetForegroundDrawList()->AddText(
+        fonts.hud, size, ImVec2(vp->Pos.x + (vp->Size.x - extent.x) * 0.5f, vp->Pos.y + vp->Size.y * 0.62f),
+        IM_COL32(255, 255, 255, 230), text.c_str());
 }
 
 const char* resultTitle(DuelOutcome outcome) {
@@ -405,13 +425,57 @@ UiCommand drawDuelResult(const DuelSession& duel, const Fonts& fonts) {
     ImGui::TextUnformatted(resultReasonText(duel).c_str());
     ImGui::Spacing();
     if (duel.opponentGone()) {
-        if (duel.outcome() != DuelOutcome::OpponentLeft) ImGui::TextUnformatted("Opponent left.");
+        if (duel.outcome() != DuelOutcome::OpponentLeft)
+            ImGui::TextUnformatted(
+                ((duel.opponentName().empty() ? std::string("Opponent") : duel.opponentName()) + " left.").c_str());
     } else if (duel.rematchRequested()) {
         ImGui::TextUnformatted("Waiting for opponent...");
     } else if (menuButton("Rematch")) {
         command = UiCommand::Rematch;
     }
     if (menuButton("Leave")) command = UiCommand::LeaveDuel;
+    ImGui::End();
+    return command;
+}
+
+constexpr int kLobbyVisibleRows = 8;  // the list scrolls past this many
+
+UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu) {
+    UiCommand command = UiCommand::None;
+    beginMenu("##lobby");
+    const float width = std::max(menuTitle(fonts, "OPEN ROOMS"), menuButtonWidth());
+    if (!duel.error().empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", duel.error().c_str());
+    if (duel.rooms().empty()) {
+        ImGui::TextUnformatted("No open rooms yet.");
+    } else {
+        const float height = ImGui::GetFrameHeightWithSpacing() * kLobbyVisibleRows;
+        if (ImGui::BeginTable("##rooms", 3, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg, ImVec2(width, height))) {
+            ImGui::TableSetupColumn("Host", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("##join", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+            for (const RoomInfo& room : duel.rooms()) {
+                ImGui::PushID(room.code.c_str());
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(room.host.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%d", room.startLevel);
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton("Join")) {
+                    menu.pickedRoom = room.code;
+                    command = UiCommand::JoinListedRoom;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::Spacing();
+    if (menuButton("Quick match", width)) command = UiCommand::QuickMatch;
+    if (menuButton("Create public room", width)) command = UiCommand::CreatePublicRoom;
+    if (menuButton("Back", width)) command = UiCommand::LeaveDuel;
     ImGui::End();
     return command;
 }
@@ -448,7 +512,31 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     if (menu.duelsEnabled) {
         ImGui::Spacing();
         ImGui::SeparatorText("1v1 DUEL");
-        if (menuButton("Create room", width)) command = UiCommand::CreateRoom;
+        ImGui::SetNextItemWidth(width);
+        ImGui::InputTextWithHint("##name", "NAME", menu.nameEdit, sizeof menu.nameEdit,
+                                 ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CharsNoBlank,
+                                 nameCharFilter);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (menu.nameEdit[0] != '\0') {
+                menu.playerName = menu.nameEdit;
+                command = UiCommand::SaveName;
+            } else {  // an empty name isn't allowed: put the saved one back
+                std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+            }
+        }
+        if (!menu.inviteCode.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.25f, 1.0f));
+            const std::string label = "Join room " + menu.inviteCode;
+            if (menuButton(label.c_str(), width)) command = UiCommand::JoinInvite;
+            ImGui::PopStyleColor();
+        }
+        if (menuButton("Quick match", width)) command = UiCommand::QuickMatch;
+        if (menuButton("Browse rooms", width)) command = UiCommand::BrowseRooms;
+        // Create room and the Public box share one row.
+        const float createWidth = width * 0.62f;
+        if (menuButton("Create room", createWidth)) command = UiCommand::CreateRoom;
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Public", &menu.publicRooms)) command = UiCommand::SavePublic;
         const bool complete = static_cast<int>(std::strlen(menu.joinCode)) == kRoomCodeLength;
         // The code box and Join room share one row, half each.
         const float half = (width - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
@@ -542,34 +630,49 @@ void drawMutedBadge(const Fonts& fonts) {
     drawLabel(ImGui::GetForegroundDrawList(), fonts, size, pos, text);
 }
 
-UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo) {
+UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     switch (duel.phase()) {
     case DuelPhase::Idle:
         break;
+    case DuelPhase::Lobby:
+        command = drawLobby(duel, fonts, menu);
+        break;
     case DuelPhase::Waiting:
         beginMenu("##waiting");
         if (duel.roomCode().empty()) {
-            menuTitle(fonts, "CONNECTING");
+            // A quick match may join straight into a countdown without ever getting a code.
+            menuTitle(fonts, duel.quickMatching() ? "SEARCHING" : "CONNECTING");
         } else {
             menuTitle(fonts, "ROOM CODE");
             ImGui::PushFont(fonts.hud, ImGui::GetFontSize() * 3.0f);
             ImGui::TextUnformatted(duel.roomCode().c_str());
             ImGui::PopFont();
-            ImGui::TextUnformatted("Waiting for an opponent to join...");
+            ImGui::TextUnformatted(duel.quickMatching() ? "Looking for an opponent..."
+                                                        : "Waiting for an opponent to join...");
+            ImGui::TextUnformatted(duel.publicRoom() ? "Public room, listed in Browse rooms"
+                                                     : "Private room, share the code");
+            if (!menu.inviteLinkBase.empty()) {
+                static char link[256];  // InputText needs a mutable buffer even when read-only
+                std::snprintf(link, sizeof link, "%s%s", menu.inviteLinkBase.c_str(), duel.roomCode().c_str());
+                ImGui::SetNextItemWidth(menuButtonWidth());
+                ImGui::InputText("##link", link, sizeof link, ImGuiInputTextFlags_ReadOnly);
+                if (menu.canCopyLink && menuButton("Copy link")) command = UiCommand::CopyInviteLink;
+            }
         }
         if (menuButton("Cancel")) command = UiCommand::LeaveDuel;
         ImGui::End();
         break;
     case DuelPhase::Countdown:
-        drawDuelBoards(duel, fonts, combo);
+        drawDuelBoards(duel, fonts, combo, menu);
         drawCountdown(duel.countdownMs(), fonts);
+        drawVersus(fonts, menu.playerName, duel.opponentName());
         break;
     case DuelPhase::Playing:
-        drawDuelBoards(duel, fonts, combo);
+        drawDuelBoards(duel, fonts, combo, menu);
         break;
     case DuelPhase::Result:
-        drawDuelBoards(duel, fonts, combo);
+        drawDuelBoards(duel, fonts, combo, menu);
         command = drawDuelResult(duel, fonts);
         break;
     }

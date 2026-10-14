@@ -62,7 +62,7 @@ func (t *fakeTimer) fire() { t.f() }
 
 const testMatchLength = 20 * time.Second
 
-func newTestHub(t *testing.T) (*httptest.Server, *fakeClock) {
+func newConfiguredHub(t *testing.T, configure func(*Hub)) (*httptest.Server, *fakeClock) {
 	t.Helper()
 	hub := NewHub()
 	codes := 0
@@ -72,9 +72,15 @@ func newTestHub(t *testing.T) (*httptest.Server, *fakeClock) {
 	clock := &fakeClock{}
 	hub.afterFunc = clock.afterFunc
 	hub.matchLength = testMatchLength
+	configure(hub)
 	srv := httptest.NewServer(hub)
 	t.Cleanup(srv.Close)
 	return srv, clock
+}
+
+func newTestHub(t *testing.T) (*httptest.Server, *fakeClock) {
+	t.Helper()
+	return newConfiguredHub(t, func(*Hub) {})
 }
 
 func newTestServer(t *testing.T) *httptest.Server {
@@ -129,6 +135,8 @@ func pair(t *testing.T, srv *httptest.Server) (a, b *client) {
 	a.send("CREATE 3")
 	a.expect("ROOM AAAA")
 	b.send("JOIN AAAA")
+	a.expect("OPP Player")
+	b.expect("OPP Player")
 	a.expect("START 101 3")
 	b.expect("START 101 3")
 	return a, b
@@ -148,7 +156,7 @@ func TestGameMessagesAreRelayed(t *testing.T) {
 
 func TestServerOnlyVerbsAreNotRelayed(t *testing.T) {
 	a, b := pair(t, newTestServer(t))
-	for _, forged := range []string{"ROOM ZZZZ", "START 1 1", "LEFT", "ERR boom", "KO 3 0", "OVER WIN KO 0 0"} {
+	for _, forged := range []string{"ROOM ZZZZ", "START 1 1", "LEFT", "ERR boom", "KO 3 0", "OVER WIN KO 0 0", "OPP Zed"} {
 		a.send(forged)
 	}
 	a.send("ATK 1")
@@ -373,4 +381,203 @@ func TestLeavingStopsTheMatchTimer(t *testing.T) {
 		t.Error("match timer still running after a player left")
 	}
 	clock.timer(0).fire() // the room is gone; this must do nothing
+}
+
+func TestNamesAreSentBeforeStart(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("HELLO Sam")
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("HELLO Kai")
+	b.send("JOIN AAAA")
+	a.expect("OPP Kai")
+	a.expect("START 101 3")
+	b.expect("OPP Sam")
+	b.expect("START 101 3")
+}
+
+func TestBadHelloLeavesTheDefaultName(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("HELLO two words")
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("HELLO abcdefghijklm")
+	b.send("JOIN AAAA")
+	a.expect("OPP Player")
+	b.expect("OPP Player")
+}
+
+func TestHelloInsideARoomIsIgnored(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := pair(t, srv)
+	a.send("HELLO Zed") // dropped: a is in a room
+	b.conn.Close(websocket.StatusNormalClosure, "")
+	a.expect("LEFT")
+	a.send("CREATE 1")
+	a.expect("ROOM AAAB")
+	c := dial(t, srv)
+	c.send("JOIN AAAB")
+	c.expect("OPP Player")
+}
+
+// watch dials a lobby watcher and consumes its first (empty) list.
+func watch(t *testing.T, srv *httptest.Server) *client {
+	t.Helper()
+	w := dial(t, srv)
+	w.send("LIST")
+	w.expect("ROOMS")
+	return w
+}
+
+func TestPublicRoomsAreListedUntilFull(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("HELLO Sam")
+	a.send("CREATE 3 PUB")
+	a.expect("ROOM AAAA")
+	w.expect("ROOMS AAAA:3:Sam")
+	b.send("JOIN AAAA")
+	w.expect("ROOMS")
+}
+
+func TestPrivateRoomsAreNotListed(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("CREATE 5 PUB")
+	b.expect("ROOM AAAB")
+	w.expect("ROOMS AAAB:5:Player") // the private room sent nothing before this
+}
+
+func TestHostLeavingRemovesTheRoom(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a := dial(t, srv)
+	a.send("CREATE 2 PUB")
+	a.expect("ROOM AAAA")
+	w.expect("ROOMS AAAA:2:Player")
+	a.conn.Close(websocket.StatusNormalClosure, "")
+	w.expect("ROOMS")
+}
+
+func TestCreatingUnsubscribes(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	w.send("CREATE 1 PUB")
+	w.expect("ROOM AAAA") // no ROOMS: w stopped watching
+	x := dial(t, srv)
+	x.send("CREATE 2 PUB")
+	x.expect("ROOM AAAB")
+	y := dial(t, srv)
+	y.send("JOIN AAAA")
+	w.expect("OPP Player") // still nothing in between
+}
+
+func TestUnlistStopsUpdates(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	w.send("UNLIST")
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("CREATE 1 PUB")
+	a.expect("ROOM AAAA")
+	b.send("CREATE 1 PUB")
+	b.expect("ROOM AAAB")
+	w.send("LIST")
+	w.expect("ROOMS AAAA:1:Player AAAB:1:Player") // a push would have arrived first with one room
+}
+
+func TestListIsOldestFirstAndCapped(t *testing.T) {
+	srv := newTestServer(t)
+	for i := 0; i < maxListedRooms+1; i++ {
+		c := dial(t, srv)
+		c.send("CREATE 1 PUB")
+		c.expect(fmt.Sprintf("ROOM AAA%c", 'A'+i))
+	}
+	w := dial(t, srv)
+	w.send("LIST")
+	var want strings.Builder
+	want.WriteString("ROOMS")
+	for i := 0; i < maxListedRooms; i++ {
+		fmt.Fprintf(&want, " AAA%c:1:Player", 'A'+i)
+	}
+	w.expect(want.String())
+}
+
+func TestBadRoomOptionsAndFullServer(t *testing.T) {
+	srv, _ := newConfiguredHub(t, func(h *Hub) { h.maxRooms = 1 })
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("CREATE 3 OPEN")
+	a.expect("ERR bad room options")
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("CREATE 3 PUB")
+	b.expect("ERR server is full")
+}
+
+func TestLobbyVerbsInsideARoomAreNotRelayed(t *testing.T) {
+	a, b := pair(t, newTestServer(t))
+	a.send("LIST")
+	a.send("UNLIST")
+	a.send("ROOMS AAAA:1:Sam")
+	a.send("ATK 1")
+	b.expect("ATK 1")
+}
+
+func TestQuickOpensAPublicRoomWhenNoneIsOpen(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a := dial(t, srv)
+	a.send("QUICK 4")
+	a.expect("ROOM AAAA")
+	w.expect("ROOMS AAAA:4:Player")
+}
+
+func TestQuickJoinsTheOldestOpenRoomAtItsLevel(t *testing.T) {
+	srv := newTestServer(t)
+	a, b, c := dial(t, srv), dial(t, srv), dial(t, srv)
+	a.send("CREATE 3 PUB")
+	a.expect("ROOM AAAA")
+	b.send("CREATE 5 PUB")
+	b.expect("ROOM AAAB")
+	c.send("QUICK 9")
+	c.expect("OPP Player")
+	c.expect("START 101 3")
+	a.expect("OPP Player")
+	a.expect("START 101 3")
+}
+
+func TestQuickIgnoresPrivateRooms(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("QUICK 2")
+	b.expect("ROOM AAAB")
+}
+
+func TestTwoQuicksPairUp(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("QUICK 2")
+	a.expect("ROOM AAAA")
+	b.send("QUICK 7")
+	b.expect("OPP Player")
+	b.expect("START 101 2")
+}
+
+func TestQuickErrors(t *testing.T) {
+	srv, _ := newConfiguredHub(t, func(h *Hub) { h.maxRooms = 1 })
+	a, _ := pair(t, srv)
+	a.send("QUICK 1")
+	a.expect("ERR already in a room")
+	c := dial(t, srv)
+	c.send("QUICK 0")
+	c.expect("ERR bad start level")
+	c.send("QUICK 1")
+	c.expect("ERR server is full")
 }

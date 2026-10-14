@@ -38,7 +38,8 @@ bool DuelSession::frozen() const { return phase_ == DuelPhase::Playing && (koFla
 
 std::string resultReasonText(const DuelSession& duel) {
     if (duel.phase() != DuelPhase::Result) return {};
-    if (duel.outcome() == DuelOutcome::OpponentLeft) return "Opponent left the match";
+    if (duel.outcome() == DuelOutcome::OpponentLeft)
+        return (duel.opponentName().empty() ? std::string("Opponent") : duel.opponentName()) + " left the match";
     if (duel.reason() == DuelReason::KOs) return std::to_string(kKosToWin) + " KOs";
     std::string text = "Time up" + std::string(kSeparator) + "KO " + versus(duel.kosMine(), duel.kosTheirs());
     if (duel.kosMine() == duel.kosTheirs())
@@ -46,16 +47,35 @@ std::string resultReasonText(const DuelSession& duel) {
     return text;
 }
 
-void DuelSession::createRoom(int startLevel) {
+void DuelSession::openLobby() {
+    reset();
+    phase_ = DuelPhase::Lobby;
+    send(ListRooms{});
+}
+
+// Resets for a new room request, remembering whether it came from the lobby.
+void DuelSession::beginRequest(bool isPublic, bool quick) {
+    const bool fromLobby = phase_ == DuelPhase::Lobby;
     reset();
     phase_ = DuelPhase::Waiting;
-    send(CreateRoom{clampStartLevel(startLevel)});
+    fromLobby_ = fromLobby;
+    publicRoom_ = isPublic;
+    quick_ = quick;
+}
+
+void DuelSession::createRoom(int startLevel, bool isPublic) {
+    beginRequest(isPublic, false);
+    send(CreateRoom{clampStartLevel(startLevel), isPublic});
 }
 
 void DuelSession::joinRoom(const std::string& code) {
-    reset();
-    phase_ = DuelPhase::Waiting;
+    beginRequest(false, false);
     send(JoinRoom{code});
+}
+
+void DuelSession::quickMatch(int startLevel) {
+    beginRequest(true, true);
+    send(QuickMatch{clampStartLevel(startLevel)});
 }
 
 void DuelSession::requestRematch() {
@@ -77,14 +97,23 @@ void DuelSession::onMessage(std::string_view text) {
     if (!message || phase_ == DuelPhase::Idle) return;
     if (const auto* room = std::get_if<RoomCreated>(&*message)) {
         roomCode_ = room->code;
+    } else if (const auto* opp = std::get_if<OpponentName>(&*message)) {
+        if (phase_ == DuelPhase::Waiting) opponentName_ = opp->name;
     } else if (const auto* start = std::get_if<StartMatch>(&*message)) {
         const bool rematch = phase_ == DuelPhase::Result && rematchRequested_ && !opponentGone_;
         if (phase_ == DuelPhase::Waiting || rematch) startMatch(*start);
     } else if (const auto* error = std::get_if<ServerError>(&*message)) {
         if (phase_ == DuelPhase::Waiting) {
+            const bool backToLobby = fromLobby_;
             reset();
             error_ = error->reason;
+            if (backToLobby) {  // the server stopped sending the list when we asked for a room
+                phase_ = DuelPhase::Lobby;
+                send(ListRooms{});
+            }
         }
+    } else if (const auto* list = std::get_if<RoomList>(&*message)) {
+        if (phase_ == DuelPhase::Lobby) rooms_ = list->rooms;
     } else if (const auto* attack = std::get_if<Attack>(&*message)) {
         // The two countdowns drift, so the opponent may already be playing while ours runs.
         if (inMatch()) {
@@ -186,6 +215,11 @@ void DuelSession::reset() {
     opponent_ = Snapshot{};
     lastSent_.reset();
     roomCode_.clear();
+    opponentName_.clear();
+    rooms_.clear();
+    fromLobby_ = false;
+    publicRoom_ = false;
+    quick_ = false;
     error_.clear();
     countdownMs_ = 0;
     sinceSnapshotMs_ = 0;

@@ -42,11 +42,6 @@ std::optional<T> parseNumber(std::string_view text, T lo, T hi) {
     return value;
 }
 
-bool isRoomCode(std::string_view text) {
-    return static_cast<int>(text.size()) == kRoomCodeLength &&
-           std::all_of(text.begin(), text.end(), [](char c) { return c >= 'A' && c <= 'Z'; });
-}
-
 char cellChar(Cell cell) { return cell ? kCellChars[static_cast<int>(*cell)] : kEmptyCell; }
 
 bool parseCell(char c, Cell& out) {
@@ -72,7 +67,35 @@ std::optional<Message> decodeSnapshot(const std::vector<std::string_view>& parts
     return snapshot;
 }
 
+// "CODE:lvl:host"; nullopt unless all three parts are valid.
+std::optional<RoomInfo> decodeRoomInfo(std::string_view entry) {
+    const std::size_t first = entry.find(':');
+    if (first == std::string_view::npos) return std::nullopt;
+    const std::size_t second = entry.find(':', first + 1);
+    if (second == std::string_view::npos) return std::nullopt;
+    const std::string_view code = entry.substr(0, first);
+    const auto level = parseNumber(entry.substr(first + 1, second - first - 1), kMinStartLevel, kMaxStartLevel);
+    const std::string_view host = entry.substr(second + 1);
+    if (!isRoomCode(code) || !level || !isValidName(host)) return std::nullopt;  // a third ':' fails isValidName
+    return RoomInfo{std::string(code), *level, std::string(host)};
+}
+
 }  // namespace
+
+bool isRoomCode(std::string_view text) {
+    return static_cast<int>(text.size()) == kRoomCodeLength &&
+           std::all_of(text.begin(), text.end(), [](char c) { return c >= 'A' && c <= 'Z'; });
+}
+
+bool isNameChar(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+           c == '.';
+}
+
+bool isValidName(std::string_view text) {
+    return !text.empty() && static_cast<int>(text.size()) <= kMaxNameLength &&
+           std::all_of(text.begin(), text.end(), isNameChar);
+}
 
 Snapshot snapshotOf(const Game& game) {
     Snapshot snapshot{game.score(), game.lines(), game.pendingGarbage(), {}};
@@ -89,7 +112,7 @@ std::string encode(const Message& message) {
         [](const auto& m) -> std::string {
             using T = std::decay_t<decltype(m)>;
             if constexpr (std::is_same_v<T, CreateRoom>) {
-                return "CREATE " + std::to_string(m.startLevel);
+                return "CREATE " + std::to_string(m.startLevel) + (m.isPublic ? " PUB" : "");
             } else if constexpr (std::is_same_v<T, JoinRoom>) {
                 return "JOIN " + m.code;
             } else if constexpr (std::is_same_v<T, RoomCreated>) {
@@ -113,6 +136,21 @@ std::string encode(const Message& message) {
                 return "ERR " + m.reason;
             } else if constexpr (std::is_same_v<T, KoCounts>) {
                 return "KO " + std::to_string(m.mine) + " " + std::to_string(m.theirs);
+            } else if constexpr (std::is_same_v<T, Hello>) {
+                return "HELLO " + m.name;
+            } else if constexpr (std::is_same_v<T, OpponentName>) {
+                return "OPP " + m.name;
+            } else if constexpr (std::is_same_v<T, ListRooms>) {
+                return "LIST";
+            } else if constexpr (std::is_same_v<T, UnlistRooms>) {
+                return "UNLIST";
+            } else if constexpr (std::is_same_v<T, QuickMatch>) {
+                return "QUICK " + std::to_string(m.startLevel);
+            } else if constexpr (std::is_same_v<T, RoomList>) {
+                std::string text = "ROOMS";
+                for (const RoomInfo& room : m.rooms)
+                    text += " " + room.code + ":" + std::to_string(room.startLevel) + ":" + room.host;
+                return text;
             } else {
                 static_assert(std::is_same_v<T, MatchOver>);
                 return "OVER " + std::string(kResultTokens[static_cast<std::size_t>(m.result)]) + " " +
@@ -128,8 +166,21 @@ std::optional<Message> decode(std::string_view text) {
     const std::vector<std::string_view> parts = split(text);
     const std::string_view verb = parts[0];
     const std::size_t args = parts.size() - 1;
-    if (verb == "CREATE" && args == 1) {
-        if (const auto level = parseNumber(parts[1], kMinStartLevel, kMaxStartLevel)) return CreateRoom{*level};
+    if (verb == "CREATE" && (args == 1 || args == 2)) {
+        const auto level = parseNumber(parts[1], kMinStartLevel, kMaxStartLevel);
+        if (!level) return std::nullopt;
+        if (args == 1 || parts[2] == "PRIV") return CreateRoom{*level, false};
+        if (parts[2] == "PUB") return CreateRoom{*level, true};
+    } else if (verb == "QUICK" && args == 1) {
+        if (const auto level = parseNumber(parts[1], kMinStartLevel, kMaxStartLevel)) return QuickMatch{*level};
+    } else if (verb == "ROOMS" && args <= static_cast<std::size_t>(kMaxListedRooms)) {
+        RoomList list;
+        for (std::size_t i = 1; i < parts.size(); ++i) {
+            const auto room = decodeRoomInfo(parts[i]);
+            if (!room) return std::nullopt;
+            list.rooms.push_back(*room);
+        }
+        return list;
     } else if (verb == "JOIN" && args == 1) {
         if (isRoomCode(parts[1])) return JoinRoom{std::string(parts[1])};
     } else if (verb == "ROOM" && args == 1) {
@@ -152,10 +203,16 @@ std::optional<Message> decode(std::string_view text) {
         const auto mySent = parseNumber(parts[3], 0, kMaxInt);
         const auto theirSent = parseNumber(parts[4], 0, kMaxInt);
         if (result && reason && mySent && theirSent) return MatchOver{*result, *reason, *mySent, *theirSent};
+    } else if (verb == "HELLO" && args == 1) {
+        if (isValidName(parts[1])) return Hello{std::string(parts[1])};
+    } else if (verb == "OPP" && args == 1) {
+        if (isValidName(parts[1])) return OpponentName{std::string(parts[1])};
     } else if (args == 0) {
         if (verb == "DEAD") return Dead{};
         if (verb == "REMATCH") return Rematch{};
         if (verb == "LEFT") return OpponentLeft{};
+        if (verb == "LIST") return ListRooms{};
+        if (verb == "UNLIST") return UnlistRooms{};
     }
     return std::nullopt;
 }

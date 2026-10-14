@@ -1,7 +1,10 @@
 // src/app/app.cpp
 #include "app/app.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 #include "app/keymap.hpp"
@@ -37,9 +40,39 @@ void applyCommand(App& app, UiCommand command) {
     case UiCommand::QuitApp:
         app.quit = true;
         break;
+    case UiCommand::SaveName:
+        app.saveSettings();
+        break;
     case UiCommand::CreateRoom:
         app.openDuel();
-        app.duel.createRoom(app.menu.startLevel);
+        app.duel.createRoom(app.menu.startLevel, app.menu.publicRooms);
+        break;
+    case UiCommand::CreatePublicRoom:
+        app.openDuel();
+        app.duel.createRoom(app.menu.startLevel, true);
+        break;
+    case UiCommand::BrowseRooms:
+        app.openDuel();
+        app.duel.openLobby();
+        break;
+    case UiCommand::QuickMatch:
+        app.openDuel();
+        app.duel.quickMatch(app.menu.startLevel);
+        break;
+    case UiCommand::JoinListedRoom:
+        app.duel.joinRoom(app.menu.pickedRoom);
+        break;
+    case UiCommand::SavePublic:
+        app.saveSettings();
+        break;
+    case UiCommand::JoinInvite:
+        std::snprintf(app.menu.joinCode, sizeof app.menu.joinCode, "%s", app.menu.inviteCode.c_str());
+        app.menu.inviteCode.clear();
+        app.openDuel();
+        app.duel.joinRoom(app.menu.joinCode);
+        break;
+    case UiCommand::CopyInviteLink:
+        copyInviteLink(app.duel.roomCode());
         break;
     case UiCommand::JoinRoom:
         app.openDuel();
@@ -145,11 +178,24 @@ App::App()
     keymap = saved.keys;
     menu.muted = saved.muted;
     menu.musicOff = saved.musicOff;
+    menu.publicRooms = saved.publicRooms;
+    menu.playerName = saved.playerName;
+    if (menu.playerName.empty()) {
+        menu.playerName = defaultPlayerName(static_cast<std::uint32_t>(SDL_GetTicksNS()));
+        saveSettings();  // keep the generated name across visits
+    }
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    std::string invite = takeInviteCode();
+    std::transform(invite.begin(), invite.end(), invite.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (isRoomCode(invite)) menu.inviteCode = invite;
+    menu.inviteLinkBase = inviteLinkBase();
+    menu.canCopyLink = canCopyToClipboard();
     audio.setMuted(menu.muted);
     audio.setMusicMuted(menu.musicOff);
 }
 
-void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff})); }
+void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms})); }
 
 void App::newGame() {
     syncMusic({});  // a new game always starts the song from the top
@@ -162,7 +208,10 @@ void App::newGame() {
 }
 
 void App::openDuel() {
-    connection = connectToServer();
+    if (!connection) {  // the lobby keeps its connection when it opens a room
+        connection = connectToServer();
+        if (connection) connection->send(encode(Hello{menu.playerName}));  // queued until the socket opens
+    }
     menu.error.clear();
     screen = Screen::Duel;
 }
@@ -274,7 +323,7 @@ void drawFrame(App& app, const Fonts& fonts) {
         command = drawOverlay(*app.game, fonts, app.menu.muted, app.menu.musicOff);
         break;
     case Screen::Duel:
-        command = drawDuel(app.duel, fonts, app.combo);
+        command = drawDuel(app.duel, fonts, app.combo, app.menu);
         break;
     case Screen::Controls:
         command = drawControlsScreen(fonts, app.keymap, app.controls);

@@ -74,7 +74,7 @@ TEST_CASE("cues: solo music keeps playing through a line clear") {
 
 TEST_CASE("cues: duel music plays only while the match runs") {
     CHECK(duelMusic(DuelPhase::Playing) == MusicCue{MusicMode::Playing, kDuelBpm});
-    for (DuelPhase phase : {DuelPhase::Idle, DuelPhase::Waiting, DuelPhase::Countdown, DuelPhase::Result}) {
+    for (DuelPhase phase : {DuelPhase::Idle, DuelPhase::Lobby, DuelPhase::Waiting, DuelPhase::Countdown, DuelPhase::Result}) {
         CAPTURE(static_cast<int>(phase));
         CHECK(duelMusic(phase).mode == MusicMode::Stopped);
     }
