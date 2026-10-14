@@ -14,6 +14,7 @@
 #include "app/input.hpp"
 #include "app/keymap.hpp"
 #include "app/render.hpp"
+#include "app/solo.hpp"
 #include "app/sound_cues.hpp"
 #include "core/game.hpp"
 #include "net/connection.hpp"
@@ -31,6 +32,7 @@ struct App {
     ControlsMenu controls;
     Keymap keymap = defaultKeymap();
     Handling handling;  // DAS, ARR and soft-drop speed, as last saved
+    PersonalBests bests;  // solo bests, as last saved; kept so saving the settings doesn't drop them
     std::optional<Game> game;  // solo game
     std::unique_ptr<Connection> connection;
     DuelSession duel;

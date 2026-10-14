@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "app/keymap.hpp"
+#include "app/solo.hpp"
 
 namespace tetris {
 
@@ -16,6 +17,7 @@ struct Settings {
     std::string playerName;  // empty until one is chosen or generated
     bool publicRooms = false;  // Create room makes a public room
     Handling handling;
+    PersonalBests bests;  // best solo results; each stays unset until a run sets it
 };
 
 // "Player" and four digits taken from `random`, for a player who has not picked a name.

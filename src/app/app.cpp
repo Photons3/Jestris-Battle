@@ -204,6 +204,7 @@ App::App()
     const Settings saved = parseSettings(loadSettingsText());
     keymap = saved.keys;
     handling = saved.handling;
+    bests = saved.bests;
     input.setHandling(handling);
     menu.muted = saved.muted;
     menu.musicOff = saved.musicOff;
@@ -224,7 +225,10 @@ App::App()
     audio.setMusicMuted(menu.musicOff);
 }
 
-void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms, handling})); }
+void App::saveSettings() {
+    saveSettingsText(serializeSettings(
+        {keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms, handling, bests}));
+}
 
 void App::newGame() {
     syncMusic({});  // a new game always starts the song from the top
