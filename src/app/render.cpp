@@ -62,15 +62,21 @@ ImVec2 cellTopLeft(const Layout& l, int x, int y) {
     return ImVec2(l.origin.x + x * l.cell, l.origin.y + (kDrawnRows - 1 - y) * l.cell);
 }
 
+float bevelFor(float size) { return std::max(1.0f, std::floor(size * 0.12f)); }
+
+// A filled rect with a lit top-left edge and a shaded bottom-right one; swap the edges to make it look sunken.
+void drawBevelRect(ImDrawList* dl, ImVec2 p, ImVec2 q, float bevel, Rgb fill, Rgb topLeft, Rgb bottomRight,
+                   float alpha = 1.0f) {
+    dl->AddRectFilled(p, q, color(fill, alpha));
+    dl->AddRectFilled(p, ImVec2(q.x, p.y + bevel), color(topLeft, alpha));       // top
+    dl->AddRectFilled(p, ImVec2(p.x + bevel, q.y), color(topLeft, alpha));       // left
+    dl->AddRectFilled(ImVec2(p.x, q.y - bevel), q, color(bottomRight, alpha));  // bottom
+    dl->AddRectFilled(ImVec2(q.x - bevel, p.y), q, color(bottomRight, alpha));  // right
+}
+
 void drawCell(ImDrawList* dl, ImVec2 p, float size, PieceType type, float alpha) {
     const Rgb base = pieceRgb(type);
-    const float bevel = std::max(1.0f, std::floor(size * 0.12f));
-    const ImVec2 q(p.x + size, p.y + size);
-    dl->AddRectFilled(p, q, color(base, alpha));
-    dl->AddRectFilled(p, ImVec2(q.x, p.y + bevel), color(lighten(base), alpha));  // top
-    dl->AddRectFilled(p, ImVec2(p.x + bevel, q.y), color(lighten(base), alpha));  // left
-    dl->AddRectFilled(ImVec2(p.x, q.y - bevel), q, color(darken(base), alpha));   // bottom
-    dl->AddRectFilled(ImVec2(q.x - bevel, p.y), q, color(darken(base), alpha));   // right
+    drawBevelRect(dl, p, ImVec2(p.x + size, p.y + size), bevelFor(size), base, lighten(base), darken(base), alpha);
     if (type == PieceType::Bomb) {
         const int a = static_cast<int>(alpha * 255.0f);
         dl->AddCircleFilled(ImVec2(p.x + size * 0.5f, p.y + size * 0.55f), size * 0.28f, IM_COL32(25, 25, 32, a));
@@ -235,22 +241,38 @@ void drawDuelBackground() {
                             IM_COL32(30, 50, 110, 14));
 }
 
-void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float top, const char* name, ImU32 from,
-                 ImU32 to, int kos) {
+constexpr Rgb kMyPlateColor{30, 90, 220};
+constexpr Rgb kTheirPlateColor{220, 70, 30};
+constexpr Rgb kKoPipColor{255, 210, 40};
+
+// A nameplate built like one wide mino: flat player color, the cells' bevel, the name with a hard drop shadow,
+// and a row of KO slots on the right that fill with gold mini-blocks as KOs land.
+void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float top, const char* name, Rgb base,
+                 int kos) {
     const float cell = well.cell;
-    const ImVec2 p0(well.origin.x, top);
-    const ImVec2 p1(well.origin.x + kBoardWidth * cell, top + 1.1f * cell);
-    dl->AddRectFilledMultiColor(p0, p1, from, to, to, from);
-    const float textSize = cell * 0.7f;
-    dl->AddText(fonts.hud, textSize, ImVec2(p0.x + 0.3f * cell, p0.y + (p1.y - p0.y - textSize) * 0.5f),
-                IM_COL32(255, 255, 255, 255), name);
-    const float radius = cell * 0.25f;
+    const float bevel = bevelFor(cell);
+    const ImVec2 p0(std::floor(well.origin.x), std::floor(top));
+    const ImVec2 p1(p0.x + kBoardWidth * cell, p0.y + std::floor(1.1f * cell));
+    drawBevelRect(dl, p0, p1, bevel, base, lighten(base), darken(base));
+
+    const float textSize = std::floor(cell * 0.7f);
+    const ImVec2 textPos(p0.x + std::floor(0.35f * cell), p0.y + std::floor((p1.y - p0.y - textSize) * 0.5f));
+    dl->AddText(fonts.hud, textSize, ImVec2(textPos.x + bevel, textPos.y + bevel), color(darken(darken(base)), 1.0f),
+                name);
+    dl->AddText(fonts.hud, textSize, textPos, IM_COL32(255, 255, 255, 255), name);
+
+    const float pip = std::floor(cell * 0.5f);
+    const float gap = std::floor(cell * 0.2f);
+    const float pipBevel = std::max(1.0f, bevel - 1.0f);
+    const float pipTop = p0.y + std::floor((p1.y - p0.y - pip) * 0.5f);
     for (int i = 0; i < kKosToWin; ++i) {
-        const ImVec2 center(p1.x - cell * (0.5f + 0.8f * static_cast<float>(kKosToWin - 1 - i)), (p0.y + p1.y) * 0.5f);
+        const float x = p1.x - std::floor(0.35f * cell) - (pip + gap) * static_cast<float>(kKosToWin - i) + gap;
+        const ImVec2 a(x, pipTop);
+        const ImVec2 b(x + pip, pipTop + pip);
         if (i < kos)
-            dl->AddCircleFilled(center, radius, IM_COL32(255, 220, 60, 255));
-        else
-            dl->AddCircle(center, radius, IM_COL32(255, 255, 255, 200), 0, 1.5f);
+            drawBevelRect(dl, a, b, pipBevel, kKoPipColor, lighten(kKoPipColor), darken(kKoPipColor));
+        else  // sunken: the light edge moves to the bottom-right
+            drawBevelRect(dl, a, b, pipBevel, darken(darken(base)), darken(darken(darken(base))), lighten(base));
     }
 }
 
@@ -369,15 +391,13 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     const float cell = layout.mine.cell;
     drawDuelBackground();
     ImDrawList* dl = beginBoardWindow();
-    drawNameBar(dl, fonts, layout.mine, layout.top, mine, IM_COL32(40, 110, 255, 255), IM_COL32(150, 60, 230, 255),
-                duel.kosMine());
+    drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, duel.kosMine());
     drawPlayfield(dl, layout.mine, game, fonts, combo);
     drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage());
     drawScoreboard(dl, fonts, layout, duel);
     drawGarbageMeter(dl, layout.left + kTheirMeterCol * cell, wellBottom(layout.theirs), cell,
                      duel.opponent().pending);
-    drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, IM_COL32(230, 40, 40, 255), IM_COL32(255, 150, 30, 255),
-                duel.kosTheirs());
+    drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, kTheirPlateColor, duel.kosTheirs());
     drawOpponent(dl, layout, duel.opponent(), fonts);
     if (duel.koFlashMs() > 0) drawKoFlash(dl, fonts, layout.mine);
     ImGui::End();
