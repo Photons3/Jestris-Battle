@@ -74,6 +74,16 @@ std::optional<Message> decodeSnapshot(const std::vector<std::string_view>& parts
 
 }  // namespace
 
+bool isNameChar(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+           c == '.';
+}
+
+bool isValidName(std::string_view text) {
+    return !text.empty() && static_cast<int>(text.size()) <= kMaxNameLength &&
+           std::all_of(text.begin(), text.end(), isNameChar);
+}
+
 Snapshot snapshotOf(const Game& game) {
     Snapshot snapshot{game.score(), game.lines(), game.pendingGarbage(), {}};
     for (int y = 0; y < kVisibleHeight; ++y)
@@ -113,6 +123,10 @@ std::string encode(const Message& message) {
                 return "ERR " + m.reason;
             } else if constexpr (std::is_same_v<T, KoCounts>) {
                 return "KO " + std::to_string(m.mine) + " " + std::to_string(m.theirs);
+            } else if constexpr (std::is_same_v<T, Hello>) {
+                return "HELLO " + m.name;
+            } else if constexpr (std::is_same_v<T, OpponentName>) {
+                return "OPP " + m.name;
             } else {
                 static_assert(std::is_same_v<T, MatchOver>);
                 return "OVER " + std::string(kResultTokens[static_cast<std::size_t>(m.result)]) + " " +
@@ -152,6 +166,10 @@ std::optional<Message> decode(std::string_view text) {
         const auto mySent = parseNumber(parts[3], 0, kMaxInt);
         const auto theirSent = parseNumber(parts[4], 0, kMaxInt);
         if (result && reason && mySent && theirSent) return MatchOver{*result, *reason, *mySent, *theirSent};
+    } else if (verb == "HELLO" && args == 1) {
+        if (isValidName(parts[1])) return Hello{std::string(parts[1])};
+    } else if (verb == "OPP" && args == 1) {
+        if (isValidName(parts[1])) return OpponentName{std::string(parts[1])};
     } else if (args == 0) {
         if (verb == "DEAD") return Dead{};
         if (verb == "REMATCH") return Rematch{};

@@ -14,6 +14,11 @@ namespace tetris {
 inline constexpr int kSnapshotCells = kBoardWidth * kVisibleHeight;
 inline constexpr int kRoomCodeLength = 4;
 inline constexpr int kKosToWin = 3;  // the first player to this many KOs wins the match
+inline constexpr int kMaxNameLength = 12;  // maxNameLength in server/hub.go
+
+// A display name is 1 to kMaxNameLength of A-Z a-z 0-9 _ - . (no spaces or ':', which the protocol uses).
+bool isNameChar(char c);
+bool isValidName(std::string_view text);
 
 // What the opponent sees of a board: the visible field with the falling piece merged in.
 struct Snapshot {
@@ -62,6 +67,14 @@ struct ServerError {
     std::string reason;
     friend bool operator==(const ServerError&, const ServerError&) = default;
 };
+struct Hello {  // the sender's display name; the first message on every connection
+    std::string name;
+    friend bool operator==(const Hello&, const Hello&) = default;
+};
+struct OpponentName {  // from the server, just before a room's first START
+    std::string name;
+    friend bool operator==(const OpponentName&, const OpponentName&) = default;
+};
 
 enum class MatchResult { Win, Lose, Draw };
 enum class MatchReason { KOs, Time };
@@ -79,7 +92,7 @@ struct MatchOver {  // the server's verdict, from the receiver's point of view
 };
 
 using Message = std::variant<CreateRoom, JoinRoom, RoomCreated, StartMatch, Attack, Snapshot, Dead, Rematch,
-                             OpponentLeft, ServerError, KoCounts, MatchOver>;
+                             OpponentLeft, ServerError, KoCounts, MatchOver, Hello, OpponentName>;
 
 std::string encode(const Message& message);
 // nullopt for anything malformed or unknown.
