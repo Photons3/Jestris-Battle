@@ -9,7 +9,8 @@
 namespace tetris {
 
 Game makeDuelGame(const StartMatch& start) {
-    return Game(start.seed, start.startLevel, Board{}, GameOptions{.allowPause = false});
+    const GarbageStyle garbage = start.players.size() >= 3 ? GarbageStyle::Holes : GarbageStyle::Bombs;
+    return Game(start.seed, start.startLevel, Board{}, GameOptions{.allowPause = false, .garbage = garbage});
 }
 
 namespace {
@@ -55,7 +56,9 @@ const std::string& DuelSession::opponentName() const {
     return opponents_.empty() ? kNoName : opponents_.front().name;
 }
 
-bool DuelSession::frozen() const { return phase_ == DuelPhase::Playing && (koFlashMs_ > 0 || matchClockMs_ == 0); }
+bool DuelSession::frozen() const {
+    return phase_ == DuelPhase::Playing && mode_ == DuelMode::Duel && (koFlashMs_ > 0 || matchClockMs_ == 0);
+}
 
 std::string resultReasonText(const DuelSession& duel) {
     if (duel.phase() != DuelPhase::Result) return {};
@@ -192,8 +195,18 @@ void DuelSession::onMessage(std::string_view text) {
             sentTheirs_ = over->theirSent;
             finish(outcomeOf(over->result));
         }
+    } else if (const auto* out = std::get_if<PlayerOut>(&*message)) {
+        if (inMatch() && mode_ == DuelMode::Royale) {
+            if (out->id == myId_) myPlace_ = out->place;
+            for (OpponentView& opponent : opponents_) {
+                if (opponent.id != out->id) continue;
+                opponent.alive = false;
+                opponent.place = out->place;
+            }
+            if (out->place == 1) finish(out->id == myId_ ? DuelOutcome::Won : DuelOutcome::Lost);
+        }
     } else if (std::holds_alternative<OpponentLeft>(*message)) {
-        if (inMatch()) finish(DuelOutcome::OpponentLeft);
+        if (inMatch() && mode_ == DuelMode::Duel) finish(DuelOutcome::OpponentLeft);  // only duels send LEFT
     }
 }
 
@@ -211,13 +224,20 @@ void DuelSession::update(int ms) {
         return;
     }
     if (phase_ != DuelPhase::Playing) return;
-    const int clockBefore = matchClockMs_;
-    matchClockMs_ = std::max(0, matchClockMs_ - ms);
-    playedMs_ += clockBefore - matchClockMs_;  // a duel's play stops at 0:00
-    koFlashMs_ = std::max(0, koFlashMs_ - ms);
-    // The app stops ticking the game at 0:00, so a clear still animating would never be sent.
-    if (matchClockMs_ == 0)
-        while (game_->state() == GameState::Clearing) game_->tick(1);
+    const bool royale = mode_ == DuelMode::Royale;
+    if (royale) {
+        if (eliminated_) return;  // out: the board stays as it died and nothing more goes out
+        playedMs_ += ms;
+        game_->setLevelFloor(startLevel_ + playedMs_ / kRoyaleLevelStepMs);
+    } else {
+        const int clockBefore = matchClockMs_;
+        matchClockMs_ = std::max(0, matchClockMs_ - ms);
+        playedMs_ += clockBefore - matchClockMs_;  // a duel's play stops at 0:00
+        koFlashMs_ = std::max(0, koFlashMs_ - ms);
+        // The app stops ticking the game at 0:00, so a clear still animating would never be sent.
+        if (matchClockMs_ == 0)
+            while (game_->state() == GameState::Clearing) game_->tick(1);
+    }
     if (const int lines = game_->takeOutgoingAttack(); lines > 0) {
         send(Attack{lines});
         sentMine_ += lines;
@@ -233,7 +253,10 @@ void DuelSession::update(int ms) {
             lastSent_ = snapshot;
         }
     }
-    if (toppedOut) {  // a KO: the server counts it, we start over on an empty board
+    if (toppedOut && royale) {  // eliminated: the server places us, the board stays on its game-over state
+        send(Dead{});
+        eliminated_ = true;
+    } else if (toppedOut) {  // a KO: the server counts it, we start over on an empty board
         send(Dead{});
         game_->resetBoard();
         koFlashMs_ = kKoFlashMs;
@@ -246,6 +269,8 @@ void DuelSession::startMatch(const StartMatch& start) {
     phase_ = DuelPhase::Countdown;
     outcome_ = DuelOutcome::None;
     mode_ = start.players.size() == 2 ? DuelMode::Duel : DuelMode::Royale;
+    participants_ = static_cast<int>(start.players.size());
+    startLevel_ = start.startLevel;
     countdownMs_ = kCountdownMs;
     sinceSnapshotMs_ = 0;
     lastSent_.reset();
@@ -283,6 +308,8 @@ void DuelSession::reset() {
     roster_.clear();
     mode_ = DuelMode::Duel;
     opponents_.clear();
+    participants_ = 0;
+    startLevel_ = 1;
     rooms_.clear();
     fromLobby_ = false;
     publicRoom_ = false;
@@ -302,6 +329,8 @@ void DuelSession::resetMatchStats() {
     matchClockMs_ = kMatchMs;
     playedMs_ = 0;
     koFlashMs_ = 0;
+    eliminated_ = false;
+    myPlace_ = 0;
 }
 
 }  // namespace tetris

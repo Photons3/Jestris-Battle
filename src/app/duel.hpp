@@ -19,6 +19,7 @@ inline constexpr int kMatchMs = 120000;  // display clock; the server's -match d
 inline constexpr int kKoFlashMs = 1000;
 inline constexpr int kMaxFrameMs = 100;  // longer stalls are dropped, not replayed, outside a match
 inline constexpr int kMaxCatchUpMs = 130000;  // a match replays stalls up to this long: the clock plus slack
+inline constexpr int kRoyaleLevelStepMs = 30000;  // a royale's gravity floor rises one level per this much play
 
 // How much of `elapsedMs` of wall time to simulate this frame. A browser stops or throttles a hidden tab's
 // loop, so a running match replays the gap: gravity keeps going and the opponent keeps getting snapshots.
@@ -43,7 +44,8 @@ struct OpponentView {
     int place = 0;  // 0 until OUT
 };
 
-// The local game for a match: same seed (so the same pieces) as the opponent, and no pausing.
+// The local game for a match: same seed (so the same pieces) as the opponents, and no pausing. A royale (3 or
+// more players) gets hole garbage instead of bombs.
 Game makeDuelGame(const StartMatch& start);
 
 // One player's side of a room and its matches. Reacts to server messages, owns the local Game while a match
@@ -81,6 +83,10 @@ public:
     const std::vector<OpponentView>& opponents() const { return opponents_; }  // the match's others, by id
     const Snapshot& opponent() const;         // the first opponent's board, or an empty Snapshot
     const std::string& opponentName() const;  // the first opponent's name, or "" before any match
+    int participants() const { return participants_; }  // players in the last START, this one included
+    // Royale: this player topped out. The game stays in GameOver and nothing more is sent this match.
+    bool eliminated() const { return eliminated_; }
+    int myPlace() const { return myPlace_; }  // royale: 0 until this player's OUT
     int countdownMs() const { return countdownMs_; }
     const std::vector<RoomInfo>& rooms() const { return rooms_; }      // the lobby list, while in Lobby
     bool publicRoom() const { return publicRoom_; }                    // the room we wait in is listed
@@ -92,10 +98,12 @@ public:
     int sentMine() const { return sentMine_; }
     int sentTheirs() const { return sentTheirs_; }
     int matchClockMs() const { return matchClockMs_; }  // display only; the server decides time-up
-    // Time spent Playing this match: 0 in the countdown, and fixed once a duel's clock stops or the match ends.
+    // Time spent Playing this match: 0 in the countdown, and fixed once a duel's clock stops, this player is
+    // eliminated from a royale, or the match ends.
     int playedMs() const { return playedMs_; }
     int koFlashMs() const { return koFlashMs_; }        // > 0 while "KO!" shows after our top-out
-    // While true the local game must not tick or take input: during the KO flash, or once the clock hits 0.
+    // While true the local game must not tick or take input: in a duel, during the KO flash or once the clock hits
+    // 0. Never in a royale, which has no clock.
     bool frozen() const;
     // Events since the last call, oldest first; empties the list.
     std::vector<DuelEvent> takeEvents() { return std::exchange(events_, {}); }
@@ -122,6 +130,8 @@ private:
     std::vector<RosterEntry> roster_;
     DuelMode mode_ = DuelMode::Duel;
     std::vector<OpponentView> opponents_;
+    int participants_ = 0;
+    int startLevel_ = 1;  // of the current match, for the royale level floor
     std::vector<RoomInfo> rooms_;
     bool fromLobby_ = false;  // Waiting was entered from Lobby, so a refusal goes back there
     bool publicRoom_ = false;
@@ -137,6 +147,8 @@ private:
     int matchClockMs_ = 0;
     int playedMs_ = 0;
     int koFlashMs_ = 0;
+    bool eliminated_ = false;
+    int myPlace_ = 0;
     std::vector<DuelEvent> events_;
 };
 

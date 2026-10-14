@@ -935,3 +935,209 @@ TEST_CASE("duel stats: played time stops at the duel's 0:00") {
     duel.update(kMatchMs + 5000);
     CHECK(duel.playedMs() == kMatchMs);
 }
+
+namespace {
+
+// Joins room ABCD as player 1 of 4 and runs out the countdown of a royale; clears what was sent so far.
+void startRoyale(DuelSession& duel, Wire& wire) {
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Bo:0 3:Cy:0 4:Di:0");
+    duel.onMessage("START 7 1 1 2 3 4");
+    duel.update(kCountdownMs);
+    REQUIRE(duel.phase() == DuelPhase::Playing);
+    wire.sent.clear();
+}
+
+bool hasBomb(const Board& board) {
+    for (int y = 0; y < kBoardHeight; ++y)
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (board.at(x, y) == Cell{PieceType::Bomb}) return true;
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("royale: START with three or more ids is a royale with hole garbage") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    CHECK(duel.mode() == DuelMode::Royale);
+    CHECK(duel.opponents().size() == 3);
+    CHECK(duel.participants() == 4);
+    duel.onMessage("ATK 2");
+    duel.game()->tick(kGarbageTravelMs);
+    duel.game()->apply(Action::HardDrop);  // the first piece on an empty board clears nothing
+    REQUIRE(duel.game()->pendingGarbage() == 0);
+    CHECK(countFilled(duel.game()->board()) == 4 + 2 * (kBoardWidth - 1));  // the piece and two hole rows
+    CHECK_FALSE(hasBomb(duel.game()->board()));
+}
+
+TEST_CASE("royale: a duel START still uses bomb garbage") {
+    StartMatch start;
+    start.seed = 7;
+    start.startLevel = 1;
+    start.players = {1, 2};
+    Game game = makeDuelGame(start);
+    game.receiveGarbage(2, 0);
+    game.apply(Action::HardDrop);
+    CHECK(hasBomb(game.board()));
+}
+
+TEST_CASE("royale: a top-out sends the final SNAP and DEAD once and keeps the board") {
+    Wire wire;
+    DuelSession duel(wire.sender(), [](const StartMatch& start) {
+        return Game(start.seed, start.startLevel, Board{},
+                    GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
+    });
+    startRoyale(duel, wire);
+    topOutWithGarbage(*duel.game());
+    REQUIRE(duel.game()->state() == GameState::GameOver);
+    const int filled = countFilled(duel.game()->board());
+    duel.update(0);
+    duel.update(kSnapshotIntervalMs);
+    REQUIRE(wire.sent.size() == 2);
+    CHECK(wire.sent[0].starts_with("SNAP "));
+    CHECK(wire.sent[1] == "DEAD");
+    CHECK(duel.eliminated());
+    CHECK(duel.game()->state() == GameState::GameOver);
+    CHECK(countFilled(duel.game()->board()) == filled);
+    CHECK(duel.phase() == DuelPhase::Playing);
+    CHECK_FALSE(duel.frozen());
+    CHECK(duel.koFlashMs() == 0);
+    const int played = duel.playedMs();
+    duel.onMessage("ATK 3");  // still reaches the game, but nothing more goes out
+    duel.update(kSnapshotIntervalMs * 5);
+    CHECK(wire.sent.size() == 2);
+    CHECK(duel.playedMs() == played);  // our play time stops at elimination, for PPS and APM
+}
+
+TEST_CASE("royale: OUT marks an opponent out with its place") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    duel.onMessage("OUT 3 4");
+    REQUIRE(duel.opponents().size() == 3);
+    CHECK(duel.opponents()[1].id == 3);
+    CHECK_FALSE(duel.opponents()[1].alive);
+    CHECK(duel.opponents()[1].place == 4);
+    CHECK(duel.opponents()[0].alive);
+    CHECK(duel.opponents()[2].alive);
+    CHECK(duel.phase() == DuelPhase::Playing);
+    CHECK(duel.myPlace() == 0);
+}
+
+TEST_CASE("royale: OUT with place 1 for me is a win") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    duel.onMessage("OUT 2 4");
+    duel.onMessage("OUT 3 3");
+    duel.onMessage("OUT 4 2");
+    CHECK(duel.phase() == DuelPhase::Playing);
+    duel.onMessage("OUT 1 1");
+    CHECK(duel.phase() == DuelPhase::Result);
+    CHECK(duel.outcome() == DuelOutcome::Won);
+    CHECK(duel.myPlace() == 1);
+    const std::vector<DuelEvent> events = duel.takeEvents();
+    CHECK(std::count(events.begin(), events.end(), DuelEvent::Won) == 1);
+}
+
+TEST_CASE("royale: someone else's OUT 1 is a loss with my place") {
+    Wire wire;
+    DuelSession duel(wire.sender(), [](const StartMatch& start) {
+        return Game(start.seed, start.startLevel, Board{},
+                    GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
+    });
+    startRoyale(duel, wire);
+    topOutWithGarbage(*duel.game());
+    duel.update(0);
+    REQUIRE(duel.eliminated());
+    duel.onMessage("OUT 1 3");
+    CHECK(duel.myPlace() == 3);
+    CHECK(duel.phase() == DuelPhase::Playing);
+    duel.onMessage("OUT 2 2");
+    duel.onMessage("OUT 4 1");
+    CHECK(duel.phase() == DuelPhase::Result);
+    CHECK(duel.outcome() == DuelOutcome::Lost);
+    CHECK(duel.myPlace() == 3);
+    CHECK(duel.opponents()[2].place == 1);
+}
+
+TEST_CASE("royale: no clock freeze and the level floor rises every 30 s") {
+    // The session never ticks the game itself, so these idle frames cannot top it out.
+    SUBCASE("past the duel's 2:00 the game is not frozen") {
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startRoyale(duel, wire);
+        duel.update(kMatchMs + 1000);
+        REQUIRE(duel.game()->state() != GameState::GameOver);
+        CHECK_FALSE(duel.eliminated());
+        CHECK_FALSE(duel.frozen());
+        CHECK(duel.playedMs() == kMatchMs + 1000);
+        CHECK(duel.game()->level() == 1 + (kMatchMs + 1000) / kRoyaleLevelStepMs);
+    }
+    SUBCASE("the floor steps up at each 30 s of play") {
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startRoyale(duel, wire);
+        duel.update(kRoyaleLevelStepMs - 1);
+        CHECK(duel.game()->level() == 1);
+        duel.update(1);
+        CHECK(duel.game()->level() == 2);
+    }
+    SUBCASE("a duel keeps its floor at 0") {
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startMatch(duel, wire);
+        duel.update(kRoyaleLevelStepMs * 2);
+        CHECK(duel.game()->level() == 1);
+    }
+}
+
+TEST_CASE("royale: opponent names are fixed at START even when an ID is reused") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    duel.onMessage("PLAYERS 1 1:Me:1 2:Bo:1 3:New:0 4:Di:1");
+    REQUIRE(duel.opponents().size() == 3);
+    CHECK(duel.opponents()[1].id == 3);
+    CHECK(duel.opponents()[1].name == "Cy");
+    duel.onMessage("OUT 3 4");
+    CHECK(duel.opponents()[1].name == "Cy");
+    CHECK_FALSE(duel.opponents()[1].alive);
+    CHECK(duel.opponents()[1].place == 4);
+}
+
+TEST_CASE("royale: OUT outside a match is ignored") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("OUT 1 1");
+    CHECK(duel.phase() == DuelPhase::Room);
+    CHECK(duel.outcome() == DuelOutcome::None);
+    CHECK(duel.myPlace() == 0);
+    startRoyale(duel, wire);  // a fresh createRoom from the room
+    duel.onMessage("OUT 2 4");
+    duel.onMessage("OUT 3 3");
+    duel.onMessage("OUT 1 2");
+    duel.onMessage("OUT 4 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    REQUIRE(duel.outcome() == DuelOutcome::Lost);
+    duel.onMessage("OUT 1 1");
+    duel.onMessage("OUT 4 3");
+    CHECK(duel.phase() == DuelPhase::Result);
+    CHECK(duel.outcome() == DuelOutcome::Lost);
+    CHECK(duel.myPlace() == 2);
+    CHECK(duel.opponents()[2].place == 1);
+}
+
+TEST_CASE("royale: LEFT is ignored in a royale") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    duel.onMessage("LEFT");
+    CHECK(duel.phase() == DuelPhase::Playing);
+    CHECK(duel.outcome() == DuelOutcome::None);
+}
