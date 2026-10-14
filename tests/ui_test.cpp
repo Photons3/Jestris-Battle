@@ -276,3 +276,26 @@ TEST_CASE("ui: solo clocks and scores read naturally") {
     CHECK(formatScore(48200) == "48,200");
     CHECK(formatScore(1234567) == "1,234,567");
 }
+
+TEST_CASE("ui: the duel result draws the stats table") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImFont* font = ImGui::GetIO().Fonts->AddFontDefault();  // the boards draw HUD text, so they need a real font
+    ImGui::GetIO().Fonts->Build();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 900.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    DuelSession duel([](const std::string&) {});
+    duel.createRoom(1);
+    duel.onMessage("START 7 1");
+    duel.update(kCountdownMs + 1000);
+    duel.onMessage("OVER WIN KO 3 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    StartMenu menu;
+    for (int frame = 0; frame < 2; ++frame) {
+        ImGui::NewFrame();
+        CHECK(drawDuel(duel, Fonts{font, font}, ComboLabel{}, ClearCallout{}, AttackTrails{}, menu) == UiCommand::None);
+        ImGui::EndFrame();
+    }
+    ImGui::DestroyContext();
+}

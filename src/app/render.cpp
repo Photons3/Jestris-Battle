@@ -469,13 +469,22 @@ void drawCentered(ImDrawList* dl, const Fonts& fonts, float size, float centerX,
     dl->AddText(fonts.hud, size, ImVec2(centerX - extent.x * 0.5f, y), col, text);
 }
 
+// drawCentered, with the size scaled down when the text would be wider than `maxWidth`.
+void drawCenteredFit(ImDrawList* dl, const Fonts& fonts, float size, float centerX, float y, const char* text,
+                     ImU32 col, float maxWidth) {
+    const float width = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x;
+    if (width > maxWidth) size *= maxWidth / width;
+    drawCentered(dl, fonts, size, centerX, y, text, col);
+}
+
 void drawCenteredShadow(ImDrawList* dl, const Fonts& fonts, float size, float centerX, float y, const char* text,
                         ImU32 col, float offset, ImU32 shadow = IM_COL32(0, 0, 0, 220)) {
     const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
     drawShadowText(dl, fonts, size, ImVec2(centerX - extent.x * 0.5f, y), col, text, offset, shadow);
 }
 
-// TIME, the match target, your COMBO and SENT, with your number on the left. The plates already show the KOs.
+// TIME, the match target, your COMBO, then SENT, PPS and APM with your number on the left. The plates already
+// show the KOs.
 void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout, const DuelSession& duel,
                     const ComboLabel& combo) {
     const float cell = layout.mine.cell;
@@ -501,10 +510,21 @@ void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout
     } else {
         drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, "-", label);
     }
-    y += cell * 3.5f;
+    y += cell * 3.0f;
     std::snprintf(text, sizeof text, "%d : %d", duel.sentMine(), duel.sentTheirs());
     drawCentered(dl, fonts, cell * 0.5f, cx, y, "SENT", label);
     drawCentered(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, text, value);
+    const float maxWidth = kCenterColumns * cell;
+    const MatchRates mine = ratesOf(duel.game() ? duel.game()->stats() : GameStats{}, duel.playedMs());
+    const MatchRates theirs = ratesOf(duel.opponent().stats, duel.playedMs());
+    y += cell * 3.0f;
+    std::snprintf(text, sizeof text, "%.2f : %.2f", mine.pps, theirs.pps);
+    drawCentered(dl, fonts, cell * 0.5f, cx, y, "PPS", label);
+    drawCenteredFit(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, text, value, maxWidth);
+    y += cell * 3.0f;
+    std::snprintf(text, sizeof text, "%.1f : %.1f", mine.apm, theirs.apm);
+    drawCentered(dl, fonts, cell * 0.5f, cx, y, "APM", label);
+    drawCenteredFit(dl, fonts, cell * 0.8f, cx, y + cell * 0.8f, text, value, maxWidth);
 }
 
 // The opponent's well at full size, then one column right of it: HOLD, NEXT, SCORE and LINES.
@@ -771,6 +791,22 @@ UiCommand drawDuelResult(const DuelSession& duel, const Fonts& fonts) {
     beginMenu("##result");
     menuTitle(fonts, resultTitle(duel.outcome()));
     ImGui::TextUnformatted(resultReasonText(duel).c_str());
+    if (ImGui::BeginTable("##stats", 3, ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("");
+        ImGui::TableSetupColumn("You");
+        ImGui::TableSetupColumn(duel.opponentName().empty() ? "Them" : duel.opponentName().c_str());
+        ImGui::TableHeadersRow();
+        for (const StatRow& row : resultStatRows(duel)) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(row.label.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(row.mine.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(row.theirs.c_str());
+        }
+        ImGui::EndTable();
+    }
     ImGui::Spacing();
     if (duel.opponentGone()) {
         if (duel.outcome() != DuelOutcome::OpponentLeft)
