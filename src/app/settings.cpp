@@ -45,6 +45,14 @@ std::array<SDL_Scancode, kKeySlots> parseSlots(std::string_view text) {
     return slots;
 }
 
+// A whole decimal integer, or nothing.
+std::optional<int> parseInt(std::string_view text) {
+    int value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc() || end != text.data() + text.size()) return std::nullopt;
+    return value;
+}
+
 }  // namespace
 
 std::string defaultPlayerName(std::uint32_t random) {
@@ -59,6 +67,11 @@ std::string serializeSettings(const Settings& settings) {
     out += settings.musicOff ? "music=off\n" : "music=on\n";
     if (isValidName(settings.playerName)) out += "name=" + settings.playerName + "\n";
     out += settings.publicRooms ? "public=on\n" : "public=off\n";
+    out += "das=" + std::to_string(settings.handling.dasMs) + "\n";
+    out += "arr=" + std::to_string(settings.handling.arrMs) + "\n";
+    out += settings.handling.softDropFactor == kSoftDropInstant
+               ? std::string("sdf=instant\n")
+               : "sdf=" + std::to_string(settings.handling.softDropFactor) + "\n";
     for (int i = 0; i < kActionCount; ++i) {
         out += kActionKeys[i];
         out += '=';
@@ -94,11 +107,19 @@ Settings parseSettings(std::string_view text) {
             if (isValidName(value)) settings.playerName = std::string(value);
         } else if (name == "public") {
             settings.publicRooms = value == "on";
+        } else if (name == "das") {
+            settings.handling.dasMs = parseInt(value).value_or(settings.handling.dasMs);
+        } else if (name == "arr") {
+            settings.handling.arrMs = parseInt(value).value_or(settings.handling.arrMs);
+        } else if (name == "sdf") {
+            settings.handling.softDropFactor =
+                value == "instant" ? kSoftDropInstant : parseInt(value).value_or(settings.handling.softDropFactor);
         } else if (const std::optional<int> action = actionIndex(name)) {
             loaded.keys[*action] = parseSlots(value);
         }
     }
     if (!versionOk) return Settings{};
+    settings.handling = clampHandling(settings.handling);
 
     // Copy slot by slot so a key listed twice stays with its first action.
     settings.keys.keys = {};

@@ -15,6 +15,7 @@ struct Settings {
     bool musicOff = false;
     std::string playerName;  // empty until one is chosen or generated
     bool publicRooms = false;  // Create room makes a public room
+    Handling handling;
 };
 
 // "Player" and four digits taken from `random`, for a player who has not picked a name.
