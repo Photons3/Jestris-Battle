@@ -77,6 +77,7 @@ on-screen clock always starts at 2:00, so with `-match 20s` the server's verdict
     scripts/setup.sh   # once: apt packages, emsdk into ~/emsdk, Go into /usr/local/go
     scripts/build.sh   # web build into build-web/, server into build-server/
     scripts/run.sh     # serves on 0.0.0.0:8080; extra flags go to the server
+    scripts/restart.sh # stops a running server, rebuilds, and starts it; same flags as run.sh
 
 Plain `http://` and `ws://` work out of the box. The game connects with `wss://` whenever the
 page was loaded over `https://`, so HTTPS works in either of two ways:
