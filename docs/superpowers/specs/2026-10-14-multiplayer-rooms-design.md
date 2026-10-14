@@ -5,7 +5,7 @@ Today a room has exactly two seats and the match starts the moment the second pl
 
 - **Bigger rooms:** a room holds up to 16 players.
 - **Host start:** the room's host decides when each match starts.
-- **Battle royale for 3+ players:** one top-out eliminates you, there's no clock, and the last player standing wins.
+- **Battle royale for 3+ players:** one top-out eliminates you, there's no clock, and the last player standing wins. Garbage has an open hole instead of bombs, the way Tetr.io and Tetris 99 do it.
 - **1v1 stays as it is:** a match with exactly 2 players uses today's duel rules (first to 3 KOs, 2:00 clock, lines sent as the tiebreak), including the stats table.
 
 Where this spec contradicts the earlier ones, this spec wins. Specifically, it replaces:
@@ -37,10 +37,11 @@ The mode is fixed when the host starts a match, from the number of participants:
 | Participants | Mode | Rules |
 |---|---|---|
 | 2 | Duel | Unchanged: top-out is a KO that resets your board; first to 3 KOs wins; 2:00 clock, then more KOs, then more lines sent; a full tie is a draw. |
-| 3–16 | Royale | Top-out eliminates you. No clock. Last player alive wins. Everyone gets a place (1 = winner). |
+| 3–16 | Royale | Top-out eliminates you. No clock. Last player alive wins. Everyone gets a place (1 = winner). Hole garbage instead of bombs. |
 
 ### Royale details
-- **Attacks:** the attack table, cancelling, garbage travel, the per-lock cap and bomb garbage are all unchanged. The server sends each accepted `ATK n` to **one living opponent chosen at random**, picked separately for every attack.
+- **Attacks:** the attack table, cancelling, garbage travel and the per-lock cap are unchanged. The server sends each accepted `ATK n` to **one living opponent chosen at random**, picked separately for every attack.
+- **Hole garbage (no bombs):** each garbage row is gray with exactly one open cell, the hole. All rows from **one attack** (one `ATK`) share the same hole column, so you can dig them out down one well. Each new attack picks a new random column, different from the previous attack's. The column is chosen when the attack is received and stored with it, so an attack that the 8-lines-per-lock cap splits across several locks keeps its column. Hole rows clear like any full line and count toward Tetrises, T-spins, back-to-back and the garbage-cleared stat as normal. Bombs, detonation and the two-high bomb pairing stay in the duel only.
 - **Elimination:** a player who tops out is out. Their place is the number of players alive just before they died (the first out of 9 is #9). Their board stays frozen on the game-over state, and they keep watching the other boards until the match ends.
 - **Disconnects:** a participant who disconnects mid-match is eliminated the same way.
 - **End:** when one player is left, that player is placed #1 and the match ends.
@@ -153,6 +154,9 @@ Unchanged behaviour: KO flash and board reset, the 2:00 display clock and 0:00 f
 
 ## 6. Core (`tetris_core`)
 - `Game::setLevelFloor(int)`: gravity, scoring and the reported level use `max(normal level, floor)`. The floor defaults to 0 (no effect), so solo play and duels are unchanged.
+- `GameOptions::garbage`, an enum `GarbageStyle { Bombs, Holes }`, defaults to `Bombs`. `makeDuelGame` picks `Holes` for a royale `START` and `Bombs` for a duel.
+- With `Holes`, `receiveGarbage` draws the batch's hole column from the garbage RNG (any column except the previous batch's) and stores it on the `GarbageBatch`. When garbage rises, each batch's rows are pushed with its own column.
+- A new `Board::pushGarbageHoles(const std::vector<int>& holeColumns)` pushes one gray row per entry, bottom row first, with an empty cell in the given column. It refuses an overflowing push and leaves the board unchanged, like `pushGarbage`. `fullRows` needs no change, since hole rows become full only when the hole is filled.
 
 ## 7. Screens
 
@@ -208,16 +212,24 @@ Unchanged behaviour: KO flash and board reset, the 2:00 display clock and 0:00 f
   - The existing duel tests, adapted to the new join flow.
 - **Bot (doctest):** the `LocalMatch` tests, adapted to `ROOM`/`PLAYERS`/`START` with IDs and to `BEGIN`.
 - **Core:** `setLevelFloor` raises gravity, scoring and the reported level, and never lowers them.
+- **Core, hole garbage:**
+  - Rows from one attack share a hole column, and the next attack uses a different column.
+  - A batch split by the per-lock cap keeps its column.
+  - No bomb cells ever appear with `Holes`.
+  - Filling the hole clears the row and counts as a garbage-cleared line.
+  - An overflowing push is a top-out and leaves the board unchanged.
+  - `Bombs` behaviour is unchanged, pinned by the existing tests.
 - **Manual (no headless ImGui harness):**
   - 4–5 localhost tabs: lobby list counts, Quick match, room screen, host start, a late joiner, royale to the end, standings, starting the next match, the host leaving in the room and mid-match, and a phone-landscape grid.
   - A 2-tab duel and a bot practice match, to confirm both are unchanged apart from host start.
 
 ## 9. Docs
-README "Playing a duel" is rewritten for rooms of up to 16, host start, and the duel and royale modes. The earlier specs listed in Context get a "Partly superseded" pointer to this one.
+README "Playing a duel" is rewritten for rooms of up to 16, host start, the duel and royale modes, and royale's hole garbage. The earlier specs listed in Context get a "Partly superseded" pointer to this one.
 
 ## Decisions
 - **One room model, rules by player count:** a 2-player match is the existing duel and 3–16 is royale, so there's one room flow and the 1v1 stays as it is.
 - **Battle royale with one-life elimination** for 3+ players, rather than extending the KO count format.
+- **Hole garbage in royale, bombs in the duel:** royale follows the common guideline style (one hole column per attack, a new column for each attack). The duel keeps its bomb garbage.
 - **Random living target** per attack, chosen by the server, with no targeting controls.
 - **No clock in royale**, with a gravity floor rising one level every 30 s instead.
 - **Host-only start**, with host migration to the longest-present player, and back to the room after every match instead of a rematch vote. The bot practice is the one exception: it starts straight away.
