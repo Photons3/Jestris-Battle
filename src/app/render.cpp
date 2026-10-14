@@ -421,7 +421,7 @@ void drawGridBackground(float cell, ImVec2 anchor) {
 // A nameplate built like one wide mino: flat player color, the cells' bevel, the name with a hard drop shadow,
 // and a row of KO slots on the right that fill with gold mini-blocks as KOs land.
 void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float top, const char* name, Rgb base,
-                 int kos) {
+                 int kos, bool pips = true) {
     const float cell = well.cell;
     const float bevel = bevelFor(cell);
     const ImVec2 p0(std::floor(well.origin.x), std::floor(top));
@@ -433,6 +433,7 @@ void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float t
     drawShadowText(dl, fonts, textSize, textPos, IM_COL32(255, 255, 255, 255), name, bevel,
                    color(darken(darken(base)), 1.0f));
 
+    if (!pips) return;  // a royale has no KOs
     const float pip = std::floor(cell * 0.5f);
     const float gap = std::floor(cell * 0.2f);
     const float pipBevel = std::max(1.0f, bevel - 1.0f);
@@ -757,6 +758,118 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     ImGui::End();
 }
 
+// Royale, left to right, in cells: hold 5 | your well 10 | meter | next 5, inside a 28-column budget; the rest of
+// the width goes to the opponents' mini boards. The cell size is the duel's, so your well looks the same.
+constexpr float kRoyaleOwnColumns = 28.0f;
+constexpr float kRoyaleMeterCol = 15.75f;
+
+struct RoyaleLayout {
+    Layout mine;
+    float top;      // top of the name bar
+    ImVec2 gridMin;  // the area for the mini boards
+    ImVec2 gridMax;
+};
+
+RoyaleLayout computeRoyaleLayout() {
+    const DuelLayout duel = computeDuelLayout();
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float cell = duel.mine.cell;
+    const float left = vp->Pos.x + kMargin;
+    return {{cell, ImVec2(left + kMyWellCol * cell, duel.mine.origin.y)},
+            duel.top,
+            ImVec2(left + kRoyaleOwnColumns * cell, vp->Pos.y + kMargin),
+            ImVec2(vp->Pos.x + vp->Size.x - kMargin, vp->Pos.y + vp->Size.y - kMargin)};
+}
+
+// One opponent at mini size: the name, the pending-garbage meter and the cells, with no hold, next or ghost. An
+// eliminated board is dimmed and labelled with its place.
+void drawMiniBoard(ImDrawList* dl, const Fonts& fonts, ImVec2 topLeft, float cell, const OpponentView& opponent) {
+    const float nameSize = std::floor(cell * 0.9f);
+    const float maxWidth = kBoardWidth * cell;
+    float size = nameSize;
+    if (const float width = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, opponent.name.c_str()).x; width > maxWidth)
+        size *= maxWidth / width;
+    dl->AddText(fonts.hud, size, topLeft, color(opponent.alive ? kTextColor : kLabelColor, 1.0f),
+                opponent.name.c_str());
+
+    const ImVec2 top(topLeft.x, topLeft.y + cell);
+    const ImVec2 bottom(top.x + maxWidth, top.y + kVisibleHeight * cell);
+    dl->AddRectFilled(top, bottom, color(kWellFill, 1.0f));
+    dl->AddRect(ImVec2(top.x - 1, top.y - 1), ImVec2(bottom.x + 1, bottom.y + 1), color(kWellBorder, 1.0f));
+    const Snapshot& snapshot = opponent.snapshot;
+    for (int y = 0; y < kVisibleHeight; ++y)
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (const Cell c = snapshot.cells[y * kBoardWidth + x])
+                drawCell(dl, ImVec2(top.x + x * cell, bottom.y - (y + 1) * cell), cell, *c, 1.0f);
+    drawGarbageMeter(dl, bottom.x + std::floor(cell * 0.25f), bottom.y, cell, snapshot.pending, snapshot.ready);
+    if (opponent.alive) return;
+    dl->AddRectFilled(top, bottom, IM_COL32(0, 0, 0, 160));
+    char text[12];
+    std::snprintf(text, sizeof text, "#%d", opponent.place);
+    drawCenteredFit(dl, fonts, std::floor(cell * 3.0f), top.x + maxWidth * 0.5f,
+                    (top.y + bottom.y) * 0.5f - cell * 1.5f, text, color(kTextColor, 1.0f), maxWidth);
+}
+
+// "OUT · #7" over our own well once we're eliminated; just "OUT" until the server places us.
+void drawOutOverlay(ImDrawList* dl, const Fonts& fonts, const Layout& well, int place) {
+    const ImVec2 top = cellTopLeft(well, 0, kVisibleHeight - 1);
+    dl->AddRectFilled(top, ImVec2(top.x + kBoardWidth * well.cell, wellBottom(well)), IM_COL32(0, 0, 0, 140));
+    char text[24];
+    if (place > 0)
+        std::snprintf(text, sizeof text, "OUT \xC2\xB7 #%d", place);
+    else
+        std::snprintf(text, sizeof text, "OUT");
+    float size = std::floor(well.cell * 1.5f);
+    const float maxWidth = kBoardWidth * well.cell * 0.9f;
+    if (const float width = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x; width > maxWidth)
+        size = std::floor(size * maxWidth / width);
+    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    const ImVec2 pos(well.origin.x + (kBoardWidth * well.cell - extent.x) * 0.5f,
+                     (wellTop(well) + wellBottom(well) - extent.y) * 0.5f);
+    drawOutlinedText(dl, fonts, size, pos, text, kFlashFill, kFlashOutline, std::max(1.0f, std::floor(well.cell * 0.1f)));
+}
+
+// Our own well as in the duel, then a mini board per opponent in ID order.
+void drawRoyaleBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
+                      const StartMenu& menu) {
+    const Game& game = *duel.game();
+    const char* mine = menu.playerName.empty() ? "YOU" : menu.playerName.c_str();
+    const RoyaleLayout layout = computeRoyaleLayout();
+    const float cell = layout.mine.cell;
+    drawGridBackground(cell, layout.mine.origin);
+    ImDrawList* dl = beginBoardWindow();
+    drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, 0, false);
+    drawPlayfield(dl, layout.mine, game, fonts, combo, callout, true);
+    const float left = layout.mine.origin.x - kMyWellCol * cell;
+    drawGarbageMeter(dl, left + kRoyaleMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage(),
+                     game.readyGarbage());
+    if (duel.eliminated()) drawOutOverlay(dl, fonts, layout.mine, duel.myPlace());
+
+    const std::vector<OpponentView>& opponents = duel.opponents();
+    const float width = layout.gridMax.x - layout.gridMin.x;
+    const float height = layout.gridMax.y - layout.gridMin.y;
+    const GridShape grid = royaleGrid(static_cast<int>(opponents.size()), width, height);
+    const float mini = std::floor(grid.cell);
+    if (mini >= 1.0f) {
+        // Centered in the area, each board on whole pixels.
+        const float x0 = std::floor(layout.gridMin.x + (width - grid.cols * kMiniCols * mini) * 0.5f);
+        const float y0 = std::floor(layout.gridMin.y + (height - grid.rows * kMiniRows * mini) * 0.5f);
+        for (int i = 0; i < static_cast<int>(opponents.size()); ++i) {
+            const ImVec2 at(x0 + (i % grid.cols) * kMiniCols * mini, y0 + (i / grid.cols) * kMiniRows * mini);
+            drawMiniBoard(dl, fonts, at, mini, opponents[i]);
+        }
+    }
+    ImGui::End();
+}
+
+void drawMatchBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
+                     const AttackTrails& trails, const StartMenu& menu) {
+    if (duel.mode() == DuelMode::Duel)
+        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
+    else
+        drawRoyaleBoards(duel, fonts, combo, callout, menu);
+}
+
 // The digit pops in at 1.3x and settles, centered on the screen, with a hard shadow.
 void drawCountdown(int ms, const Fonts& fonts) {
     char text[12];
@@ -884,6 +997,33 @@ UiCommand drawDuelResult(const DuelSession& duel, const Fonts& fonts) {
     return command;
 }
 
+// "YOU WIN" or "#4 of 9", the standings in place order with our row in our plate color, then the room controls.
+UiCommand drawRoyaleResult(const DuelSession& duel, const Fonts& fonts) {
+    beginMenu("##result");
+    menuTitle(fonts, royaleResultTitle(duel).c_str());
+    if (ImGui::BeginTable("##standings", 3, ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("Place");
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("Attack");
+        ImGui::TableHeadersRow();
+        for (const Standing& standing : royaleStandings(duel)) {
+            const ImVec4 tone = standing.me ? colorVec(lighten(kMyPlateColor)) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextColored(tone, "#%d", standing.place);
+            ImGui::TableNextColumn();
+            ImGui::TextColored(tone, "%s", standing.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextColored(tone, "%d", standing.attack);
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Spacing();
+    const UiCommand command = drawRoomControls(duel);
+    ImGui::End();
+    return command;
+}
+
 constexpr int kLobbyVisibleRows = 8;  // the list scrolls past this many
 
 UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu) {
@@ -982,6 +1122,17 @@ float countdownPopScale(int countdownMs) {
 }
 
 bool showGoBanner(int matchClockMs) { return matchClockMs > kMatchMs - kGoBannerMs; }
+
+GridShape royaleGrid(int boards, float width, float height) {
+    GridShape best;
+    for (int cols = 1; cols <= boards; ++cols) {
+        const int rows = (boards + cols - 1) / cols;
+        const float cell = std::min(width / static_cast<float>(cols * kMiniCols),
+                                    height / static_cast<float>(rows * kMiniRows));
+        if (cell > best.cell) best = {cols, rows, cell};
+    }
+    return best;
+}
 
 bool garbageMeterDanger(int pending) { return pending >= kGarbageDangerLines; }
 
@@ -1351,19 +1502,19 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
         command = drawRoom(duel, fonts, menu);
         break;
     case DuelPhase::Countdown:
-        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
+        drawMatchBoards(duel, fonts, combo, callout, trails, menu);
         drawCountdown(duel.countdownMs(), fonts);
-        drawVersus(fonts, menu.playerName, duel.opponentName());
+        if (duel.mode() == DuelMode::Duel) drawVersus(fonts, menu.playerName, duel.opponentName());
         break;
     case DuelPhase::Playing:
-        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
+        drawMatchBoards(duel, fonts, combo, callout, trails, menu);
         // A royale's clock stays at 2:00, so its banner runs off the time played instead.
         if (showGoBanner(duel.mode() == DuelMode::Duel ? duel.matchClockMs() : kMatchMs - duel.playedMs()))
             drawGo(fonts);
         break;
     case DuelPhase::Result:
-        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
-        command = drawDuelResult(duel, fonts);
+        drawMatchBoards(duel, fonts, combo, callout, trails, menu);
+        command = duel.mode() == DuelMode::Duel ? drawDuelResult(duel, fonts) : drawRoyaleResult(duel, fonts);
         break;
     }
     return command;

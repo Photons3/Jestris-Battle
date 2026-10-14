@@ -126,6 +126,19 @@ inline constexpr float kTravellingGarbageAlpha = 0.4f;  // meter cells for garba
 // its ready cells blink every 250 ms.
 void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending, int ready);
 
+// A royale's opponents as a grid of mini boards.
+struct GridShape {
+    int cols = 1;
+    int rows = 1;
+    float cell = 0.0f;  // mini-board cell size in points
+};
+// Mini boards are kMiniCols x kMiniRows cells (well 10 + meter 1 + gap 1, by visible 20 + name 1 + gap 1).
+inline constexpr int kMiniCols = 12;
+inline constexpr int kMiniRows = 22;
+// The cols x rows grid for `boards` mini boards in a width x height area with the largest cell;
+// ties go to fewer columns.
+GridShape royaleGrid(int boards, float width, float height);
+
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
 // Square corners, beveled frames, the plate and gold colors, and Press Start 2P at a readable base size. Call

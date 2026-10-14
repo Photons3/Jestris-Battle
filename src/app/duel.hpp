@@ -155,6 +155,19 @@ private:
 // The line under the result title, e.g. "Time up · KO 1 : 1 · 12 : 7 sent". Empty outside Result.
 std::string resultReasonText(const DuelSession& duel);
 
+// One player's line in a royale's final standings.
+struct Standing {
+    int place = 0;
+    std::string name;
+    int attack = 0;  // from their last snapshot's stats; ours from our own game
+    bool me = false;
+};
+// The royale result's standings in place order, this player included. Empty outside a royale Result.
+std::vector<Standing> royaleStandings(const DuelSession& duel);
+// The royale result's title: "YOU WIN", or this player's place out of the field, e.g. "#4 of 9". Empty outside a
+// royale Result.
+std::string royaleResultTitle(const DuelSession& duel);
+
 struct MatchRates {
     double pps = 0.0;
     double apm = 0.0;

@@ -9,6 +9,7 @@
 #include "app/render.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "test_helpers.hpp"
 
 using namespace tetris;
 
@@ -411,6 +412,49 @@ TEST_CASE("ui: the duel result draws the room controls") {
     REQUIRE(guest.phase() == DuelPhase::Result);
     CHECK(pressButton(guest, font, "##result", "Start next match") == UiCommand::None);  // waits for the host
     CHECK(pressButton(guest, font, "##result", "Leave") == UiCommand::LeaveDuel);
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the royale grid picks the shape with the largest cells") {
+    CHECK(royaleGrid(2, 900.0f, 900.0f).cols == 2);   CHECK(royaleGrid(2, 900.0f, 900.0f).rows == 1);
+    CHECK(royaleGrid(8, 900.0f, 900.0f).cols == 4);   CHECK(royaleGrid(8, 900.0f, 900.0f).rows == 2);
+    CHECK(royaleGrid(15, 900.0f, 900.0f).cols == 5);  CHECK(royaleGrid(15, 900.0f, 900.0f).rows == 3);
+    CHECK(royaleGrid(1, 900.0f, 900.0f).cols == 1);
+}
+
+TEST_CASE("ui: royale boards draw while playing, eliminated, and in the result") {
+    ImFont* font = beginUiContext();
+    DuelSession duel([](const std::string&) {});
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Bo:0 3:Cy:0 4:Di:0");
+    duel.onMessage("START 7 1 1 2 3 4");
+    duel.update(kCountdownMs);
+    REQUIRE(duel.phase() == DuelPhase::Playing);
+    REQUIRE(duel.mode() == DuelMode::Royale);
+    Snapshot bo{};
+    bo.cells[0] = PieceType::Garbage;
+    bo.cells[1] = PieceType::T;
+    bo.pending = 3;
+    bo.ready = 1;
+    duel.onMessage(encode(PlayerSnapshot{2, bo}));
+    duel.onMessage("OUT 3 4");  // a dimmed board with its place
+    StartMenu menu;
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+
+    topOutWithGarbage(*duel.game());
+    duel.update(0);
+    REQUIRE(duel.eliminated());
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);  // "OUT"
+    duel.onMessage("OUT 1 3");
+    REQUIRE(duel.myPlace() == 3);
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);  // "OUT · #3"
+
+    duel.onMessage("OUT 2 2");
+    duel.onMessage("OUT 4 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+    CHECK(pressButton(duel, font, "##result", "Start next match") == UiCommand::BeginMatch);
     ImGui::DestroyContext();
 }
 

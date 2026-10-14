@@ -1141,3 +1141,73 @@ TEST_CASE("royale: LEFT is ignored in a royale") {
     CHECK(duel.phase() == DuelPhase::Playing);
     CHECK(duel.outcome() == DuelOutcome::None);
 }
+
+TEST_CASE("royale: standings list places in order with attack") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    CHECK(royaleStandings(duel).empty());  // only on the result screen
+    Snapshot bo{};
+    bo.stats.attack = 5;
+    Snapshot di{};
+    di.stats.attack = 9;
+    duel.onMessage(encode(PlayerSnapshot{2, bo}));
+    duel.onMessage(encode(PlayerSnapshot{4, di}));
+    duel.onMessage("OUT 2 4");
+    duel.onMessage("OUT 1 3");
+    duel.onMessage("OUT 4 2");
+    duel.onMessage("OUT 3 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    const std::vector<Standing> standings = royaleStandings(duel);
+    REQUIRE(standings.size() == 4);
+    std::vector<int> places;
+    std::vector<std::string> names;
+    for (const Standing& s : standings) {
+        places.push_back(s.place);
+        names.push_back(s.name);
+    }
+    CHECK(places == std::vector<int>{1, 2, 3, 4});
+    CHECK(names == std::vector<std::string>{"Cy", "Di", "Me", "Bo"});
+    CHECK(standings[1].attack == 9);
+    CHECK(standings[3].attack == 5);
+    CHECK(standings[2].attack == duel.game()->stats().attack);
+    CHECK(standings[2].me);
+    CHECK_FALSE(standings[0].me);
+    CHECK_FALSE(standings[1].me);
+    CHECK_FALSE(standings[3].me);
+}
+
+TEST_CASE("royale: the result title is the place out of the field") {
+    {
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startRoyale(duel, wire);
+        CHECK(royaleResultTitle(duel).empty());  // only on the result screen
+        duel.onMessage("OUT 1 3");
+        duel.onMessage("OUT 2 2");
+        duel.onMessage("OUT 4 1");
+        REQUIRE(duel.phase() == DuelPhase::Result);
+        CHECK(royaleResultTitle(duel) == "#3 of 4");
+    }
+    {
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startRoyale(duel, wire);
+        duel.onMessage("OUT 2 4");
+        duel.onMessage("OUT 3 3");
+        duel.onMessage("OUT 4 2");
+        duel.onMessage("OUT 1 1");
+        REQUIRE(duel.phase() == DuelPhase::Result);
+        CHECK(royaleResultTitle(duel) == "YOU WIN");
+    }
+}
+
+TEST_CASE("royale: a duel result has no standings or royale title") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.onMessage("OVER WIN KO 3 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    CHECK(royaleStandings(duel).empty());
+    CHECK(royaleResultTitle(duel).empty());
+}

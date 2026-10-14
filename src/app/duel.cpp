@@ -1,6 +1,7 @@
 #include "app/duel.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cstdio>
 #include <string_view>
 #include <utility>
@@ -39,6 +40,10 @@ std::string formatted(const char* format, double value) {
 
 std::string comboText(int maxCombo) { return maxCombo > 0 ? std::to_string(maxCombo) : "-"; }
 
+bool royaleResult(const DuelSession& duel) {
+    return duel.phase() == DuelPhase::Result && duel.mode() == DuelMode::Royale;
+}
+
 const Snapshot kNoSnapshot{};
 const std::string kNoName;
 
@@ -69,6 +74,25 @@ std::string resultReasonText(const DuelSession& duel) {
     if (duel.kosMine() == duel.kosTheirs())
         text += std::string(kSeparator) + versus(duel.sentMine(), duel.sentTheirs()) + " sent";
     return text;
+}
+
+std::vector<Standing> royaleStandings(const DuelSession& duel) {
+    if (!royaleResult(duel)) return {};
+    std::vector<Standing> standings;
+    for (const OpponentView& opponent : duel.opponents())
+        standings.push_back({opponent.place, opponent.name, opponent.snapshot.stats.attack, false});
+    const auto me = std::ranges::find(duel.roster(), duel.myId(), &RosterEntry::id);  // our name stays while we're in
+    standings.push_back({duel.myPlace(), me != duel.roster().end() ? me->name : std::string("You"),
+                         duel.game() ? duel.game()->stats().attack : 0, true});
+    // An unplaced player (place 0) can't happen once OUT ... 1 arrives, but would sort last rather than first.
+    std::ranges::stable_sort(standings, {}, [](const Standing& s) { return s.place > 0 ? s.place : INT_MAX; });
+    return standings;
+}
+
+std::string royaleResultTitle(const DuelSession& duel) {
+    if (!royaleResult(duel)) return {};
+    if (duel.outcome() == DuelOutcome::Won) return "YOU WIN";
+    return "#" + std::to_string(duel.myPlace()) + " of " + std::to_string(duel.participants());
 }
 
 MatchRates ratesOf(const GameStats& stats, int playedMs) {

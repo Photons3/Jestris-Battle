@@ -168,9 +168,10 @@ void playEvents(App& app) {
                 app.lastClearRow = middleRow(game->clearingRows());
             if (const auto sound = soundFor(event, inDuel); sound && !app.hidden) app.audio.play(*sound);
         }
+    const bool trails = app.duel.mode() == DuelMode::Duel;  // a royale's grid has no single target to fly to
     for (DuelEvent event : app.duel.takeEvents()) {
-        if (event == DuelEvent::Sent) app.trails.launch(true, app.lastClearRow);
-        if (event == DuelEvent::Attacked) app.trails.launch(false, stackTopRow(app.duel.opponent()));
+        if (trails && event == DuelEvent::Sent) app.trails.launch(true, app.lastClearRow);
+        if (trails && event == DuelEvent::Attacked) app.trails.launch(false, stackTopRow(app.duel.opponent()));
         if (const auto sound = soundFor(event); sound && !app.hidden) app.audio.play(*sound);
     }
 }
