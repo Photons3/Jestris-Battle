@@ -96,3 +96,20 @@ TEST_CASE("settings: the public-room choice round-trips and defaults to off") {
     settings.publicRooms = true;
     CHECK(parseSettings(serializeSettings(settings)).publicRooms);
 }
+
+TEST_CASE("settings: the handling round-trips, instant soft drop included") {
+    Settings settings;
+    settings.handling = {80, 0, kSoftDropInstant};
+    CHECK(parseSettings(serializeSettings(settings)).handling == settings.handling);
+    settings.handling = {0, 12, 35};
+    CHECK(parseSettings(serializeSettings(settings)).handling == settings.handling);
+}
+
+TEST_CASE("settings: out-of-range handling is clamped and junk keeps the defaults") {
+    CHECK(parseSettings("version=1\ndas=9999\narr=-5\nsdf=2\n").handling == Handling{kMaxDasMs, 0, kMinSdf});
+    CHECK(parseSettings("version=1\ndas=abc\narr=12x\nsdf=\n").handling == Handling{});
+}
+
+TEST_CASE("settings: a file saved before handling existed loads the default handling") {
+    CHECK(parseSettings("version=1\nsound=off\npublic=on\n").handling == Handling{});
+}

@@ -30,6 +30,7 @@ struct App {
     StartMenu menu;
     ControlsMenu controls;
     Keymap keymap = defaultKeymap();
+    Handling handling;  // DAS, ARR and soft-drop speed, as last saved
     std::optional<Game> game;  // solo game
     std::unique_ptr<Connection> connection;
     DuelSession duel;
@@ -50,7 +51,7 @@ struct App {
     void toggleMusic();                   // flips the music on or off and saves it
     void syncMusic(const MusicCue& cue);  // starts, pauses, retimes or stops the music to match `cue`
     void toggleSound();  // flips mute and saves it
-    void saveSettings();  // stores the keymap, mute and music for the next launch
+    void saveSettings();  // stores the keymap, handling, mute and music for the next launch
     Game* activeGame();  // the game the keys control: solo, or the duel game while a match is running
 };
 

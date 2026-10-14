@@ -60,12 +60,81 @@ TEST_CASE("game: soft drop is 20x gravity and scores 1 per row") {
     CHECK(game.score() == 1);
 }
 
+TEST_CASE("game: the soft-drop factor sets how much faster soft drop falls") {
+    for (int factor : {5, 40}) {
+        Game game(seedWithFirst(PieceType::T), 1);
+        game.setSoftDropFactor(factor);
+        game.setSoftDrop(true);
+        game.tick(1000 / factor - 1);
+        CHECK(game.active().pos.y == 21);
+        game.tick(1);
+        CHECK(game.active().pos.y == 20);
+    }
+}
+
+TEST_CASE("game: instant soft drop reaches the floor in one tick, scores 1 per row and leaves the lock delay") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setSoftDropFactor(kSoftDropInstant);
+    game.setSoftDrop(true);
+    game.tick(1);
+    CHECK(game.ghostDistance() == 0);
+    CHECK(game.score() == 20);
+    CHECK(countFilled(game.board()) == 0);
+    game.tick(kLockDelayMs - 1);
+    CHECK(countFilled(game.board()) == 0);
+    game.tick(1);
+    CHECK(countFilled(game.board()) == 4);
+}
+
+TEST_CASE("game: instant soft drop also drops a piece swapped in from hold") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setSoftDropFactor(kSoftDropInstant);
+    game.setSoftDrop(true);
+    game.tick(1);
+    game.apply(Action::Hold);
+    REQUIRE(game.ghostDistance() > 0);
+    game.tick(1);
+    CHECK(game.ghostDistance() == 0);
+}
+
 TEST_CASE("game: moving stops at the wall") {
     Game game(seedWithFirst(PieceType::T), 1);
     game.apply(Action::Left);
     CHECK(game.active().pos.x == 2);
     for (int i = 0; i < 5; ++i) game.apply(Action::Left);
     CHECK(game.active().pos.x == 0);
+}
+
+TEST_CASE("game: a wall shift moves all the way to the wall") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.apply(Action::RightWall);
+    CHECK(game.active().pos.x == 7);
+    game.apply(Action::LeftWall);
+    CHECK(game.active().pos.x == 0);
+}
+
+TEST_CASE("game: a wall shift stops at a block in the way") {
+    Board board;
+    board.set(8, 20, PieceType::Z);  // in the spawned T's row, two columns right of it
+    Game game(seedWithFirst(PieceType::T), 1, board);
+    REQUIRE(game.active().pos.y == 21);  // the flat of the T is row 20
+    game.apply(Action::RightWall);
+    CHECK(game.active().pos.x == 5);
+}
+
+TEST_CASE("game: a wall shift restarts the lock delay once, like a single move") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    dropToFloor(game);
+    for (int i = 0; i < kMaxLockResets; ++i) {
+        game.tick(100);
+        game.apply(i % 2 == 0 ? Action::LeftWall : Action::RightWall);
+    }
+    game.tick(100);
+    game.apply(Action::LeftWall);  // 16th move: timer keeps running
+    game.tick(kLockDelayMs - 101);
+    CHECK(countFilled(game.board()) == 0);
+    game.tick(1);
+    CHECK(countFilled(game.board()) == 4);
 }
 
 TEST_CASE("game: rotating uses SRS") {
@@ -871,6 +940,14 @@ TEST_CASE("game events: a blocked move is silent") {
     Game game(seedWithFirst(PieceType::T), 1);
     for (int i = 0; i < 5; ++i) game.apply(Action::Left);  // only 3 columns to the wall
     CHECK(game.takeEvents() == Events{kMoved, kMoved, kMoved});
+}
+
+TEST_CASE("game events: a wall shift reports one move, and nothing once at the wall") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.apply(Action::LeftWall);
+    CHECK(game.takeEvents() == Events{kMoved});
+    game.apply(Action::LeftWall);
+    CHECK(game.takeEvents().empty());
 }
 
 TEST_CASE("game events: a hard drop reports the drop, not a lock") {

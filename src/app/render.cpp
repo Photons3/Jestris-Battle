@@ -975,11 +975,17 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     return command;
 }
 
-UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsMenu& controls) {
+int sdfSliderValue(int softDropFactor) { return softDropFactor == kSoftDropInstant ? kMaxSdf + 1 : softDropFactor; }
+
+int sdfFromSlider(int value) { return value > kMaxSdf ? kSoftDropInstant : value; }
+
+UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, Handling& handling, ControlsMenu& controls) {
     UiCommand command = UiCommand::None;
     beginMenu("##controls");
     menuTitle(fonts, "CONTROLS");
     const float slotWidth = ImGui::CalcTextSize("Press a key...").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    float keysLeft = 0.0f;   // where the key columns start and end, window-relative, to line the sliders up
+    float keysRight = 0.0f;
     if (ImGui::BeginTable("##keys", 1 + kKeySlots, ImGuiTableFlags_SizingFixedFit)) {
         for (int i = 0; i < kActionCount; ++i) {
             const auto action = static_cast<Key>(i);
@@ -997,11 +1003,33 @@ UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsM
                     controls.capturing = std::pair(action, slot);
                     controls.note.clear();
                 }
+                if (i == 0 && slot == 0) keysLeft = ImGui::GetItemRectMin().x - ImGui::GetWindowPos().x;
+                if (i == 0 && slot == kKeySlots - 1) keysRight = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
             }
         }
         ImGui::EndTable();
     }
     ImGui::TextDisabled("Esc cancels, Backspace clears");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("HANDLING");
+    // Lined up with the key table: labels in its first column, sliders across both key columns.
+    bool edited = false;
+    auto slider = [&](const char* label, const char* id, int* value, int lo, int hi, const char* format) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(keysLeft);
+        ImGui::SetNextItemWidth(keysRight - keysLeft);
+        ImGui::SliderInt(id, value, lo, hi, format, ImGuiSliderFlags_AlwaysClamp);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+    };
+    slider("DAS", "##das", &handling.dasMs, kMinDasMs, kMaxDasMs, "%d ms");
+    slider("ARR", "##arr", &handling.arrMs, kMinArrMs, kMaxArrMs, handling.arrMs == 0 ? "0 ms (instant)" : "%d ms");
+    int sdf = sdfSliderValue(handling.softDropFactor);
+    slider("SDF", "##sdf", &sdf, kMinSdf, kMaxSdf + 1, sdf > kMaxSdf ? "Instant" : "%dx");
+    handling.softDropFactor = sdfFromSlider(sdf);
+    if (edited) command = UiCommand::SaveHandling;
+
     // The note line is always there, so the centered window doesn't jump when one appears.
     ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", controls.note.empty() ? " " : controls.note.c_str());
     ImGui::Spacing();

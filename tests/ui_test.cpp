@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -113,14 +114,19 @@ TEST_CASE("ui: only a perfect clear flashes over the well, and only at first") {
 namespace {
 
 // One headless ImGui frame of the Controls screen, so table and ID mistakes trip ImGui's asserts.
-UiCommand controlsFrame(const Keymap& keymap, ControlsMenu& controls) {
+UiCommand controlsFrame(const Keymap& keymap, ControlsMenu& controls, Handling& handling) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(800.0f, 900.0f);
     io.DeltaTime = 1.0f / 60.0f;
     ImGui::NewFrame();
-    const UiCommand command = drawControlsScreen(Fonts{}, keymap, controls);
+    const UiCommand command = drawControlsScreen(Fonts{}, keymap, handling, controls);
     ImGui::EndFrame();
     return command;
+}
+
+UiCommand controlsFrame(const Keymap& keymap, ControlsMenu& controls) {
+    Handling handling;
+    return controlsFrame(keymap, controls, handling);
 }
 
 }  // namespace
@@ -220,5 +226,43 @@ TEST_CASE("ui: the arcade style has square corners and the plate colors") {
     CHECK(style.FrameRounding == 0.0f);
     CHECK(style.GrabRounding == 0.0f);
     CHECK(style.FrameBorderSize > 0.0f);
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the SDF slider's top step is an instant soft drop") {
+    CHECK(sdfSliderValue(kSoftDropInstant) == kMaxSdf + 1);
+    CHECK(sdfFromSlider(kMaxSdf + 1) == kSoftDropInstant);
+    CHECK(sdfSliderValue(20) == 20);
+    CHECK(sdfFromSlider(20) == 20);
+    CHECK(sdfFromSlider(kMinSdf) == kMinSdf);
+}
+
+TEST_CASE("ui: the handling sliders change from the keyboard and ask to be saved") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    const Keymap keymap = defaultKeymap();
+    ControlsMenu controls;
+    Handling handling;
+    controlsFrame(keymap, controls, handling);
+    controlsFrame(keymap, controls, handling);
+    auto press = [&](ImGuiKey key) {
+        ImGui::GetIO().AddKeyEvent(key, true);
+        UiCommand command = controlsFrame(keymap, controls, handling);
+        ImGui::GetIO().AddKeyEvent(key, false);
+        if (command == UiCommand::None) command = controlsFrame(keymap, controls, handling);
+        return command;
+    };
+    // From Move left's first key, down past the other key rows lands on the DAS slider. Space starts editing it,
+    // Right raises it, and Space again finishes the edit.
+    for (int i = 0; i < kActionCount; ++i) press(ImGuiKey_DownArrow);
+    std::vector<UiCommand> commands;
+    for (ImGuiKey key : {ImGuiKey_Space, ImGuiKey_RightArrow, ImGuiKey_Space}) commands.push_back(press(key));
+    CHECK(handling.dasMs > Handling{}.dasMs);
+    CHECK(handling.arrMs == Handling{}.arrMs);
+    CHECK(handling.softDropFactor == Handling{}.softDropFactor);
+    for (int i = 0; i < 3; ++i) commands.push_back(controlsFrame(keymap, controls, handling));
+    CHECK(std::find(commands.begin(), commands.end(), UiCommand::SaveHandling) != commands.end());
+    CHECK_FALSE(controls.capturing);
     ImGui::DestroyContext();
 }

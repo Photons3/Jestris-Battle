@@ -14,7 +14,8 @@
 namespace tetris {
 
 enum class GameState { Playing, Clearing, Paused, GameOver };
-enum class Action { Left, Right, RotateCW, RotateCCW, HardDrop, Hold, Pause };
+// LeftWall and RightWall move the piece as far as it goes, for auto-repeat at ARR 0.
+enum class Action { Left, Right, RotateCW, RotateCCW, HardDrop, Hold, Pause, LeftWall, RightWall };
 enum class GameEventType {
     Moved, Rotated, Held, HardDropped, Locked, LinesCleared, BombExploded, GarbageRose, LevelUp, ToppedOut, Combo,
     SpecialClear
@@ -49,7 +50,8 @@ struct GameEvent {
 inline constexpr int kLockDelayMs = 500;
 inline constexpr int kMaxLockResets = 15;
 inline constexpr int kClearDelayMs = 300;
-inline constexpr int kSoftDropFactor = 20;
+inline constexpr int kDefaultSoftDropFactor = 20;  // soft drop falls this many times faster than gravity
+inline constexpr int kSoftDropInstant = 0;         // a soft-drop factor that drops straight to the floor
 inline constexpr int kGravityLevelCap = 20;
 inline constexpr int kLinesPerLevel = 10;
 inline constexpr int kMinStartLevel = 1;
@@ -105,6 +107,8 @@ public:
 
     void apply(Action action);
     void setSoftDrop(bool on) { softDrop_ = on; }
+    // How much faster soft drop falls than gravity. kSoftDropInstant drops to the floor at once, without locking.
+    void setSoftDropFactor(int factor) { softDropFactor_ = factor; }
     void tick(int ms);  // advances in 1 ms steps
     void pause();       // no-op unless Playing or Clearing
     void resume();      // no-op unless Paused
@@ -131,6 +135,7 @@ private:
     void step();
     void spawn(PieceType type);
     bool tryMove(int dx, int dy);
+    void shiftToWall(int dx);
     void rotate(RotateDir dir);
     void updateLowest();
     void onPlayerMoved();
@@ -152,6 +157,7 @@ private:
     std::optional<PieceType> hold_;
     bool canHold_ = true;
     bool softDrop_ = false;
+    int softDropFactor_ = kDefaultSoftDropFactor;
     GameState state_ = GameState::Playing;
     GameState resumeState_ = GameState::Playing;
     std::vector<int> clearingRows_;
