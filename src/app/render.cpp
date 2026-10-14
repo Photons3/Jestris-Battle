@@ -966,6 +966,17 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
                      ImGuiSliderFlags_AlwaysClamp);
     ImGui::TextDisabled("Marathon, Blitz, Zen");
     ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::SeparatorText("PRACTICE");
+    constexpr std::array<std::pair<BotLevel, const char*>, 3> kBotLevels{
+        {{BotLevel::Easy, "Easy"}, {BotLevel::Medium, "Medium"}, {BotLevel::Hard, "Hard"}}};
+    for (std::size_t i = 0; i < kBotLevels.size(); ++i) {
+        if (i > 0) ImGui::SameLine();
+        if (ImGui::RadioButton(kBotLevels[i].second, menu.botLevel == kBotLevels[i].first))
+            menu.botLevel = kBotLevels[i].first;
+    }
+    if (menuButton("vs Bot", width)) command = UiCommand::PlayBot;
+    ImGui::Spacing();
     if (soundButton(menu.muted, width)) command = UiCommand::ToggleSound;
     if (musicButton(menu.musicOff, width)) command = UiCommand::ToggleMusic;
     if (menuButton("Controls", width)) command = UiCommand::OpenControls;

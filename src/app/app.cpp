@@ -11,6 +11,7 @@
 #include "app/settings.hpp"
 #include "app/settings_store.hpp"
 #include "app/sound_cues.hpp"
+#include "bot/local_match.hpp"
 #include "imgui.h"
 
 namespace tetris {
@@ -22,6 +23,9 @@ void applyCommand(App& app, UiCommand command) {
         break;
     case UiCommand::PlaySolo:
         app.newSolo(app.menu.soloMode);
+        break;
+    case UiCommand::PlayBot:
+        app.openBotDuel();
         break;
     case UiCommand::Restart:
         if (app.solo) app.newSolo(app.solo->mode());
@@ -268,6 +272,14 @@ void App::openDuel() {
     screen = Screen::Duel;
 }
 
+void App::openBotDuel() {
+    if (connection) closeDuel();
+    connection = std::make_unique<LocalMatch>(menu.botLevel, static_cast<std::uint32_t>(SDL_GetTicksNS()));
+    menu.error.clear();
+    screen = Screen::Duel;
+    duel.createRoom(menu.startLevel);
+}
+
 void App::toggleSound() {
     menu.muted = !menu.muted;
     audio.setMuted(menu.muted);
@@ -361,6 +373,7 @@ void step(App& app, int ms) {
     }
     if (app.screen == Screen::Playing && app.solo) app.solo->update(ms);
     if (app.screen == Screen::Duel) app.duel.update(ms);
+    if (app.connection) app.connection->update(ms);
     playSoloEvents(app);
     playEvents(app);
     const Game* shown = shownGame(app);

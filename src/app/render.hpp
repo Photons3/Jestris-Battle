@@ -10,6 +10,7 @@
 #include "app/fonts.hpp"
 #include "app/keymap.hpp"
 #include "app/solo.hpp"
+#include "bot/bot_player.hpp"
 #include "core/game.hpp"
 
 struct ImGuiIO;
@@ -18,11 +19,12 @@ struct ImGuiStyle;
 namespace tetris {
 
 enum class Screen { Start, Playing, Duel, Controls };
-enum class UiCommand { None, PlaySolo, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
+enum class UiCommand { None, PlaySolo, PlayBot, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
 
 struct StartMenu {
     int startLevel = 1;
     SoloMode soloMode = SoloMode::Marathon;   // the solo button last clicked, for PlaySolo
+    BotLevel botLevel = BotLevel::Medium;     // the practice bot's strength, for PlayBot
     PersonalBests bests;                      // shown beside the timed modes; saved with the settings
     bool duelsEnabled = false;                // browser build only
     char joinCode[kRoomCodeLength + 1] = {};  // typed room code, uppercase

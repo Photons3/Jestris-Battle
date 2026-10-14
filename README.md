@@ -1,7 +1,7 @@
 # Jestris Battle
 
-C++20 Tetris on SDL3 and Dear ImGui. Plays solo on the desktop or in the browser, and
-as a 1v1 duel between two browsers on the same LAN.
+C++20 Tetris on SDL3 and Dear ImGui. Plays solo on the desktop or in the browser, as a practice
+duel against a bot, and as a 1v1 duel between two browsers on the same LAN.
 
 ## Desktop build and tests
 
@@ -52,6 +52,14 @@ The start level slider applies to Marathon, Blitz and Zen. Sprint, Blitz and Che
 seconds). When a timed run ends, the result screen shows your time or score and your personal best;
 Retry (or R) starts again. Only a finished run counts toward a best: the fastest Sprint and Cheese
 times and the highest Blitz score are shown beside their buttons on the start menu.
+
+## Practice bot
+
+The PRACTICE section of the start menu plays a 1v1 duel against a bot, offline, on the desktop and in
+the browser alike. Pick Easy, Medium or Hard and press vs Bot. The bot is named Bot-Easy, Bot-Medium or
+Bot-Hard. Easy plays about 0.8 pieces per second and makes mistakes, Medium about 1.5, Hard about 2.5.
+The match has the same countdown, garbage, KOs and rematch as a network duel, and Leave returns to
+the menu.
 
 ## Hosting LAN duels
 
