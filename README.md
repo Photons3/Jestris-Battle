@@ -74,7 +74,10 @@ in a room.
 
 1. Type the name you want your opponent to see in the Name field (it is remembered). Letters,
    digits and `_ - .`, up to 12 characters.
-2. One player picks Create room and shares the 4-letter code.
+2. Quick match pairs you with whoever is waiting, or waits for the next player.
+   Browse rooms lists open public rooms; click Join on one.
+   Create room makes a room with a 4-letter code (tick Public to also list it in Browse rooms).
+   Share the code, or the invite link on the waiting screen, which opens the game with a Join button ready.
 3. The friend types the code and joins; the match starts after a short countdown.
 4. Clearing 2, 3 or 4 lines sends 1, 2 or 4 garbage lines to the opponent. Clearing
    lines cancels incoming garbage first. Each garbage batch carries a column of bombs:
