@@ -119,7 +119,12 @@ void configureImGuiIo(ImGuiIO& io);
 void applyArcadeStyle(ImGuiStyle& style);
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu);
 // Each action with its two key buttons; clicking one sets `controls.capturing`.
-UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsMenu& controls);
+// Below them, the Handling sliders edit `handling` in place; letting go of one returns SaveHandling.
+UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, Handling& handling, ControlsMenu& controls);
+
+// The SDF slider runs from kMinSdf to one step past kMaxSdf, which stands for an instant soft drop.
+int sdfSliderValue(int softDropFactor);
+int sdfFromSlider(int value);
 // Well, pieces, hold/next panels and stats. The board and panels are hidden while paused.
 void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout);
 // Pause and game-over menus; draws nothing while playing.

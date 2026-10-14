@@ -359,7 +359,7 @@ void drawFrame(App& app, const Fonts& fonts) {
         command = drawDuel(app.duel, fonts, app.combo, app.callout, app.trails, app.menu);
         break;
     case Screen::Controls:
-        command = drawControlsScreen(fonts, app.keymap, app.controls);
+        command = drawControlsScreen(fonts, app.keymap, app.handling, app.controls);
         break;
     }
     if (app.menu.muted) drawMutedBadge(fonts);
