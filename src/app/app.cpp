@@ -2,6 +2,7 @@
 #include "app/app.hpp"
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 #include "app/keymap.hpp"
@@ -36,6 +37,9 @@ void applyCommand(App& app, UiCommand command) {
         break;
     case UiCommand::QuitApp:
         app.quit = true;
+        break;
+    case UiCommand::SaveName:
+        app.saveSettings();
         break;
     case UiCommand::CreateRoom:
         app.openDuel();
@@ -145,11 +149,17 @@ App::App()
     keymap = saved.keys;
     menu.muted = saved.muted;
     menu.musicOff = saved.musicOff;
+    menu.playerName = saved.playerName;
+    if (menu.playerName.empty()) {
+        menu.playerName = defaultPlayerName(static_cast<std::uint32_t>(SDL_GetTicksNS()));
+        saveSettings();  // keep the generated name across visits
+    }
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
     audio.setMuted(menu.muted);
     audio.setMusicMuted(menu.musicOff);
 }
 
-void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, {}})); }
+void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.playerName})); }
 
 void App::newGame() {
     syncMusic({});  // a new game always starts the song from the top
@@ -163,6 +173,7 @@ void App::newGame() {
 
 void App::openDuel() {
     connection = connectToServer();
+    if (connection) connection->send(encode(Hello{menu.playerName}));  // queued until the socket opens
     menu.error.clear();
     screen = Screen::Duel;
 }
@@ -274,7 +285,7 @@ void drawFrame(App& app, const Fonts& fonts) {
         command = drawOverlay(*app.game, fonts, app.menu.muted, app.menu.musicOff);
         break;
     case Screen::Duel:
-        command = drawDuel(app.duel, fonts, app.combo);
+        command = drawDuel(app.duel, fonts, app.combo, app.menu);
         break;
     case Screen::Controls:
         command = drawControlsScreen(fonts, app.keymap, app.controls);
