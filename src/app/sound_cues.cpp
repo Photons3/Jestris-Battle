@@ -39,7 +39,7 @@ std::optional<Sound> soundFor(const GameEvent& event, bool inDuel) {
     return std::nullopt;
 }
 
-Sound soundFor(DuelEvent event) {
+std::optional<Sound> soundFor(DuelEvent event) {
     switch (event) {
     case DuelEvent::CountdownTick:
         return Sound::CountdownTick;
@@ -47,6 +47,8 @@ Sound soundFor(DuelEvent event) {
         return Sound::Go;
     case DuelEvent::Attacked:
         return Sound::Attacked;
+    case DuelEvent::Sent:
+        return std::nullopt;
     case DuelEvent::KoMine:
         return Sound::KoMine;
     case DuelEvent::Won:

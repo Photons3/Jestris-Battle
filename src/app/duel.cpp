@@ -169,6 +169,7 @@ void DuelSession::update(int ms) {
     if (const int lines = game_->takeOutgoingAttack(); lines > 0) {
         send(Attack{lines});
         sentMine_ += lines;
+        events_.push_back(DuelEvent::Sent);
     }
     const bool toppedOut = game_->state() == GameState::GameOver;
     sinceSnapshotMs_ += ms;

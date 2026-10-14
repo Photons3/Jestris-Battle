@@ -11,7 +11,7 @@ namespace tetris {
 // In a duel a top-out is a KO against us, not the end of the game. A plain tetris has no special-clear sound of
 // its own: its LinesCleared event already plays one.
 std::optional<Sound> soundFor(const GameEvent& event, bool inDuel);
-Sound soundFor(DuelEvent event);
+std::optional<Sound> soundFor(DuelEvent event);  // nothing for Sent: the clear already made a sound
 
 enum class MusicMode { Stopped, Playing, Paused };
 

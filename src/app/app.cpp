@@ -109,17 +109,35 @@ Game* shownGame(App& app) {
     return app.game ? &*app.game : nullptr;
 }
 
-// Plays what the solo or duel game and the duel session reported this frame.
+float middleRow(const std::vector<int>& rows) {
+    if (rows.empty()) return 0.0f;
+    return static_cast<float>(rows.front() + rows.back()) * 0.5f;
+}
+
+// The row just above the opponent's highest block, where their attacks take off.
+float stackTopRow(const Snapshot& snapshot) {
+    for (int y = kVisibleHeight - 1; y >= 0; --y)
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (snapshot.cells[y * kBoardWidth + x]) return static_cast<float>(std::min(y + 1, kVisibleHeight - 1));
+    return 0.0f;
+}
+
+// Plays what the solo or duel game and the duel session reported this frame, and launches attack trails.
 void playEvents(App& app) {
     const bool inDuel = app.screen == Screen::Duel;
     // While hidden the events are still drained, so waking up doesn't play a backlog all at once.
     if (Game* game = shownGame(app))
         for (const GameEvent& event : game->takeEvents()) {
             if (event.type == GameEventType::SpecialClear) app.callout.show(event.award);
+            if (event.type == GameEventType::LinesCleared || event.type == GameEventType::BombExploded)
+                app.lastClearRow = middleRow(game->clearingRows());
             if (const auto sound = soundFor(event, inDuel); sound && !app.hidden) app.audio.play(*sound);
         }
-    for (DuelEvent event : app.duel.takeEvents())
-        if (!app.hidden) app.audio.play(soundFor(event));
+    for (DuelEvent event : app.duel.takeEvents()) {
+        if (event == DuelEvent::Sent) app.trails.launch(true, app.lastClearRow);
+        if (event == DuelEvent::Attacked) app.trails.launch(false, stackTopRow(app.duel.opponent()));
+        if (const auto sound = soundFor(event); sound && !app.hidden) app.audio.play(*sound);
+    }
 }
 
 // What the music should be doing for the current screen.
@@ -313,6 +331,7 @@ void step(App& app, int ms) {
     const Game* shown = shownGame(app);
     app.combo.update(shown != nullptr ? shown->combo() : -1, ms);
     app.callout.update(ms);
+    app.trails.update(ms);
     app.syncMusic(musicCue(app));
 }
 
@@ -327,7 +346,7 @@ void drawFrame(App& app, const Fonts& fonts) {
         command = drawOverlay(*app.game, fonts, app.menu.muted, app.menu.musicOff);
         break;
     case Screen::Duel:
-        command = drawDuel(app.duel, fonts, app.combo, app.callout, app.menu);
+        command = drawDuel(app.duel, fonts, app.combo, app.callout, app.trails, app.menu);
         break;
     case Screen::Controls:
         command = drawControlsScreen(fonts, app.keymap, app.controls);

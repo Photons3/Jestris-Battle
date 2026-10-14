@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -100,6 +101,8 @@ TEST_CASE("duel: line clears are sent as attacks") {
     duel.update(0);
     CHECK(wire.sent == std::vector<std::string>{"ATK 4"});
     CHECK(duel.sentMine() == 4);
+    const std::vector<DuelEvent> events = duel.takeEvents();
+    CHECK(std::count(events.begin(), events.end(), DuelEvent::Sent) == 1);
 }
 
 TEST_CASE("duel: a clear cancels queued garbage first and sends only what is left") {

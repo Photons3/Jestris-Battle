@@ -179,10 +179,12 @@ TEST_CASE("game: a four-line clear flashes for 300 ms, ignores input, then score
     game.apply(Action::HardDrop);  // 18 rows: +36
     CHECK(game.state() == GameState::Clearing);
     CHECK(game.clearingRows() == std::vector<int>{0, 1, 2, 3});
+    CHECK(game.clearElapsedMs() == 0);
     game.apply(Action::Hold);
     CHECK_FALSE(game.hold().has_value());
     game.tick(kClearDelayMs - 1);
     CHECK(game.state() == GameState::Clearing);
+    CHECK(game.clearElapsedMs() == kClearDelayMs - 1);
     CHECK(game.score() == 36);
     game.tick(1);
     CHECK(game.state() == GameState::Playing);
