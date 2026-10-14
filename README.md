@@ -26,8 +26,16 @@ Left Shift or C holds, Esc or P pauses, M mutes the sound, and Ctrl+Cmd+F or Alt
 Controls on the start and pause menus changes the game keys: each action has two key slots.
 Click one (or press Enter on it) and press the new key; Esc cancels and Backspace clears the
 slot. A key already used elsewhere moves to the new action. M, Enter, Esc and Backspace can't
-be assigned, and Pause always keeps a key. The keys, sound and music settings are saved
-(localStorage in the browser, the SDL preferences folder on desktop).
+be assigned, and Pause always keeps a key.
+
+The Handling section under the keys sets DAS (how long a held direction waits before it repeats,
+default 167 ms), ARR (the time between repeats, default 33 ms; 0 moves the piece straight to the wall)
+and SDF (soft-drop speed as a multiple of gravity, default 20x; Instant drops the piece to the floor
+without locking it). Drag a slider, or focus it with the arrow keys and press Space, then Left/Right,
+then Space again. Reset to defaults resets the handling along with the keys.
+
+The keys, handling, sound and music settings are saved (localStorage in the browser, the SDL
+preferences folder on desktop).
 
 ## Hosting LAN duels
 
