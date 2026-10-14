@@ -527,3 +527,57 @@ func TestLobbyVerbsInsideARoomAreNotRelayed(t *testing.T) {
 	a.send("ATK 1")
 	b.expect("ATK 1")
 }
+
+func TestQuickOpensAPublicRoomWhenNoneIsOpen(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a := dial(t, srv)
+	a.send("QUICK 4")
+	a.expect("ROOM AAAA")
+	w.expect("ROOMS AAAA:4:Player")
+}
+
+func TestQuickJoinsTheOldestOpenRoomAtItsLevel(t *testing.T) {
+	srv := newTestServer(t)
+	a, b, c := dial(t, srv), dial(t, srv), dial(t, srv)
+	a.send("CREATE 3 PUB")
+	a.expect("ROOM AAAA")
+	b.send("CREATE 5 PUB")
+	b.expect("ROOM AAAB")
+	c.send("QUICK 9")
+	c.expect("OPP Player")
+	c.expect("START 101 3")
+	a.expect("OPP Player")
+	a.expect("START 101 3")
+}
+
+func TestQuickIgnoresPrivateRooms(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("QUICK 2")
+	b.expect("ROOM AAAB")
+}
+
+func TestTwoQuicksPairUp(t *testing.T) {
+	srv := newTestServer(t)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("QUICK 2")
+	a.expect("ROOM AAAA")
+	b.send("QUICK 7")
+	b.expect("OPP Player")
+	b.expect("START 101 2")
+}
+
+func TestQuickErrors(t *testing.T) {
+	srv, _ := newConfiguredHub(t, func(h *Hub) { h.maxRooms = 1 })
+	a, _ := pair(t, srv)
+	a.send("QUICK 1")
+	a.expect("ERR already in a room")
+	c := dial(t, srv)
+	c.send("QUICK 0")
+	c.expect("ERR bad start level")
+	c.send("QUICK 1")
+	c.expect("ERR server is full")
+}

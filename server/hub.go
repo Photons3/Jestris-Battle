@@ -176,11 +176,13 @@ func (h *Hub) route(p *player, text string) []outgoing {
 		case "UNLIST":
 			delete(h.watchers, p)
 			return nil
+		case "QUICK":
+			return h.quick(p, arg)
 		}
 		return nil // relay traffic that raced a LEFT; nothing to do
 	}
 	switch verb {
-	case "CREATE", "JOIN":
+	case "CREATE", "JOIN", "QUICK":
 		return []outgoing{{p, "ERR already in a room"}}
 	case "LIST", "UNLIST":
 		return nil
@@ -260,6 +262,18 @@ func (h *Hub) join(p *player, code string) []outgoing {
 		out = append(out, h.lobbyUpdate()...)
 	}
 	return out
+}
+
+// quick joins the oldest open public room, at that room's level, or opens a public room at level arg.
+func (h *Hub) quick(p *player, arg string) []outgoing {
+	level, err := strconv.Atoi(arg)
+	if err != nil || level < minStartLevel || level > maxStartLevel {
+		return []outgoing{{p, "ERR bad start level"}}
+	}
+	if open := h.openPublic(); len(open) > 0 {
+		return h.join(p, open[0].code)
+	}
+	return h.open(p, level, true)
 }
 
 // openPublic lists the rooms a lobby can join, oldest first.
