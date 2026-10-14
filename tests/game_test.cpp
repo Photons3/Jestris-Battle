@@ -1056,3 +1056,99 @@ TEST_CASE("game: a faster level curve levels up after fewer lines") {
     CHECK(game.lines() == 4);
     CHECK(game.level() == 3);
 }
+
+TEST_CASE("game: stats count locked pieces, not holds or the lock-out piece") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.apply(Action::Hold);
+    CHECK(game.stats().pieces == 0);
+    game.apply(Action::HardDrop);
+    game.apply(Action::HardDrop);
+    CHECK(game.stats().pieces == 2);
+
+    Board board;  // the lock-out board from "lock-out ends the game..."
+    for (int y = 0; y < kVisibleHeight; ++y)
+        for (int x = 0; x < kBoardWidth - 1; ++x) board.set(x, y, PieceType::Z);
+    Game out(seedWithFirst(PieceType::T), 1, board);
+    out.apply(Action::HardDrop);
+    REQUIRE(out.state() == GameState::GameOver);
+    CHECK(out.stats().pieces == 0);
+}
+
+TEST_CASE("game: stats count tetrises, and attack before cancelling") {
+    Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
+    game.receiveGarbage(3);
+    dropUprightI(game);
+    game.tick(kClearDelayMs);
+    CHECK(game.stats().tetrises == 1);
+    CHECK(game.stats().attack == 4);
+    CHECK(game.stats().cancelled == 3);
+    CHECK(game.takeOutgoingAttack() == 1);
+
+    Game twoLines(seedWithFirst(PieceType::I), 1, boardWithWell(2, 5));
+    dropUprightI(twoLines);
+    twoLines.tick(kClearDelayMs);
+    CHECK(twoLines.stats().tetrises == 0);
+    CHECK(twoLines.stats().attack == 1);
+}
+
+TEST_CASE("game: stats count garbage rows cleared, by bomb or by a piece") {
+    Game bombs(seedWithFirst(PieceType::O), 1, bombBoard(2, 4, 0));
+    bombs.apply(Action::HardDrop);
+    bombs.tick(kClearDelayMs);
+    CHECK(bombs.stats().garbageCleared == 2);
+
+    Board board = boardWithWell(1, 5);  // row 0 becomes a garbage row with a hole at column 5
+    for (int x = 0; x < kBoardWidth; ++x)
+        if (x != 5) board.set(x, 0, PieceType::Garbage);
+    Game piece(seedWithFirst(PieceType::I), 1, board);
+    dropUprightI(piece);
+    piece.tick(kClearDelayMs);
+    CHECK(piece.stats().garbageCleared == 1);
+}
+
+TEST_CASE("game: stats count T-spins with and without lines, not a plain T drop") {
+    Game spin(seedWithFirst(PieceType::T), 1, tSpinDoubleBoard());
+    spin.apply(Action::RotateCW);
+    dropToFloor(spin);
+    spin.apply(Action::RotateCW);
+    spin.apply(Action::HardDrop);
+    CHECK(spin.stats().tSpins == 1);
+
+    Board noLines = tSpinDoubleBoard();
+    noLines.set(9, 0, std::nullopt);
+    noLines.set(9, 1, std::nullopt);
+    Game zero(seedWithFirst(PieceType::T), 1, noLines);
+    zero.apply(Action::RotateCW);
+    dropToFloor(zero);
+    zero.apply(Action::RotateCW);
+    zero.apply(Action::HardDrop);
+    CHECK(zero.stats().tSpins == 1);
+    CHECK(zero.stats().attack == 0);
+
+    Game plain(seedWithFirst(PieceType::T), 1, tSpinDoubleBoard());
+    plain.apply(Action::RotateCW);
+    dropToFloor(plain);
+    plain.apply(Action::HardDrop);
+    CHECK(plain.stats().tSpins == 0);
+}
+
+TEST_CASE("game: stats keep the highest combo after it breaks") {
+    Game game(seedWithFirstTwo(PieceType::I, PieceType::O), 1, comboBoard());
+    dropUprightI(game);
+    game.tick(kClearDelayMs);
+    game.apply(Action::HardDrop);
+    game.tick(kClearDelayMs);
+    game.apply(Action::HardDrop);  // clears nothing; the combo breaks
+    CHECK(game.combo() == -1);
+    CHECK(game.stats().maxCombo == 1);
+}
+
+TEST_CASE("game: stats survive resetBoard, even mid-clear") {
+    Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
+    dropUprightI(game);  // Clearing; the attack is counted only when the clear finishes
+    REQUIRE(game.state() == GameState::Clearing);
+    game.resetBoard();
+    CHECK(game.stats().pieces == 1);
+    CHECK(game.stats().tetrises == 1);
+    CHECK(game.stats().attack == 0);
+}
