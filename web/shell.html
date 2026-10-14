@@ -12,7 +12,15 @@
 <body>
 <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
 <script>
-  var Module = { canvas: document.getElementById('canvas') };
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    // The server stamps index.js with ?v=<build hash>; ask for index.wasm with the same stamp
+    // so browsers can keep both cached until the next build.
+    locateFile: function (path, prefix) {
+      var script = document.querySelector('script[src^="index.js"]');
+      return prefix + path + (script ? new URL(script.src).search : '');
+    }
+  };
   // Arrow keys and space would otherwise scroll the page while playing.
   window.addEventListener('keydown', function (e) {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
