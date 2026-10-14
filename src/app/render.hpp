@@ -49,6 +49,12 @@ struct ComboLabel {
     float alpha() const { return shown > 0 ? static_cast<float>(fadeMs) / kComboFadeMs : 0.0f; }
 };
 
+inline constexpr int kCountdownPopMs = 150;  // each digit settles from 1.3x to 1x over this long
+inline constexpr int kGoBannerMs = 400;      // "GO!" shows for this long once play starts
+
+float countdownPopScale(int countdownMs);  // 1.3 the frame a digit appears, easing to 1.0
+bool showGoBanner(int matchClockMs);       // true for the first kGoBannerMs of the match clock
+
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu);

@@ -356,6 +356,20 @@ void drawOpponent(ImDrawList* dl, const DuelLayout& layout, const Snapshot& snap
     }
 }
 
+// `fill` text with an `outline` copy drawn `thickness` points away in all eight directions.
+void drawOutlinedText(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, const char* text, ImU32 fill,
+                      ImU32 outline, float thickness) {
+    pos = ImVec2(std::floor(pos.x), std::floor(pos.y));
+    for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+            if (dx != 0 || dy != 0)
+                dl->AddText(fonts.hud, size, ImVec2(pos.x + dx * thickness, pos.y + dy * thickness), outline, text);
+    dl->AddText(fonts.hud, size, pos, fill, text);
+}
+
+constexpr ImU32 kFlashFill = IM_COL32(255, 230, 40, 255);
+constexpr ImU32 kFlashOutline = IM_COL32(255, 120, 0, 200);
+
 // A large yellow "KO!" with an orange glow, centered on the well.
 void drawKoFlash(ImDrawList* dl, const Fonts& fonts, const Layout& well) {
     const char* text = "KO!";
@@ -363,13 +377,18 @@ void drawKoFlash(ImDrawList* dl, const Fonts& fonts, const Layout& well) {
     const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
     const ImVec2 pos(well.origin.x + (kBoardWidth * well.cell - extent.x) * 0.5f,
                      (wellTop(well) + wellBottom(well) - extent.y) * 0.5f);
-    const float glow = std::max(1.0f, std::floor(well.cell * 0.15f));
-    for (int dx = -1; dx <= 1; ++dx)
-        for (int dy = -1; dy <= 1; ++dy)
-            if (dx != 0 || dy != 0)
-                dl->AddText(fonts.hud, size, ImVec2(pos.x + dx * glow, pos.y + dy * glow), IM_COL32(255, 120, 0, 200),
-                            text);
-    dl->AddText(fonts.hud, size, pos, IM_COL32(255, 230, 40, 255), text);
+    drawOutlinedText(dl, fonts, size, pos, text, kFlashFill, kFlashOutline, std::max(1.0f, std::floor(well.cell * 0.15f)));
+}
+
+// "GO!" in the KO flash style, centered on the screen, as play starts.
+void drawGo(const Fonts& fonts) {
+    const char* text = "GO!";
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float size = vp->Size.y * 0.15f;
+    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    const ImVec2 pos(vp->Pos.x + (vp->Size.x - extent.x) * 0.5f, vp->Pos.y + (vp->Size.y - extent.y) * 0.5f);
+    drawOutlinedText(ImGui::GetForegroundDrawList(), fonts, size, pos, text, kFlashFill, kFlashOutline,
+                     std::max(1.0f, std::floor(size * 0.05f)));
 }
 
 // Drops typed characters a name can't contain, so the field only ever holds a valid name or nothing.
@@ -430,28 +449,35 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     ImGui::End();
 }
 
+// The digit pops in at 1.3x and settles, centered on the screen, with a hard shadow.
 void drawCountdown(int ms, const Fonts& fonts) {
-    char text[8];
+    char text[12];
     std::snprintf(text, sizeof text, "%d", (ms + 999) / 1000);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float size = vp->Size.y * 0.15f;
-    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    ImGui::GetForegroundDrawList()->AddText(
-        fonts.hud, size,
-        ImVec2(vp->Pos.x + (vp->Size.x - extent.x) * 0.5f, vp->Pos.y + (vp->Size.y - extent.y) * 0.5f),
-        IM_COL32(255, 255, 255, 255), text);
+    const float base = vp->Size.y * 0.15f;
+    const float size = base * countdownPopScale(ms);
+    const float height = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).y;
+    drawCenteredShadow(ImGui::GetForegroundDrawList(), fonts, size, vp->GetCenter().x,
+                       vp->Pos.y + (vp->Size.y - height) * 0.5f, text, IM_COL32(255, 255, 255, 255),
+                       std::max(1.0f, std::floor(base * 0.06f)));
 }
 
-// "Sam vs Kai" under the countdown digit; nothing until both names are known.
+// "SAM VS KAI" under the countdown digit with a gold VS; nothing until both names are known.
 void drawVersus(const Fonts& fonts, const std::string& mine, const std::string& theirs) {
     if (mine.empty() || theirs.empty()) return;
-    const std::string text = mine + " vs " + theirs;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float size = vp->Size.y * 0.04f;
-    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str());
-    ImGui::GetForegroundDrawList()->AddText(
-        fonts.hud, size, ImVec2(vp->Pos.x + (vp->Size.x - extent.x) * 0.5f, vp->Pos.y + vp->Size.y * 0.62f),
-        IM_COL32(255, 255, 255, 230), text.c_str());
+    const float offset = std::max(1.0f, std::floor(size * 0.1f));
+    const std::array<std::pair<const char*, ImU32>, 3> pieces{{{mine.c_str(), IM_COL32(255, 255, 255, 255)},
+                                                               {" VS ", color(kKoPipColor, 1.0f)},
+                                                               {theirs.c_str(), IM_COL32(255, 255, 255, 255)}}};
+    float width = 0.0f;
+    for (const auto& [text, col] : pieces) width += fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x;
+    ImVec2 pos(vp->Pos.x + (vp->Size.x - width) * 0.5f, vp->Pos.y + vp->Size.y * 0.62f);
+    for (const auto& [text, col] : pieces) {
+        drawShadowText(ImGui::GetForegroundDrawList(), fonts, size, pos, col, text, offset);
+        pos.x += fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x;
+    }
 }
 
 const char* resultTitle(DuelOutcome outcome) {
@@ -533,6 +559,15 @@ void configureImGuiIo(ImGuiIO& io) {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 }
+
+float countdownPopScale(int countdownMs) {
+    // The digit shown is ceil(ms / 1000); it appeared when ms was last a whole second.
+    const int sinceShown = (1000 - countdownMs % 1000) % 1000;
+    const float t = std::min(1.0f, static_cast<float>(sinceShown) / kCountdownPopMs);
+    return 1.3f - 0.3f * t;
+}
+
+bool showGoBanner(int matchClockMs) { return matchClockMs > kMatchMs - kGoBannerMs; }
 
 void ComboLabel::update(int combo, int ms) {
     if (combo >= 1) {
@@ -719,6 +754,7 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
         break;
     case DuelPhase::Playing:
         drawDuelBoards(duel, fonts, combo, menu);
+        if (showGoBanner(duel.matchClockMs())) drawGo(fonts);
         break;
     case DuelPhase::Result:
         drawDuelBoards(duel, fonts, combo, menu);
