@@ -40,12 +40,15 @@ ImVec4 colorVec(Rgb c, float alpha = 1.0f) { return ImVec4(c.r / 255.0f, c.g / 2
 Rgb lighten(Rgb c) { return {c.r + (255 - c.r) * 2 / 5, c.g + (255 - c.g) * 2 / 5, c.b + (255 - c.b) * 2 / 5}; }
 Rgb darken(Rgb c) { return {c.r * 3 / 5, c.g * 3 / 5, c.b * 3 / 5}; }
 constexpr Rgb kGarbageColor{128, 128, 136};
+constexpr Rgb kBombColor{255, 200, 20};  // hazard yellow, warmer than the O piece
+constexpr Rgb kBombInk{24, 22, 20};
 constexpr Rgb kWellFill{18, 18, 26};
 constexpr Rgb kWellBorder{110, 110, 140};
 constexpr Rgb kLabelColor{150, 160, 190};
 constexpr Rgb kTextColor{235, 235, 245};
 Rgb pieceRgb(PieceType type) {
-    if (type == PieceType::Garbage || type == PieceType::Bomb) return kGarbageColor;
+    if (type == PieceType::Garbage) return kGarbageColor;
+    if (type == PieceType::Bomb) return kBombColor;
     return kPieceColors[static_cast<int>(type)];
 }
 float rowAlpha(int y) { return y >= kVisibleHeight ? kHiddenAlpha : 1.0f; }
@@ -87,15 +90,31 @@ void drawShadowText(ImDrawList* dl, const Fonts& fonts, float size, ImVec2 pos, 
     dl->AddText(fonts.hud, size, pos, col, text);
 }
 
+// A hazard-yellow block with the radiation trefoil: three 60-degree blades around a hub, inside a ring.
+void drawBombCell(ImDrawList* dl, ImVec2 p, float size, float alpha) {
+    const float bevel = bevelFor(size);
+    drawBevelRect(dl, p, ImVec2(p.x + size, p.y + size), bevel, kBombColor, lighten(kBombColor), darken(kBombColor),
+                  alpha);
+    const ImU32 ink = color(kBombInk, alpha);
+    const ImVec2 c(p.x + size * 0.5f, p.y + size * 0.5f);
+    const float inner = size * 0.5f - bevel;
+    dl->AddCircle(c, inner - size * 0.04f, ink, 0, std::max(1.0f, size * 0.07f));
+    const float bladeOuter = inner - size * 0.12f;
+    constexpr float kPi = 3.14159265f;
+    for (int i = 0; i < 3; ++i) {  // screen y points down, so the 90-degree blade points down
+        const float mid = kPi * 0.5f + i * kPi * 2.0f / 3.0f;
+        dl->PathLineTo(c);
+        dl->PathArcTo(c, bladeOuter, mid - kPi / 6.0f, mid + kPi / 6.0f);
+        dl->PathFillConvex(ink);
+    }
+    dl->AddCircleFilled(c, bladeOuter * 0.32f, color(kBombColor, alpha));  // gap between hub and blades
+    dl->AddCircleFilled(c, bladeOuter * 0.2f, ink);                          // hub
+}
+
 void drawCell(ImDrawList* dl, ImVec2 p, float size, PieceType type, float alpha) {
+    if (type == PieceType::Bomb) return drawBombCell(dl, p, size, alpha);
     const Rgb base = pieceRgb(type);
     drawBevelRect(dl, p, ImVec2(p.x + size, p.y + size), bevelFor(size), base, lighten(base), darken(base), alpha);
-    if (type == PieceType::Bomb) {
-        const int a = static_cast<int>(alpha * 255.0f);
-        dl->AddCircleFilled(ImVec2(p.x + size * 0.5f, p.y + size * 0.55f), size * 0.28f, IM_COL32(25, 25, 32, a));
-        dl->AddCircleFilled(ImVec2(p.x + size * 0.74f, p.y + size * 0.24f), std::max(1.0f, size * 0.09f),
-                            IM_COL32(255, 140, 0, a));  // fuse
-    }
 }
 
 void drawWell(ImDrawList* dl, const Layout& l) {
