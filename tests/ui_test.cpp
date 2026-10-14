@@ -145,3 +145,9 @@ TEST_CASE("ui: GO! shows only at the very start of the match") {
     CHECK_FALSE(showGoBanner(kMatchMs - kGoBannerMs));
     CHECK_FALSE(showGoBanner(0));
 }
+
+TEST_CASE("ui: the garbage meter warns from four pending lines") {
+    CHECK_FALSE(garbageMeterDanger(0));
+    CHECK_FALSE(garbageMeterDanger(kGarbageDangerLines - 1));
+    CHECK(garbageMeterDanger(kGarbageDangerLines));
+}

@@ -236,6 +236,7 @@ constexpr Rgb kTheirPlateColor{220, 70, 30};
 constexpr Rgb kKoPipColor{255, 210, 40};
 constexpr Rgb kBackdropColor{6, 10, 28};
 constexpr Rgb kGridColor{16, 24, 50};
+constexpr Rgb kDangerColor{230, 40, 40};
 
 // A flat dark fill with a faint one-cell grid. One line passes through `anchor`, so the grid lines up with a well.
 // The lines are 1px filled rects rather than AddLine, which would anti-alias them across two pixels.
@@ -254,11 +255,21 @@ void drawGridBackground(float cell, ImVec2 anchor) {
         bg->AddRectFilled(ImVec2(vp->Pos.x, y), ImVec2(end.x, y + 1.0f), line);
 }
 
-// Red bar showing garbage waiting to rise, one cell tall per line, with its left edge at `x`.
+// Garbage waiting to rise, as a stack of beveled garbage cells, one per line, with its left edge at `x`. From
+// kGarbageDangerLines it turns red and blinks every 250 ms.
 void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending) {
     if (pending <= 0) return;
-    const float height = static_cast<float>(std::min(pending, kVisibleHeight)) * cell;
-    dl->AddRectFilled(ImVec2(x, bottom - height), ImVec2(x + 0.35f * cell, bottom), IM_COL32(230, 40, 40, 255));
+    const bool danger = garbageMeterDanger(pending);
+    const Rgb base = danger ? kDangerColor : kGarbageColor;
+    const float alpha = danger && static_cast<int>(ImGui::GetTime() * 4.0) % 2 != 0 ? 0.45f : 1.0f;
+    const float width = std::floor(cell * 0.5f);
+    const float bevel = bevelFor(cell);
+    x = std::floor(x);
+    for (int i = 0; i < std::min(pending, kVisibleHeight); ++i) {
+        const float lower = std::floor(bottom - static_cast<float>(i) * cell);
+        drawBevelRect(dl, ImVec2(x, lower - cell), ImVec2(x + width, lower), bevel, base, lighten(base), darken(base),
+                      alpha);
+    }
 }
 
 // A nameplate built like one wide mino: flat player color, the cells' bevel, the name with a hard drop shadow,
@@ -568,6 +579,8 @@ float countdownPopScale(int countdownMs) {
 }
 
 bool showGoBanner(int matchClockMs) { return matchClockMs > kMatchMs - kGoBannerMs; }
+
+bool garbageMeterDanger(int pending) { return pending >= kGarbageDangerLines; }
 
 void ComboLabel::update(int combo, int ms) {
     if (combo >= 1) {

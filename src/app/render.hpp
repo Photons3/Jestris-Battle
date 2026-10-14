@@ -55,6 +55,9 @@ inline constexpr int kGoBannerMs = 400;      // "GO!" shows for this long once p
 float countdownPopScale(int countdownMs);  // 1.3 the frame a digit appears, easing to 1.0
 bool showGoBanner(int matchClockMs);       // true for the first kGoBannerMs of the match clock
 
+inline constexpr int kGarbageDangerLines = 4;  // the meter turns red and blinks from this many pending lines
+bool garbageMeterDanger(int pending);
+
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu);
