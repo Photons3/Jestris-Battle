@@ -24,7 +24,8 @@ inline constexpr int kMaxCatchUpMs = 130000;  // a match replays stalls up to th
 // loop, so a running match replays the gap: gravity keeps going and the opponent keeps getting snapshots.
 int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch);
 
-enum class DuelPhase { Idle, Waiting, Countdown, Playing, Result };
+// Lobby: connected, not in a room, watching the list of open public rooms.
+enum class DuelPhase { Idle, Lobby, Waiting, Countdown, Playing, Result };
 enum class DuelOutcome { None, Won, Lost, Draw, OpponentLeft };
 using DuelReason = MatchReason;  // why a Won, Lost or Draw match ended, from the server's OVER
 
@@ -44,8 +45,10 @@ public:
     explicit DuelSession(Send send, MakeGame makeGame = makeDuelGame)
         : send_(std::move(send)), makeGame_(std::move(makeGame)) {}
 
-    void createRoom(int startLevel);
+    void openLobby();  // Idle -> Lobby; the server then pushes the room list
+    void createRoom(int startLevel, bool isPublic = false);
     void joinRoom(const std::string& code);
+    void quickMatch(int startLevel);  // joins the oldest open public room, or waits in a new one
     void requestRematch();
     void leave();  // back to Idle; the caller closes the connection
     void onMessage(std::string_view text);
@@ -57,12 +60,15 @@ public:
     bool inMatch() const { return phase_ == DuelPhase::Countdown || phase_ == DuelPhase::Playing; }
     DuelOutcome outcome() const { return outcome_; }
     const std::string& roomCode() const { return roomCode_; }  // set once the server confirms a created room
-    const std::string& error() const { return error_; }        // why the session last went back to Idle
+    const std::string& error() const { return error_; }        // why the session last went back to Idle or Lobby
     const Snapshot& opponent() const { return opponent_; }
     int countdownMs() const { return countdownMs_; }
     bool rematchRequested() const { return rematchRequested_; }
     bool opponentGone() const { return opponentGone_; }
     const std::string& opponentName() const { return opponentName_; }  // from OPP; empty if not sent
+    const std::vector<RoomInfo>& rooms() const { return rooms_; }      // the lobby list, while in Lobby
+    bool publicRoom() const { return publicRoom_; }                    // the room we wait in is listed
+    bool quickMatching() const { return quick_; }                      // waiting came from Quick match
     DuelReason reason() const { return reason_; }
     int kosMine() const { return kosMine_; }  // KOs this player has scored, from the server's KO messages
     int kosTheirs() const { return kosTheirs_; }
@@ -79,6 +85,7 @@ public:
     const Game* game() const { return game_ ? &*game_ : nullptr; }
 
 private:
+    void beginRequest(bool isPublic, bool quick);
     void send(const Message& message) { send_(encode(message)); }
     void startMatch(const StartMatch& start);
     void finish(DuelOutcome outcome);
@@ -94,6 +101,10 @@ private:
     std::optional<Snapshot> lastSent_;
     std::string roomCode_;
     std::string opponentName_;
+    std::vector<RoomInfo> rooms_;
+    bool fromLobby_ = false;  // Waiting was entered from Lobby, so a refusal goes back there
+    bool publicRoom_ = false;
+    bool quick_ = false;
     std::string error_;
     int countdownMs_ = 0;
     int sinceSnapshotMs_ = 0;

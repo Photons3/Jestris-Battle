@@ -580,6 +580,7 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
     UiCommand command = UiCommand::None;
     switch (duel.phase()) {
     case DuelPhase::Idle:
+    case DuelPhase::Lobby:
         break;
     case DuelPhase::Waiting:
         beginMenu("##waiting");
