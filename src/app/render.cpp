@@ -782,7 +782,7 @@ RoyaleLayout computeRoyaleLayout() {
 }
 
 // One opponent at mini size: the name, the pending-garbage meter and the cells, with no hold, next or ghost. An
-// eliminated board is dimmed and labelled with its place.
+// eliminated board is dimmed, without its meter, and labelled with its place.
 void drawMiniBoard(ImDrawList* dl, const Fonts& fonts, ImVec2 topLeft, float cell, const OpponentView& opponent) {
     const float nameSize = std::floor(cell * 0.9f);
     const float maxWidth = kBoardWidth * cell;
@@ -801,8 +801,10 @@ void drawMiniBoard(ImDrawList* dl, const Fonts& fonts, ImVec2 topLeft, float cel
         for (int x = 0; x < kBoardWidth; ++x)
             if (const Cell c = snapshot.cells[y * kBoardWidth + x])
                 drawCell(dl, ImVec2(top.x + x * cell, bottom.y - (y + 1) * cell), cell, *c, 1.0f);
-    drawGarbageMeter(dl, bottom.x + std::floor(cell * 0.25f), bottom.y, cell, snapshot.pending, snapshot.ready);
-    if (opponent.alive) return;
+    if (opponent.alive) {
+        drawGarbageMeter(dl, bottom.x + std::floor(cell * 0.25f), bottom.y, cell, snapshot.pending, snapshot.ready);
+        return;
+    }
     dl->AddRectFilled(top, bottom, IM_COL32(0, 0, 0, 160));
     char text[12];
     std::snprintf(text, sizeof text, "#%d", opponent.place);
@@ -849,7 +851,7 @@ void drawRoyaleBoards(const DuelSession& duel, const Fonts& fonts, const ComboLa
     const float width = layout.gridMax.x - layout.gridMin.x;
     const float height = layout.gridMax.y - layout.gridMin.y;
     const GridShape grid = royaleGrid(static_cast<int>(opponents.size()), width, height);
-    const float mini = std::floor(grid.cell);
+    const float mini = royaleMiniCell(grid.cell, cell);
     if (mini >= 1.0f) {
         // Centered in the area, each board on whole pixels.
         const float x0 = std::floor(layout.gridMin.x + (width - grid.cols * kMiniCols * mini) * 0.5f);
@@ -1133,6 +1135,8 @@ GridShape royaleGrid(int boards, float width, float height) {
     }
     return best;
 }
+
+float royaleMiniCell(float gridCell, float ownCell) { return std::floor(std::min(gridCell, ownCell * kMiniCellCap)); }
 
 bool garbageMeterDanger(int pending) { return pending >= kGarbageDangerLines; }
 

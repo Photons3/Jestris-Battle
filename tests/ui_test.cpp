@@ -422,6 +422,13 @@ TEST_CASE("ui: the royale grid picks the shape with the largest cells") {
     CHECK(royaleGrid(1, 900.0f, 900.0f).cols == 1);
 }
 
+TEST_CASE("ui: a royale mini board is never larger than 0.75 of your own cell") {
+    CHECK(royaleMiniCell(16.0f, 15.0f) == 11.0f);   // 844x390 with 2 opponents: capped, whole pixels
+    CHECK(royaleMiniCell(47.0f, 44.0f) == 33.0f);   // 2560x1080 with 2 opponents
+    CHECK(royaleMiniCell(10.6f, 30.0f) == 10.0f);   // the grid's own cell when that is smaller
+    CHECK(royaleMiniCell(18.0f, 24.0f) == 18.0f);   // exactly the cap
+}
+
 TEST_CASE("ui: royale boards draw while playing, eliminated, and in the result") {
     ImFont* font = beginUiContext();
     DuelSession duel([](const std::string&) {});

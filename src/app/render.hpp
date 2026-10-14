@@ -138,6 +138,9 @@ inline constexpr int kMiniRows = 22;
 // The cols x rows grid for `boards` mini boards in a width x height area with the largest cell;
 // ties go to fewer columns.
 GridShape royaleGrid(int boards, float width, float height);
+inline constexpr float kMiniCellCap = 0.75f;  // a mini board's cell, at most, as a fraction of your own
+// The mini boards' cell in whole pixels: the grid's cell, capped so they stay smaller than your own well.
+float royaleMiniCell(float gridCell, float ownCell);
 
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
