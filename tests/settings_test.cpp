@@ -89,3 +89,10 @@ TEST_CASE("settings: the default name is Player and four digits") {
     CHECK(defaultPlayerName(123456) == "Player3456");
     CHECK(isValidName(defaultPlayerName(0xFFFFFFFFu)));
 }
+
+TEST_CASE("settings: the public-room choice round-trips and defaults to off") {
+    Settings settings;
+    CHECK_FALSE(parseSettings(serializeSettings(settings)).publicRooms);
+    settings.publicRooms = true;
+    CHECK(parseSettings(serializeSettings(settings)).publicRooms);
+}

@@ -58,6 +58,7 @@ std::string serializeSettings(const Settings& settings) {
     out += settings.muted ? "sound=off\n" : "sound=on\n";
     out += settings.musicOff ? "music=off\n" : "music=on\n";
     if (isValidName(settings.playerName)) out += "name=" + settings.playerName + "\n";
+    out += settings.publicRooms ? "public=on\n" : "public=off\n";
     for (int i = 0; i < kActionCount; ++i) {
         out += kActionKeys[i];
         out += '=';
@@ -91,6 +92,8 @@ Settings parseSettings(std::string_view text) {
             settings.musicOff = value == "off";
         } else if (name == "name") {
             if (isValidName(value)) settings.playerName = std::string(value);
+        } else if (name == "public") {
+            settings.publicRooms = value == "on";
         } else if (const std::optional<int> action = actionIndex(name)) {
             loaded.keys[*action] = parseSlots(value);
         }
