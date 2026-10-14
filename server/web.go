@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -19,8 +20,10 @@ import (
 // webFileNames are the only files of the web build that are served.
 var webFileNames = []string{"index.html", "index.js", "index.wasm"}
 
-// scriptTag is how emcc's {{{ SCRIPT }}} names index.js in index.html.
-const scriptTag = `src="index.js"`
+// scriptSrc matches how emcc's {{{ SCRIPT }}} names index.js in index.html. Release builds
+// of newer emsdk minify the page and drop the quotes (src=index.js), so any quoting matches;
+// the character after an unquoted value is kept as the second group.
+var scriptSrc = regexp.MustCompile(`\bsrc=(?:"index\.js"|'index\.js'|index\.js([\s/>]))`)
 
 // webBuild serves just the web build's own files from dir, so the rest of the build
 // directory (CMakeCache.txt, _deps/, listings) is not published to the LAN.
@@ -62,8 +65,8 @@ func (b *webBuild) load() (version string, page []byte, etag string, err error) 
 	if err != nil {
 		return "", nil, "", err
 	}
-	if n := bytes.Count(html, []byte(scriptTag)); n != 1 {
-		return "", nil, "", fmt.Errorf("index.html has %d copies of %s, want 1", n, scriptTag)
+	if n := len(scriptSrc.FindAllIndex(html, -1)); n != 1 {
+		return "", nil, "", fmt.Errorf("index.html names index.js in %d script tags, want 1", n)
 	}
 	h := sha256.New()
 	for _, name := range []string{"index.js", "index.wasm"} {
@@ -72,7 +75,7 @@ func (b *webBuild) load() (version string, page []byte, etag string, err error) 
 		}
 	}
 	version = hex.EncodeToString(h.Sum(nil))[:16]
-	page = bytes.Replace(html, []byte(scriptTag), []byte(`src="index.js?v=`+version+`"`), 1)
+	page = scriptSrc.ReplaceAll(html, []byte(`src="index.js?v=`+version+`"$1`))
 	sum := sha256.Sum256(page)
 	b.stamp, b.version, b.page, b.etag = stamp.String(), version, page, `"`+hex.EncodeToString(sum[:8])+`"`
 	return b.version, b.page, b.etag, nil
