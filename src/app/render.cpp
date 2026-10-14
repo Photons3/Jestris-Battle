@@ -418,23 +418,6 @@ void drawGridBackground(float cell, ImVec2 anchor) {
         bg->AddRectFilled(ImVec2(vp->Pos.x, y), ImVec2(end.x, y + 1.0f), line);
 }
 
-// Garbage waiting to rise, as a stack of beveled garbage cells, one per line, with its left edge at `x`. From
-// kGarbageDangerLines it turns red and blinks every 250 ms.
-void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending) {
-    if (pending <= 0) return;
-    const bool danger = garbageMeterDanger(pending);
-    const Rgb base = danger ? kDangerColor : kGarbageColor;
-    const float alpha = danger && static_cast<int>(ImGui::GetTime() * 4.0) % 2 != 0 ? 0.45f : 1.0f;
-    const float width = std::floor(cell * 0.5f);
-    const float bevel = bevelFor(cell);
-    x = std::floor(x);
-    for (int i = 0; i < std::min(pending, kVisibleHeight); ++i) {
-        const float lower = std::floor(bottom - static_cast<float>(i) * cell);
-        drawBevelRect(dl, ImVec2(x, lower - cell), ImVec2(x + width, lower), bevel, base, lighten(base), darken(base),
-                      alpha);
-    }
-}
-
 // A nameplate built like one wide mino: flat player color, the cells' bevel, the name with a hard drop shadow,
 // and a row of KO slots on the right that fill with gold mini-blocks as KOs land.
 void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float top, const char* name, Rgb base,
@@ -760,10 +743,11 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     ImDrawList* dl = beginBoardWindow();
     drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, duel.kosMine());
     drawPlayfield(dl, layout.mine, game, fonts, combo, callout, false);
-    drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage());
+    drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage(),
+                     game.readyGarbage());
     drawScoreboard(dl, fonts, layout, duel, combo);
     drawGarbageMeter(dl, layout.left + kTheirMeterCol * cell, wellBottom(layout.theirs), cell,
-                     duel.opponent().pending);
+                     duel.opponent().pending, duel.opponent().ready);
     drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, kTheirPlateColor, duel.kosTheirs());
     drawOpponent(dl, layout, duel.opponent(), fonts);
     drawAttackTrails(dl, layout, duel, trails);
@@ -949,6 +933,24 @@ float countdownPopScale(int countdownMs) {
 bool showGoBanner(int matchClockMs) { return matchClockMs > kMatchMs - kGoBannerMs; }
 
 bool garbageMeterDanger(int pending) { return pending >= kGarbageDangerLines; }
+
+void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending, int ready) {
+    if (pending <= 0) return;
+    ready = std::clamp(ready, 0, pending);
+    const bool danger = garbageMeterDanger(pending);
+    const Rgb base = danger ? kDangerColor : kGarbageColor;
+    const float readyAlpha = danger && static_cast<int>(ImGui::GetTime() * 4.0) % 2 != 0 ? 0.45f : 1.0f;
+    const float width = std::floor(cell * 0.5f);
+    const float bevel = bevelFor(cell);
+    x = std::floor(x);
+    for (int i = 0; i < std::min(pending, kVisibleHeight); ++i) {
+        const float lower = std::floor(bottom - static_cast<float>(i) * cell);
+        const float alpha = i < ready ? readyAlpha : kTravellingGarbageAlpha;
+        drawBevelRect(dl, ImVec2(x, lower - cell), ImVec2(x + width, lower), bevel, base, lighten(base), darken(base),
+                      alpha);
+    }
+}
+
 
 void ComboLabel::update(int combo, int ms) {
     if (combo >= 1) {

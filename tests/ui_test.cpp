@@ -338,3 +338,22 @@ TEST_CASE("ui: the duel result draws the stats table") {
     }
     ImGui::DestroyContext();
 }
+
+TEST_CASE("ui: the garbage meter draws travelling lines above ready ones") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 900.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    ImGui::NewFrame();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const int before = dl->VtxBuffer.Size;
+    drawGarbageMeter(dl, 10.0f, 800.0f, 30.0f, 5, 2);
+    const int mixed = dl->VtxBuffer.Size - before;
+    drawGarbageMeter(dl, 10.0f, 800.0f, 30.0f, 0, 0);
+    CHECK(dl->VtxBuffer.Size - before == mixed);  // nothing pending draws nothing
+    CHECK(mixed > 0);
+    ImGui::EndFrame();
+    ImGui::DestroyContext();
+}

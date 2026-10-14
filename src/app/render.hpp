@@ -14,6 +14,7 @@
 #include "bot/bot_player.hpp"
 #include "core/game.hpp"
 
+struct ImDrawList;
 struct ImGuiIO;
 struct ImGuiStyle;
 
@@ -119,6 +120,11 @@ bool showGoBanner(int matchClockMs);       // true for the first kGoBannerMs of 
 
 inline constexpr int kGarbageDangerLines = 4;  // the meter turns red and blinks from this many pending lines
 bool garbageMeterDanger(int pending);
+inline constexpr float kTravellingGarbageAlpha = 0.4f;  // meter cells for garbage that cannot rise yet
+// Garbage waiting to rise, as a stack of beveled garbage cells, one per line, with its left edge at `x`: the bottom
+// `ready` cells solid, the travelling ones above them dimmed. From kGarbageDangerLines the meter turns red and
+// its ready cells blink every 250 ms.
+void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending, int ready);
 
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);

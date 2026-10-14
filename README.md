@@ -119,6 +119,8 @@ in a room.
    and duels, and a callout under HOLD names them. Garbage waiting for you is cancelled first:
    each line you would send removes one queued line, and only the rest goes to the opponent.
    Queued garbage rises when a piece locks without clearing anything.
+   Incoming garbage travels for a third of a second before it can rise (the meter shows it dimmed),
+   and at most 8 lines rise per lock.
    Every garbage row has one bomb. A bomb lands on a lone bomb right above it 90% of the time,
    but never stacks more than two high. Land a piece directly on the top bomb to blow up the
    bombs touching it below. Exploded rows score and send like cleared lines, but only full
