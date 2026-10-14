@@ -130,7 +130,7 @@ void DuelSession::onDisconnected() {
 void DuelSession::onMessage(std::string_view text) {
     const std::optional<Message> message = decode(text);
     if (!message || phase_ == DuelPhase::Idle) return;
-    if (const auto* room = std::get_if<RoomCreated>(&*message)) {
+    if (const auto* room = std::get_if<RoomEntered>(&*message)) {
         roomCode_ = room->code;
     } else if (const auto* opp = std::get_if<OpponentName>(&*message)) {
         if (phase_ == DuelPhase::Waiting) opponentName_ = opp->name;
@@ -156,8 +156,8 @@ void DuelSession::onMessage(std::string_view text) {
             sentTheirs_ += attack->lines;
             events_.push_back(DuelEvent::Attacked);
         }
-    } else if (const auto* snapshot = std::get_if<Snapshot>(&*message)) {
-        opponent_ = *snapshot;
+    } else if (const auto* snapshot = std::get_if<PlayerSnapshot>(&*message)) {
+        opponent_ = snapshot->snapshot;
     } else if (const auto* kos = std::get_if<KoCounts>(&*message)) {
         if (inMatch()) {
             if (kos->mine > kosMine_) events_.push_back(DuelEvent::KoMine);

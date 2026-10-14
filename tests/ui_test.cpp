@@ -186,7 +186,7 @@ TEST_CASE("ui: the lobby draws its room list") {
     io.DeltaTime = 1.0f / 60.0f;
     DuelSession duel([](const std::string&) {});
     duel.openLobby();
-    duel.onMessage("ROOMS ABCD:3:Sam WXYZ:5:Kai");
+    duel.onMessage("ROOMS ABCD:3:Sam:1 WXYZ:5:Kai:1");
     StartMenu menu;
     for (int frame = 0; frame < 2; ++frame) {
         ImGui::NewFrame();
@@ -326,7 +326,7 @@ TEST_CASE("ui: the duel result draws the stats table") {
     io.DeltaTime = 1.0f / 60.0f;
     DuelSession duel([](const std::string&) {});
     duel.createRoom(1);
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs + 1000);
     duel.onMessage("OVER WIN KO 3 1");
     REQUIRE(duel.phase() == DuelPhase::Result);

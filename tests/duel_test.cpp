@@ -23,8 +23,8 @@ struct Wire {
 // Creates a room, receives START and runs out the countdown; clears what was sent so far.
 void startMatch(DuelSession& duel, Wire& wire) {
     duel.createRoom(1);
-    duel.onMessage("ROOM ABCD");
-    duel.onMessage("START 7 1");
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs);
     REQUIRE(duel.phase() == DuelPhase::Playing);
     wire.sent.clear();
@@ -39,7 +39,7 @@ TEST_CASE("duel: creating a room sends CREATE and shows the code") {
     CHECK(wire.sent == std::vector<std::string>{"CREATE 3"});
     CHECK(duel.phase() == DuelPhase::Waiting);
     CHECK(duel.roomCode().empty());
-    duel.onMessage("ROOM ABCD");
+    duel.onMessage("ROOM ABCD 1");
     CHECK(duel.roomCode() == "ABCD");
 }
 
@@ -58,7 +58,7 @@ TEST_CASE("duel: START counts down, then the match runs without pausing") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
-    duel.onMessage("START 7 2");
+    duel.onMessage("START 7 2 1 2");
     CHECK(duel.phase() == DuelPhase::Countdown);
     REQUIRE(duel.game() != nullptr);
     CHECK(duel.game()->level() == 2);
@@ -200,7 +200,7 @@ TEST_CASE("duel: rematch is sent once and START begins a fresh match") {
     duel.requestRematch();
     CHECK(wire.sent == std::vector<std::string>{"REMATCH"});
     CHECK(duel.rematchRequested());
-    duel.onMessage("START 9 1");
+    duel.onMessage("START 9 1 1 2");
     CHECK(duel.phase() == DuelPhase::Countdown);
     CHECK(duel.outcome() == DuelOutcome::None);
     CHECK_FALSE(duel.rematchRequested());
@@ -217,7 +217,7 @@ TEST_CASE("duel: opponent snapshots are kept for display") {
     startMatch(duel, wire);
     Snapshot snapshot{.score = 500, .lines = 2, .pending = 1};
     snapshot.cells[0] = PieceType::Garbage;
-    duel.onMessage(encode(snapshot));
+    duel.onMessage(encode(PlayerSnapshot{2, snapshot}));
     CHECK(duel.opponent() == snapshot);
 }
 
@@ -236,7 +236,7 @@ TEST_CASE("duel: messages are ignored once idle") {
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     duel.leave();
-    duel.onMessage("START 1 1");
+    duel.onMessage("START 1 1 1 2");
     duel.onMessage("LEFT");
     CHECK(duel.phase() == DuelPhase::Idle);
     CHECK(duel.error().empty());
@@ -248,7 +248,7 @@ TEST_CASE("duel: START during a match is ignored") {
     startMatch(duel, wire);
     duel.onMessage("ATK 2");
     const Game* before = duel.game();
-    duel.onMessage("START 9 1");
+    duel.onMessage("START 9 1 1 2");
     CHECK(duel.phase() == DuelPhase::Playing);
     CHECK(duel.game() == before);
     CHECK(duel.game()->pendingGarbage() == 2);
@@ -259,7 +259,7 @@ TEST_CASE("duel: START after the opponent left does not start a match") {
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     duel.onMessage("LEFT");
-    duel.onMessage("START 9 1");
+    duel.onMessage("START 9 1 1 2");
     CHECK(duel.phase() == DuelPhase::Result);
     CHECK(duel.outcome() == DuelOutcome::OpponentLeft);
 }
@@ -269,7 +269,7 @@ TEST_CASE("duel: START on the result screen is ignored without a rematch request
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     duel.onMessage("OVER WIN KO 0 0");
-    duel.onMessage("START 9 1");
+    duel.onMessage("START 9 1 1 2");
     CHECK(duel.phase() == DuelPhase::Result);
     CHECK(duel.outcome() == DuelOutcome::Won);
 }
@@ -287,7 +287,7 @@ TEST_CASE("duel: LEFT while waiting for an opponent returns to idle") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.createRoom(1);
-    duel.onMessage("ROOM ABCD");
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("LEFT");
     CHECK(duel.phase() == DuelPhase::Idle);
     CHECK(duel.error() == "Opponent left");
@@ -298,7 +298,7 @@ TEST_CASE("duel: an attack during the countdown is queued") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     REQUIRE(duel.phase() == DuelPhase::Countdown);
     duel.onMessage("ATK 2");
     CHECK(duel.game()->pendingGarbage() == 2);
@@ -308,7 +308,7 @@ TEST_CASE("duel: OVER during our countdown ends the match") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     REQUIRE(duel.phase() == DuelPhase::Countdown);
     duel.onMessage("OVER WIN KO 0 0");
     CHECK(duel.phase() == DuelPhase::Result);
@@ -320,7 +320,7 @@ TEST_CASE("duel: a room that closes before START does not start a match") {
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
     duel.onMessage("LEFT");
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     CHECK(duel.phase() == DuelPhase::Idle);
     CHECK(duel.game() == nullptr);
 }
@@ -395,7 +395,7 @@ TEST_CASE("duel: KO and OVER are ignored outside the countdown and play") {
     duel.onMessage("KO 1 0");
     CHECK(duel.phase() == DuelPhase::Waiting);
     CHECK(duel.kosMine() == 0);
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs);
     duel.onMessage("OVER WIN KO 0 0");
     REQUIRE(duel.phase() == DuelPhase::Result);
@@ -409,7 +409,7 @@ TEST_CASE("duel: the match clock runs only while playing, stops at 0 and freezes
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs - 1);
     CHECK(duel.matchClockMs() == kMatchMs);
     duel.update(1);
@@ -463,7 +463,7 @@ TEST_CASE("duel events: the countdown ticks each second, then the match starts")
     Wire wire;
     DuelSession duel(wire.sender());
     duel.createRoom(1);
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     CHECK(duel.takeEvents() == std::vector<DuelEvent>{DuelEvent::CountdownTick});  // "3"
     duel.update(1000);
     CHECK(duel.takeEvents() == std::vector<DuelEvent>{DuelEvent::CountdownTick});  // "2"
@@ -533,7 +533,7 @@ TEST_CASE("duel: inMatch covers the countdown and play, not waiting or the resul
     DuelSession duel(wire.sender());
     duel.createRoom(1);
     CHECK_FALSE(duel.inMatch());
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     CHECK(duel.inMatch());
     duel.update(kCountdownMs);
     CHECK(duel.inMatch());
@@ -558,7 +558,7 @@ TEST_CASE("duel: OPP while waiting names the opponent, and leaving forgets it") 
     duel.joinRoom("ABCD");
     duel.onMessage("OPP Kai");
     CHECK(duel.opponentName() == "Kai");
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     CHECK(duel.opponentName() == "Kai");
     duel.leave();
     CHECK(duel.opponentName().empty());
@@ -579,7 +579,7 @@ TEST_CASE("duel: the opponent-left line uses the name when known") {
     DuelSession duel(wire.sender());
     duel.createRoom(1);
     duel.onMessage("OPP Kai");
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     duel.onMessage("LEFT");
     CHECK(resultReasonText(duel) == "Kai left the match");
 }
@@ -590,9 +590,9 @@ TEST_CASE("duel: the lobby sends LIST and keeps the pushed list") {
     duel.openLobby();
     CHECK(duel.phase() == DuelPhase::Lobby);
     CHECK(wire.sent == std::vector<std::string>{"LIST"});
-    duel.onMessage("ROOMS ABCD:3:Sam");
+    duel.onMessage("ROOMS ABCD:3:Sam:1");
     REQUIRE(duel.rooms().size() == 1);
-    CHECK(duel.rooms()[0] == RoomInfo{"ABCD", 3, "Sam"});
+    CHECK(duel.rooms()[0] == RoomInfo{"ABCD", 3, "Sam", 1});
     duel.onMessage("ROOMS");
     CHECK(duel.rooms().empty());
 }
@@ -601,7 +601,7 @@ TEST_CASE("duel: ROOMS outside the lobby is ignored") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.createRoom(1);
-    duel.onMessage("ROOMS ABCD:3:Sam");
+    duel.onMessage("ROOMS ABCD:3:Sam:1");
     CHECK(duel.rooms().empty());
 }
 
@@ -609,7 +609,7 @@ TEST_CASE("duel: a refused join from the lobby goes back to the lobby") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.openLobby();
-    duel.onMessage("ROOMS ABCD:3:Sam");
+    duel.onMessage("ROOMS ABCD:3:Sam:1");
     duel.joinRoom("ABCD");
     CHECK(duel.phase() == DuelPhase::Waiting);
     wire.sent.clear();
@@ -644,14 +644,14 @@ TEST_CASE("duel: quick match waits as a host or starts as a joiner") {
     host.quickMatch(2);
     CHECK(wire.sent == std::vector<std::string>{"QUICK 2"});
     CHECK(host.quickMatching());
-    host.onMessage("ROOM ABCD");
+    host.onMessage("ROOM ABCD 1");
     CHECK(host.roomCode() == "ABCD");
     CHECK(host.phase() == DuelPhase::Waiting);
 
     DuelSession joiner(wire.sender());
     joiner.quickMatch(9);
     joiner.onMessage("OPP Sam");
-    joiner.onMessage("START 7 2");
+    joiner.onMessage("START 7 2 1 2");
     CHECK(joiner.phase() == DuelPhase::Countdown);
     CHECK(joiner.opponentName() == "Sam");
 }
@@ -668,7 +668,7 @@ TEST_CASE("duel stats: played time counts only play, and stops with the match") 
     Wire wire;
     DuelSession duel(wire.sender());
     duel.createRoom(1);
-    duel.onMessage("START 7 1");
+    duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs - 1);
     CHECK(duel.playedMs() == 0);
     duel.update(1);  // ends the countdown; update() returns there, so play time starts with the next call
@@ -692,7 +692,7 @@ TEST_CASE("duel stats: our snapshots carry our stats, theirs land in opponent()"
     CHECK(std::get<Snapshot>(*sent).stats.pieces == 1);
     Snapshot theirs{};
     theirs.stats.tetrises = 2;
-    duel.onMessage(encode(theirs));
+    duel.onMessage(encode(PlayerSnapshot{2, theirs}));
     CHECK(duel.opponent().stats.tetrises == 2);
 }
 
@@ -705,7 +705,7 @@ TEST_CASE("duel stats: the result table, ours on the left") {
     Snapshot theirs{};
     theirs.stats = {.pieces = 90, .attack = 45, .garbageCleared = 15, .cancelled = 6, .tetrises = 3, .tSpins = 2,
                     .maxCombo = 5};
-    duel.onMessage(encode(theirs));
+    duel.onMessage(encode(PlayerSnapshot{2, theirs}));
     duel.onMessage("OVER LOSE TIME 4 39");
     const std::vector<StatRow> rows = resultStatRows(duel);
     std::vector<std::string> labels;
@@ -725,12 +725,12 @@ TEST_CASE("duel stats: no opponent snapshot shows zeros, and a rematch starts fr
     startMatch(duel, wire);
     Snapshot theirs{};
     theirs.stats.pieces = 30;
-    duel.onMessage(encode(theirs));
+    duel.onMessage(encode(PlayerSnapshot{2, theirs}));
     duel.game()->apply(Action::HardDrop);
     duel.update(5000);
     duel.onMessage("OVER WIN KO 0 0");
     duel.requestRematch();
-    duel.onMessage("START 8 1");
+    duel.onMessage("START 8 1 1 2");
     duel.update(kCountdownMs);
     CHECK(duel.playedMs() == 0);
     CHECK(duel.game()->stats() == GameStats{});

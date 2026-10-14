@@ -18,6 +18,7 @@ inline constexpr int kRoomCodeLength = 4;
 inline constexpr int kKosToWin = 3;  // the first player to this many KOs wins the match
 inline constexpr int kMaxNameLength = 12;  // maxNameLength in server/hub.go
 inline constexpr int kMaxListedRooms = 20;  // maxListedRooms in server/hub.go
+inline constexpr int kMaxRoomPlayers = 16;  // maxRoomPlayers in server/hub.go
 
 // Four letters A-Z.
 bool isRoomCode(std::string_view text);
@@ -55,14 +56,40 @@ struct JoinRoom {
     std::string code;
     friend bool operator==(const JoinRoom&, const JoinRoom&) = default;
 };
-struct RoomCreated {
+struct RoomEntered {  // ROOM <CODE> <id>: you are in the room, as this player
     std::string code;
-    friend bool operator==(const RoomCreated&, const RoomCreated&) = default;
+    int playerId = 1;
+    friend bool operator==(const RoomEntered&, const RoomEntered&) = default;
 };
-struct StartMatch {
+struct StartMatch {  // START seed lvl id...: the players of the match, 2 to kMaxRoomPlayers unique ids
     std::uint32_t seed = 0;
     int startLevel = 1;
+    std::vector<int> players;
     friend bool operator==(const StartMatch&, const StartMatch&) = default;
+};
+struct PlayerSnapshot {  // from the server: SNAP <id> followed by that player's Snapshot arguments
+    int fromId = 0;
+    Snapshot snapshot;
+    friend bool operator==(const PlayerSnapshot&, const PlayerSnapshot&) = default;
+};
+struct RosterEntry {
+    int id = 0;
+    std::string name;
+    bool inMatch = false;
+    friend bool operator==(const RosterEntry&, const RosterEntry&) = default;
+};
+struct Roster {  // PLAYERS <hostId> id:name:0|1 ...: everyone in the room, 1 to kMaxRoomPlayers
+    int hostId = 0;
+    std::vector<RosterEntry> players;
+    friend bool operator==(const Roster&, const Roster&) = default;
+};
+struct Begin {  // the host starts the match
+    friend bool operator==(const Begin&, const Begin&) = default;
+};
+struct PlayerOut {  // OUT <id> <place>: the player was eliminated, finishing in this place
+    int id = 0;
+    int place = 0;
+    friend bool operator==(const PlayerOut&, const PlayerOut&) = default;
 };
 struct Attack {
     int lines = 0;
@@ -100,10 +127,11 @@ struct QuickMatch {  // join the oldest open public room, or open one at this le
     int startLevel = 1;
     friend bool operator==(const QuickMatch&, const QuickMatch&) = default;
 };
-struct RoomInfo {  // one open public room in the lobby: CODE:lvl:host
+struct RoomInfo {  // one open public room in the lobby: CODE:lvl:host:n
     std::string code;
     int startLevel = 1;
     std::string host;
+    int players = 1;  // 1 to kMaxRoomPlayers - 1; a full room is not listed
     friend bool operator==(const RoomInfo&, const RoomInfo&) = default;
 };
 struct RoomList {  // the open public rooms, oldest first, at most kMaxListedRooms
@@ -126,9 +154,9 @@ struct MatchOver {  // the server's verdict, from the receiver's point of view
     friend bool operator==(const MatchOver&, const MatchOver&) = default;
 };
 
-using Message = std::variant<CreateRoom, JoinRoom, RoomCreated, StartMatch, Attack, Snapshot, Dead, Rematch,
+using Message = std::variant<CreateRoom, JoinRoom, RoomEntered, StartMatch, Attack, Snapshot, Dead, Rematch,
                              OpponentLeft, ServerError, KoCounts, MatchOver, Hello, OpponentName, ListRooms,
-                             UnlistRooms, QuickMatch, RoomList>;
+                             UnlistRooms, QuickMatch, RoomList, PlayerSnapshot, Roster, Begin, PlayerOut>;
 
 std::string encode(const Message& message);
 // nullopt for anything malformed or unknown.

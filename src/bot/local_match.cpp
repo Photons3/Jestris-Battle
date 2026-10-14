@@ -30,6 +30,7 @@ void LocalMatch::send(const std::string& text) {
             if constexpr (std::is_same_v<T, CreateRoom>) {
                 startLevel_ = m.startLevel;
                 if (!named_) {
+                    queue(RoomEntered{"BOTS", 1});
                     queue(OpponentName{botName(level_)});
                     named_ = true;
                 }
@@ -50,7 +51,7 @@ void LocalMatch::send(const std::string& text) {
 std::vector<std::string> LocalMatch::receive() { return std::exchange(outbox_, {}); }
 
 void LocalMatch::start() {
-    const StartMatch startMatch{static_cast<std::uint32_t>(rng_()), startLevel_};
+    const StartMatch startMatch{static_cast<std::uint32_t>(rng_()), startLevel_, {1, 2}};
     bot_ = makeDuelGame(startMatch);
     player_ = BotPlayer(level_, static_cast<std::uint32_t>(rng_()));
     over_ = false;
@@ -87,7 +88,7 @@ void LocalMatch::step() {
             sinceSnapshotMs_ = 0;
             const Snapshot snapshot = snapshotOf(*bot_);
             if (snapshot != lastSent_) {
-                queue(snapshot);
+                queue(PlayerSnapshot{2, snapshot});
                 lastSent_ = snapshot;
             }
         }

@@ -27,8 +27,8 @@ TEST_CASE("protocol: every message survives an encode/decode round trip") {
     unlockedHold.next = snapshot.next;
     const std::vector<Message> messages{CreateRoom{3},
                                         JoinRoom{"ABCD"},
-                                        RoomCreated{"WXYZ"},
-                                        StartMatch{4000000000u, 15},
+                                        RoomEntered{"WXYZ", 16},
+                                        StartMatch{4000000000u, 15, {3, 1}},
                                         Attack{4},
                                         snapshot,
                                         unlockedHold,
@@ -48,7 +48,14 @@ TEST_CASE("protocol: every message survives an encode/decode round trip") {
                                         UnlistRooms{},
                                         QuickMatch{9},
                                         RoomList{},
-                                        RoomList{{{"ABCD", 3, "Sam"}, {"WXYZ", 15, "Player0001"}}}};
+                                        RoomList{{{"ABCD", 3, "Sam", 5}, {"WXYZ", 15, "Player0001", 15}}},
+                                        RoomEntered{"ABCD", 3},
+                                        StartMatch{7, 2, {1, 2}},
+                                        StartMatch{7, 2, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+                                        PlayerSnapshot{5, snapshot},
+                                        Roster{2, {{1, "Sam", true}, {2, "Sam2", false}}},
+                                        Begin{},
+                                        PlayerOut{4, 9}};
     for (const Message& message : messages) {
         CAPTURE(encode(message));
         const auto decoded = decode(encode(message));
@@ -63,7 +70,7 @@ TEST_CASE("protocol: the wire format is plain text") {
     CHECK(encode(MatchOver{MatchResult::Win, MatchReason::KOs, 12, 7}) == "OVER WIN KO 12 7");
     CHECK(encode(MatchOver{MatchResult::Lose, MatchReason::Time, 3, 9}) == "OVER LOSE TIME 3 9");
     CHECK(encode(MatchOver{MatchResult::Draw, MatchReason::Time, 4, 4}) == "OVER DRAW TIME 4 4");
-    CHECK(encode(StartMatch{42, 1}) == "START 42 1");
+    CHECK(encode(StartMatch{42, 1, {1, 2}}) == "START 42 1 1 2");
     const std::string empty(kSnapshotCells, '.');
     CHECK(encode(Snapshot{}) == "SNAP 0 0 0 0 0 0 0 0 0 0 0 . ..... " + empty);
     Snapshot bomb{};
@@ -236,18 +243,50 @@ TEST_CASE("protocol: lobby messages on the wire") {
     CHECK(encode(UnlistRooms{}) == "UNLIST");
     CHECK(encode(QuickMatch{4}) == "QUICK 4");
     CHECK(encode(RoomList{}) == "ROOMS");
-    CHECK(encode(RoomList{{{"ABCD", 3, "Sam"}, {"WXYZ", 12, "Kai"}}}) == "ROOMS ABCD:3:Sam WXYZ:12:Kai");
+    CHECK(encode(RoomList{{{"ABCD", 3, "Sam", 1}, {"WXYZ", 12, "Kai", 2}}}) == "ROOMS ABCD:3:Sam:1 WXYZ:12:Kai:2");
 }
 
 TEST_CASE("protocol: malformed lobby messages are rejected") {
     for (std::string_view text : {"CREATE 3 OPEN", "CREATE 3 pub", "CREATE 3 PUB x", "LIST x", "UNLIST x", "QUICK",
-                                  "QUICK 0", "QUICK 16", "QUICK x", "ROOMS ", "ROOMS ABCD", "ROOMS ABCD:3",
-                                  "ROOMS ABCD:3:", "ROOMS abcd:3:Sam", "ROOMS ABCD:0:Sam", "ROOMS ABCD:3:Sam:x",
-                                  "ROOMS ABCD:3:a b", "ROOMS ABCD:x:Sam", "ROOMS ABCD:3:Sam "}) {
+                                  "QUICK 0", "QUICK 16", "QUICK x", "ROOMS ", "ROOMS ABCD", "ROOMS ABCD:3", "ROOMS ABCD:3:Sam",
+                                  "ROOMS ABCD:3:", "ROOMS abcd:3:Sam:1", "ROOMS ABCD:0:Sam:1", "ROOMS ABCD:3:Sam:0", "ROOMS ABCD:3:Sam:16", "ROOMS ABCD:3:Sam:x", "ROOMS ABCD:3:Sam:1:x",
+                                  "ROOMS ABCD:3:a b:1", "ROOMS ABCD:x:Sam:1", "ROOMS ABCD:3:Sam:1 "}) {
         CAPTURE(text);
         CHECK_FALSE(decode(text).has_value());
     }
     std::string tooMany = "ROOMS";
-    for (int i = 0; i <= kMaxListedRooms; ++i) tooMany += " ABCD:1:Sam";
+    for (int i = 0; i <= kMaxListedRooms; ++i) tooMany += " ABCD:1:Sam:1";
     CHECK_FALSE(decode(tooMany).has_value());
+}
+
+TEST_CASE("protocol: room messages carry player ids") {
+    CHECK(encode(RoomEntered{"ABCD", 3}) == "ROOM ABCD 3");
+    CHECK(encode(StartMatch{7, 2, {1, 4, 9}}) == "START 7 2 1 4 9");
+    CHECK(encode(Roster{2, {{1, "Sam", true}, {2, "Kim", false}}}) == "PLAYERS 2 1:Sam:1 2:Kim:0");
+    CHECK(encode(Begin{}) == "BEGIN");
+    CHECK(encode(PlayerOut{4, 9}) == "OUT 4 9");
+    CHECK(encode(RoomList{{{"ABCD", 3, "Sam", 5}}}) == "ROOMS ABCD:3:Sam:5");
+    CHECK(encode(PlayerSnapshot{5, Snapshot{}}) == "SNAP 5 " + encode(Snapshot{}).substr(5));
+    CHECK(decode(encode(Snapshot{})) == Message{Snapshot{}});  // 14 arguments: a client's own snapshot
+}
+
+TEST_CASE("protocol: malformed player-id messages are rejected") {
+    const std::string args = encode(Snapshot{}).substr(5);
+    std::vector<std::string> bad{"ROOM ABCD", "ROOM ABCD 0", "ROOM ABCD 17", "ROOM ABCD x", "ROOM ABCD 1 2",
+                                 "START 7 2", "START 7 2 1", "START 7 2 1 1", "START 7 2 1 17", "START 7 2 0 1",
+                                 "START 7 2 1 x", "PLAYERS 1", "PLAYERS 3 1:Sam:1", "PLAYERS 1 1:Sam:2",
+                                 "PLAYERS 1 1:Sam:1 1:Kim:0", "PLAYERS 1 1:bad name:1", "PLAYERS 1 1:Sam",
+                                 "PLAYERS 1 0:Sam:1", "PLAYERS 1 17:Sam:1", "PLAYERS 1 1::1", "PLAYERS 1 1:Sam:1:x",
+                                 "OUT 0 2", "OUT 3 0", "OUT 3 17", "OUT 17 2", "OUT 3", "BEGIN now",
+                                 "SNAP 0 " + args, "SNAP 17 " + args, "SNAP x " + args};
+    std::string manyStarts = "START 7 2";
+    for (int i = 1; i <= kMaxRoomPlayers + 1; ++i) manyStarts += " " + std::to_string(i);
+    bad.push_back(manyStarts);
+    std::string manyPlayers = "PLAYERS 1";
+    for (int i = 1; i <= kMaxRoomPlayers + 1; ++i) manyPlayers += " " + std::to_string(i) + ":P:0";
+    bad.push_back(manyPlayers);
+    for (const std::string& text : bad) {
+        CAPTURE(text);
+        CHECK_FALSE(decode(text).has_value());
+    }
 }

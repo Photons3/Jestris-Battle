@@ -39,6 +39,12 @@ std::vector<T> allOf(const std::vector<Message>& messages) {
     return found;
 }
 
+std::vector<Snapshot> snapshotsOf(const std::vector<Message>& messages) {
+    std::vector<Snapshot> found;
+    for (const PlayerSnapshot& p : allOf<PlayerSnapshot>(messages)) found.push_back(p.snapshot);
+    return found;
+}
+
 int attackLines(const std::vector<Message>& messages) {
     int lines = 0;
     for (const Attack& a : allOf<Attack>(messages)) lines += a.lines;
@@ -66,9 +72,12 @@ TEST_CASE("local match: creating a room names the bot and starts a match") {
     LocalMatch match(BotLevel::Hard, 1);
     match.send(encode(CreateRoom{4, false}));
     const auto got = drain(match);
-    REQUIRE(got.size() == 2);
-    CHECK(std::get<OpponentName>(got[0]).name == "Bot-Hard");
-    CHECK(std::get<StartMatch>(got[1]).startLevel == 4);
+    REQUIRE(got.size() == 3);
+    CHECK(std::get<RoomEntered>(got[0]) == RoomEntered{"BOTS", 1});
+    CHECK(std::get<OpponentName>(got[1]).name == "Bot-Hard");
+    const StartMatch& start = std::get<StartMatch>(got[2]);
+    CHECK(start.startLevel == 4);
+    CHECK(start.players == std::vector<int>{1, 2});
 }
 
 TEST_CASE("local match: the bot waits out the countdown, then plays and sends snapshots") {
@@ -76,9 +85,9 @@ TEST_CASE("local match: the bot waits out the countdown, then plays and sends sn
     match.send(encode(CreateRoom{1, false}));
     drain(match);
     match.update(kCountdownMs - 1);
-    CHECK(countOf<Snapshot>(drain(match)) == 0);
+    CHECK(countOf<PlayerSnapshot>(drain(match)) == 0);
     match.update(3000);
-    CHECK(countOf<Snapshot>(drain(match)) >= 1);
+    CHECK(countOf<PlayerSnapshot>(drain(match)) >= 1);
 }
 
 TEST_CASE("local match: three deaths lose by KOs") {
@@ -150,7 +159,7 @@ TEST_CASE("local match: the bot stops at 0:00 and waits out the grace like the h
     const auto during = drain(match);
     CHECK(countOf<Attack>(during) == 0);
     CHECK(countOf<KoCounts>(during) == 0);
-    CHECK(countOf<Snapshot>(during) == 0);
+    CHECK(countOf<PlayerSnapshot>(during) == 0);
     CHECK(snapshotOf(*match.botGame()) == atZero);
     CHECK(match.botGame()->active().pos.x == pieceAtZero.pos.x);
     CHECK(match.botGame()->active().pos.y == pieceAtZero.pos.y);
@@ -167,7 +176,7 @@ TEST_CASE("local match: a long update still plays and ends on time") {
     drain(match);
     match.update(kCountdownMs + kMatchMs + kLocalMatchGraceMs);
     const auto got = drain(match);
-    const std::vector<Snapshot> snapshots = allOf<Snapshot>(got);
+    const std::vector<Snapshot> snapshots = snapshotsOf(got);
     REQUIRE(!snapshots.empty());
     CHECK(snapshots.back().score > 0);  // pieces were hard-dropped
     REQUIRE(match.botGame() != nullptr);
@@ -210,8 +219,8 @@ TEST_CASE("local match: a rematch starts again with a new seed and no new name")
     LocalMatch match(BotLevel::Medium, 9);
     match.send(encode(CreateRoom{2, false}));
     const auto first = drain(match);
-    REQUIRE(first.size() == 2);
-    const StartMatch start = std::get<StartMatch>(first[1]);
+    REQUIRE(first.size() == 3);
+    const StartMatch start = std::get<StartMatch>(first[2]);
     match.update(kCountdownMs + 1000);
     for (int i = 0; i < 3; ++i) match.send(encode(Dead{}));
     REQUIRE(countOf<MatchOver>(drain(match)) == 1);
@@ -250,7 +259,7 @@ TEST_CASE("local match: the bot's snapshots carry its stats") {
     std::vector<Snapshot> snapshots;
     for (int i = 0; i < 5; ++i) {
         match.update(1000);
-        for (const Snapshot& s : allOf<Snapshot>(drain(match))) snapshots.push_back(s);
+        for (const Snapshot& s : snapshotsOf(drain(match))) snapshots.push_back(s);
     }
     REQUIRE_FALSE(snapshots.empty());
     REQUIRE(match.botGame() != nullptr);
