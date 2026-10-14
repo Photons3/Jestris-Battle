@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -206,44 +203,6 @@ func TestRematchNeedsBothPlayers(t *testing.T) {
 	b.send("REMATCH")
 	a.expect("START 102 3")
 	b.expect("START 102 3")
-}
-
-func TestWebFilesServesOnlyTheAllowlist(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"index.html", "index.js", "index.wasm", "CMakeCache.txt"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Mkdir(filepath.Join(dir, "_deps"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(webFiles(dir))
-	t.Cleanup(srv.Close)
-
-	for _, path := range []string{"/", "/index.html", "/index.js", "/index.wasm"} {
-		resp, err := http.Get(srv.URL + path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("GET %s: status %d, want 200", path, resp.StatusCode)
-		}
-		if path == "/index.wasm" && resp.Header.Get("Content-Type") != "application/wasm" {
-			t.Errorf("GET %s: Content-Type %q, want application/wasm", path, resp.Header.Get("Content-Type"))
-		}
-	}
-	for _, path := range []string{"/CMakeCache.txt", "/_deps/", "/_deps"} {
-		resp, err := http.Get(srv.URL + path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("GET %s: status %d, want 404", path, resp.StatusCode)
-		}
-	}
 }
 
 func TestAttacksAreCountedAndMalformedOnesDropped(t *testing.T) {

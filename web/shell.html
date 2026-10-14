@@ -10,9 +10,30 @@
 </style>
 </head>
 <body>
-<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+<canvas id="canvas" tabindex="-1"></canvas>
 <script>
-  var Module = { canvas: document.getElementById('canvas') };
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    // The server stamps index.js with ?v=<build hash>; ask for index.wasm with the same stamp
+    // so browsers can keep both cached until the next build.
+    locateFile: function (path, prefix) {
+      var script = document.querySelector('script[src^="index.js"]');
+      return prefix + path + (script ? new URL(script.src).search : '');
+    }
+  };
+  // SDL cancels the browser's default for every key it sees, which would block the developer
+  // tools and reload shortcuts. This capture listener runs before SDL's own (registered later,
+  // in the bubble phase) and keeps those keys away from the game.
+  function isBrowserShortcut(e) {
+    if (e.key === 'F12' || e.key === 'F5') return true;
+    var devtoolsLetter = e.code === 'KeyI' || e.code === 'KeyJ';
+    return devtoolsLetter && ((e.ctrlKey && e.shiftKey) || (e.metaKey && e.altKey));
+  }
+  ['keydown', 'keyup'].forEach(function (type) {
+    window.addEventListener(type, function (e) {
+      if (isBrowserShortcut(e)) e.stopImmediatePropagation();
+    }, true);
+  });
   // Arrow keys and space would otherwise scroll the page while playing.
   window.addEventListener('keydown', function (e) {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();

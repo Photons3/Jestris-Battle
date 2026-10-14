@@ -76,3 +76,6 @@ build-*/
 .cache/
 .DS_Store
 .superpowers/
+
+# Server binary from go build in server/
+server/tetris-server

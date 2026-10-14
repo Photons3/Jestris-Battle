@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -36,13 +35,17 @@ func main() {
 				"(if emcc complains about Python, prefix with EMSDK_PYTHON=/opt/homebrew/bin/python3.14)", name, *dir)
 		}
 	}
+	web := newWebBuild(*dir)
+	if _, _, _, err := web.load(); err != nil {
+		log.Fatalf("cannot version the web build in %s: %v", *dir, err)
+	}
 	_, port, err := net.SplitHostPort(*addr)
 	if err != nil {
 		log.Fatalf("bad -addr: %v", err)
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", webFiles(*dir))
+	mux.Handle("/", web)
 	hub := NewHub()
 	hub.matchLength = *match
 	for _, o := range strings.Split(*origins, ",") {
@@ -65,30 +68,6 @@ func main() {
 		log.Fatal(http.ListenAndServeTLS(*addr, *cert, *key, mux))
 	}
 	log.Fatal(http.ListenAndServe(*addr, mux))
-}
-
-// webFileNames are the only files of the web build that are served.
-var webFileNames = []string{"index.html", "index.js", "index.wasm"}
-
-// webFiles serves just the web build's own files from dir, so the rest of the build
-// directory (CMakeCache.txt, _deps/, listings) is not published to the LAN.
-func webFiles(dir string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(r.URL.Path, "/")
-		if name == "" {
-			name = "index.html"
-		}
-		if !slices.Contains(webFileNames, name) {
-			http.NotFound(w, r)
-			return
-		}
-		if name == "index.html" {
-			// ServeFile redirects any request path ending in /index.html to ./
-			r = r.Clone(r.Context())
-			r.URL.Path = "/"
-		}
-		http.ServeFile(w, r, filepath.Join(dir, name))
-	})
 }
 
 // lanIPs lists this machine's IPv4 addresses that other devices on the network can reach.
