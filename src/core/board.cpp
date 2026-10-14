@@ -25,6 +25,31 @@ void Board::lock(const Piece& piece) {
     for (Point c : piece.cells()) set(c.x, c.y, piece.type);
 }
 
+void Board::pushCheese(int rows, std::mt19937& rng) {
+    int previousHole = -1;
+    for (int y = 0; y < rows; ++y) {
+        int hole = static_cast<int>(rng() % kBoardWidth);
+        while (hole == previousHole) hole = static_cast<int>(rng() % kBoardWidth);
+        previousHole = hole;
+        for (int x = 0; x < kBoardWidth; ++x) {
+            if (x != hole) set(x, y, PieceType::Garbage);
+        }
+    }
+}
+
+int Board::garbageRows() const {
+    int count = 0;
+    for (int y = 0; y < kBoardHeight; ++y) {
+        for (int x = 0; x < kBoardWidth; ++x) {
+            if (at(x, y) == PieceType::Garbage) {
+                ++count;
+                break;
+            }
+        }
+    }
+    return count;
+}
+
 std::vector<int> Board::fullRows() const {
     std::vector<int> rows;
     for (int y = 0; y < kBoardHeight; ++y) {
