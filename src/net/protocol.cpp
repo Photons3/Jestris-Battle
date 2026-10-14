@@ -13,6 +13,7 @@ namespace {
 constexpr std::string_view kCellChars = "IOTSZJLGB";  // index matches PieceType
 constexpr std::string_view kPieceChars = "IOTSZJL";      // the dealable prefix of kCellChars
 constexpr std::string_view kLockedHoldChars = "iotszjl";  // a held piece while hold is locked
+constexpr std::string_view kGhostChars = "iotszjl";       // a ghost cell in the field; garbage and bombs never fall
 constexpr char kEmptyCell = '.';
 constexpr int kMaxInt = std::numeric_limits<int>::max();
 constexpr std::array<std::string_view, 3> kResultTokens{"WIN", "LOSE", "DRAW"};  // index matches MatchResult
@@ -54,6 +55,21 @@ bool parseCell(char c, Cell& out) {
     const std::size_t i = kCellChars.find(c);
     if (i == std::string_view::npos) return false;
     out = static_cast<PieceType>(i);
+    return true;
+}
+
+char fieldChar(Cell cell, Cell ghost) {
+    if (cell || !ghost) return cellChar(cell);
+    return kGhostChars[static_cast<int>(*ghost)];
+}
+
+// A field cell is a block, a ghost cell or empty.
+bool parseFieldCell(char c, Cell& cell, Cell& ghost) {
+    ghost = std::nullopt;
+    if (parseCell(c, cell)) return true;
+    const std::size_t i = kGhostChars.find(c);
+    if (i == std::string_view::npos) return false;
+    ghost = static_cast<PieceType>(i);
     return true;
 }
 
@@ -108,7 +124,7 @@ std::optional<Message> decodeSnapshot(const std::vector<std::string_view>& parts
     for (int i = 0; i < kSnapshotNext; ++i)
         if (!parsePiece(next[i], snapshot.next[i])) return std::nullopt;
     for (int i = 0; i < kSnapshotCells; ++i)
-        if (!parseCell(cells[i], snapshot.cells[i])) return std::nullopt;
+        if (!parseFieldCell(cells[i], snapshot.cells[i], snapshot.ghost[i])) return std::nullopt;
     return snapshot;
 }
 
@@ -147,9 +163,16 @@ Snapshot snapshotOf(const Game& game) {
     snapshot.stats = game.stats();
     for (int y = 0; y < kVisibleHeight; ++y)
         for (int x = 0; x < kBoardWidth; ++x) snapshot.cells[y * kBoardWidth + x] = game.board().at(x, y);
-    if (game.state() == GameState::Playing)
+    if (game.state() == GameState::Playing) {
         for (Point c : game.active().cells())
             if (c.y < kVisibleHeight) snapshot.cells[c.y * kBoardWidth + c.x] = game.active().type;
+        Piece ghost = game.active();
+        ghost.pos.y -= game.ghostDistance();
+        for (Point c : ghost.cells()) {
+            const int i = c.y * kBoardWidth + c.x;
+            if (c.y < kVisibleHeight && !snapshot.cells[i]) snapshot.ghost[i] = ghost.type;
+        }
+    }
     snapshot.hold = game.hold();
     snapshot.holdLocked = !game.canHold();
     const std::vector<PieceType> next = game.next(kSnapshotNext);
@@ -181,7 +204,7 @@ std::string encode(const Message& message) {
                 text += ' ';
                 for (Cell piece : m.next) text += cellChar(piece);
                 text += ' ';
-                for (Cell cell : m.cells) text += cellChar(cell);
+                for (int i = 0; i < kSnapshotCells; ++i) text += fieldChar(m.cells[i], m.ghost[i]);
                 return text;
             } else if constexpr (std::is_same_v<T, Dead>) {
                 return "DEAD";

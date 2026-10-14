@@ -211,16 +211,18 @@ void drawBoardCells(ImDrawList* dl, const Layout& l, const Game& game) {
     }
 }
 
+// The landing preview: an outline in the piece's color.
+void drawGhostCell(ImDrawList* dl, const Layout& l, int x, int y, PieceType type) {
+    const ImVec2 p = cellTopLeft(l, x, y);
+    dl->AddRect(ImVec2(p.x + 1, p.y + 1), ImVec2(p.x + l.cell - 1, p.y + l.cell - 1), color(pieceRgb(type), 0.6f),
+                0.0f, 0, 2.0f);
+}
+
 void drawActivePiece(ImDrawList* dl, const Layout& l, const Game& game) {
     Piece ghost = game.active();
     ghost.pos.y -= game.ghostDistance();
-    const Rgb rgb = pieceRgb(ghost.type);
-    for (Point c : ghost.cells()) {
-        if (c.y >= kDrawnRows) continue;
-        const ImVec2 p = cellTopLeft(l, c.x, c.y);
-        dl->AddRect(ImVec2(p.x + 1, p.y + 1), ImVec2(p.x + l.cell - 1, p.y + l.cell - 1), color(rgb, 0.6f), 0.0f, 0,
-                    2.0f);
-    }
+    for (Point c : ghost.cells())
+        if (c.y < kDrawnRows) drawGhostCell(dl, l, c.x, c.y, ghost.type);
     for (Point c : game.active().cells())
         if (c.y < kDrawnRows) drawCell(dl, cellTopLeft(l, c.x, c.y), l.cell, game.active().type, rowAlpha(c.y));
 }
@@ -533,7 +535,10 @@ void drawOpponent(ImDrawList* dl, const DuelLayout& layout, const Snapshot& snap
     drawWell(dl, l);
     for (int y = 0; y < kVisibleHeight; ++y)
         for (int x = 0; x < kBoardWidth; ++x)
-            if (const Cell c = snapshot.cells[y * kBoardWidth + x]) drawCell(dl, cellTopLeft(l, x, y), l.cell, *c, 1.0f);
+            if (const Cell c = snapshot.cells[y * kBoardWidth + x])
+                drawCell(dl, cellTopLeft(l, x, y), l.cell, *c, 1.0f);
+            else if (const Cell g = snapshot.ghost[y * kBoardWidth + x])
+                drawGhostCell(dl, l, x, y, *g);
 
     const float statsX = layout.left + kStatsCol * l.cell;
     const float textSize = l.cell * 0.6f;

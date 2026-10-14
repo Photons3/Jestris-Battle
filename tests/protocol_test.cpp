@@ -16,6 +16,7 @@ TEST_CASE("protocol: every message survives an encode/decode round trip") {
     snapshot.cells[0] = PieceType::Garbage;
     snapshot.cells[kSnapshotCells - 1] = PieceType::I;
     snapshot.cells[1] = PieceType::Bomb;
+    snapshot.ghost[2] = PieceType::T;
     snapshot.hold = PieceType::T;
     snapshot.holdLocked = true;
     snapshot.next = {PieceType::I, PieceType::O, PieceType::S, PieceType::Z, PieceType::L};
@@ -68,6 +69,9 @@ TEST_CASE("protocol: the wire format is plain text") {
     Snapshot bomb{};
     bomb.cells[0] = PieceType::Bomb;
     CHECK(encode(bomb) == "SNAP 0 0 0 0 0 0 0 0 0 0 . ..... B" + std::string(kSnapshotCells - 1, '.'));
+    Snapshot ghost{};
+    ghost.ghost[0] = PieceType::T;  // ghost cells are the lowercase piece letter
+    CHECK(encode(ghost) == "SNAP 0 0 0 0 0 0 0 0 0 0 . ..... t" + std::string(kSnapshotCells - 1, '.'));
     Snapshot held{};
     held.hold = PieceType::T;
     held.holdLocked = true;
@@ -90,6 +94,10 @@ TEST_CASE("protocol: malformed messages are rejected") {
     std::string badCell = "SNAP 0 0 0 0 0 0 0 0 0 0 . ..... " + std::string(kSnapshotCells, '.');
     badCell.back() = 'Q';
     CHECK_FALSE(decode(badCell).has_value());
+    for (char ghostOfBlock : {'g', 'b'}) {  // garbage and bombs never fall, so they have no ghost
+        badCell.back() = ghostOfBlock;
+        CHECK_FALSE(decode(badCell).has_value());
+    }
 }
 
 TEST_CASE("protocol: malformed snapshot hold and next fields are rejected") {
@@ -138,6 +146,26 @@ TEST_CASE("protocol: a snapshot shows the visible field with the falling piece m
         CHECK(*cell == PieceType::T);
     }
     CHECK(filled == 4);
+    for (Cell cell : snapshotOf(game).ghost) CHECK_FALSE(cell);  // a resting piece hides its own ghost
+}
+
+TEST_CASE("protocol: a snapshot carries the falling piece's ghost in the empty cells below it") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setSoftDrop(true);
+    while (game.ghostDistance() > kVisibleHeight / 2) game.tick(1);  // the piece is now in the visible field
+    game.setSoftDrop(false);
+    const Snapshot snapshot = snapshotOf(game);
+    Piece ghost = game.active();
+    ghost.pos.y -= game.ghostDistance();
+    int ghostCells = 0;
+    for (int i = 0; i < kSnapshotCells; ++i) {
+        if (!snapshot.ghost[i]) continue;
+        ++ghostCells;
+        CHECK(*snapshot.ghost[i] == PieceType::T);
+        CHECK_FALSE(snapshot.cells[i]);
+    }
+    CHECK(ghostCells == 4);
+    for (Point c : ghost.cells()) CHECK(snapshot.ghost[c.y * kBoardWidth + c.x] == PieceType::T);
 }
 
 TEST_CASE("protocol: a snapshot carries the hold and the next queue") {
