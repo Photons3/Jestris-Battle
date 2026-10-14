@@ -657,3 +657,89 @@ TEST_CASE("duel: quick match waits as a host or starts as a joiner") {
     CHECK(joiner.phase() == DuelPhase::Countdown);
     CHECK(joiner.opponentName() == "Sam");
 }
+
+TEST_CASE("duel stats: rates are per second and per minute of play, zero before any") {
+    CHECK(ratesOf(GameStats{.pieces = 5}, 0).pps == 0.0);
+    const MatchRates r = ratesOf(GameStats{.pieces = 60, .attack = 30, .garbageCleared = 10}, 60000);
+    CHECK(r.pps == doctest::Approx(1.0));
+    CHECK(r.apm == doctest::Approx(30.0));
+    CHECK(r.vs == doctest::Approx(66.6667).epsilon(0.0001));
+}
+
+TEST_CASE("duel stats: played time counts only play, and stops with the match") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("START 7 1");
+    duel.update(kCountdownMs - 1);
+    CHECK(duel.playedMs() == 0);
+    duel.update(1);  // ends the countdown; update() returns there, so play time starts with the next call
+    CHECK(duel.playedMs() == 0);
+    duel.update(1500);
+    CHECK(duel.playedMs() == 1500);
+    duel.onMessage("OVER WIN KO 0 0");
+    duel.update(1000);
+    CHECK(duel.playedMs() == 1500);
+}
+
+TEST_CASE("duel stats: our snapshots carry our stats, theirs land in opponent()") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.game()->apply(Action::HardDrop);
+    duel.update(kSnapshotIntervalMs);
+    REQUIRE_FALSE(wire.sent.empty());
+    const auto sent = decode(wire.sent.back());
+    REQUIRE(sent.has_value());
+    CHECK(std::get<Snapshot>(*sent).stats.pieces == 1);
+    Snapshot theirs{};
+    theirs.stats.tetrises = 2;
+    duel.onMessage(encode(theirs));
+    CHECK(duel.opponent().stats.tetrises == 2);
+}
+
+TEST_CASE("duel stats: the result table, ours on the left") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    CHECK(resultStatRows(duel).empty());
+    duel.update(60000);
+    Snapshot theirs{};
+    theirs.stats = {.pieces = 90, .attack = 45, .garbageCleared = 15, .cancelled = 6, .tetrises = 3, .tSpins = 2,
+                    .maxCombo = 5};
+    duel.onMessage(encode(theirs));
+    duel.onMessage("OVER LOSE TIME 4 39");
+    const std::vector<StatRow> rows = resultStatRows(duel);
+    std::vector<std::string> labels;
+    for (const StatRow& row : rows) labels.push_back(row.label);
+    CHECK(labels == std::vector<std::string>{"PPS", "APM", "VS", "Sent", "Cancelled", "Tetrises", "T-spins",
+                                             "Max combo"});
+    CHECK(rows[0] == StatRow{"PPS", "0.00", "1.50"});
+    CHECK(rows[1] == StatRow{"APM", "0.0", "45.0"});
+    CHECK(rows[2] == StatRow{"VS", "0.0", "100.0"});
+    CHECK(rows[3] == StatRow{"Sent", "4", "39"});
+    CHECK(rows[7] == StatRow{"Max combo", "-", "5"});
+}
+
+TEST_CASE("duel stats: no opponent snapshot shows zeros, and a rematch starts from zero") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    Snapshot theirs{};
+    theirs.stats.pieces = 30;
+    duel.onMessage(encode(theirs));
+    duel.game()->apply(Action::HardDrop);
+    duel.update(5000);
+    duel.onMessage("OVER WIN KO 0 0");
+    duel.requestRematch();
+    duel.onMessage("START 8 1");
+    duel.update(kCountdownMs);
+    CHECK(duel.playedMs() == 0);
+    CHECK(duel.game()->stats() == GameStats{});
+    CHECK(duel.opponent().stats == GameStats{});
+    duel.onMessage("LEFT");  // leaves before sending a single SNAP
+    const std::vector<StatRow> rows = resultStatRows(duel);
+    REQUIRE(rows.size() == 8);
+    CHECK(rows[0].theirs == "0.00");
+    CHECK(rows[7].theirs == "-");
+}

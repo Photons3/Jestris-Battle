@@ -371,6 +371,10 @@ void Game::lockPiece(bool hardDropped) {
         award_.backToBack = isDifficult(award_) ? std::max(backToBack_, 0) : 0;
     }
     if (!clearingRows_.empty()) award_.perfectClear = clearEmptiesBoard();
+    ++stats_.pieces;
+    if (award_.lines == 4) ++stats_.tetrises;
+    if (award_.spin != Spin::None) ++stats_.tSpins;
+    stats_.maxCombo = std::max(stats_.maxCombo, combo_);
     if (!full.empty()) emit(GameEventType::LinesCleared, static_cast<int>(full.size()));
     if (!exploded.empty()) emit(GameEventType::BombExploded);
     if (combo_ >= 1) emit(GameEventType::Combo, combo_);
@@ -397,10 +401,21 @@ void Game::finishClear() {
     const int cancelled = std::min(attack, pendingGarbage_);
     pendingGarbage_ -= cancelled;
     outgoingAttack_ += attack - cancelled;
+    stats_.attack += attack;
+    stats_.cancelled += cancelled;
     score_ += awardScore(award_, combo_, level_);
     lines_ += cleared;
     level_ = levelFor(startLevel_, lines_, options_.linesPerLevel);
     if (level_ > levelBefore) emit(GameEventType::LevelUp);
+    for (int y : clearingRows_) {
+        for (int x = 0; x < kBoardWidth; ++x) {
+            const auto cell = board_.at(x, y);
+            if (cell == PieceType::Garbage || cell == PieceType::Bomb) {
+                ++stats_.garbageCleared;
+                break;
+            }
+        }
+    }
     board_.removeRows(clearingRows_);
     clearingRows_.clear();
     state_ = GameState::Playing;

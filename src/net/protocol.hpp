@@ -36,6 +36,7 @@ struct Snapshot {
     Cell hold{};                               // nullopt: nothing held
     bool holdLocked = false;                   // hold already used this turn; drawn dimmed
     std::array<Cell, kSnapshotNext> next{};    // soonest first; nullopt only before the first SNAP arrives
+    GameStats stats{};                         // match totals, for the scoreboard and the result table
     friend bool operator==(const Snapshot&, const Snapshot&) = default;
 };
 

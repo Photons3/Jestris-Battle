@@ -1,6 +1,7 @@
 #include "app/duel.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <string_view>
 #include <variant>
 
@@ -28,6 +29,14 @@ constexpr std::string_view kSeparator = " \xC2\xB7 ";  // a spaced middle dot, U
 
 std::string versus(int mine, int theirs) { return std::to_string(mine) + " : " + std::to_string(theirs); }
 
+std::string formatted(const char* format, double value) {
+    char text[32];
+    std::snprintf(text, sizeof text, format, value);
+    return text;
+}
+
+std::string comboText(int maxCombo) { return maxCombo > 0 ? std::to_string(maxCombo) : "-"; }
+
 }  // namespace
 
 int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch) {
@@ -45,6 +54,32 @@ std::string resultReasonText(const DuelSession& duel) {
     if (duel.kosMine() == duel.kosTheirs())
         text += std::string(kSeparator) + versus(duel.sentMine(), duel.sentTheirs()) + " sent";
     return text;
+}
+
+MatchRates ratesOf(const GameStats& stats, int playedMs) {
+    if (playedMs <= 0) return {};
+    const double seconds = playedMs / 1000.0;
+    return {.pps = stats.pieces / seconds,
+            .apm = stats.attack / (seconds / 60.0),
+            .vs = (stats.attack + stats.garbageCleared) / seconds * 100.0};
+}
+
+std::vector<StatRow> resultStatRows(const DuelSession& duel) {
+    if (duel.phase() != DuelPhase::Result) return {};
+    const GameStats mine = duel.game() ? duel.game()->stats() : GameStats{};
+    const GameStats& theirs = duel.opponent().stats;
+    const MatchRates myRates = ratesOf(mine, duel.playedMs());
+    const MatchRates theirRates = ratesOf(theirs, duel.playedMs());
+    return {
+        {"PPS", formatted("%.2f", myRates.pps), formatted("%.2f", theirRates.pps)},
+        {"APM", formatted("%.1f", myRates.apm), formatted("%.1f", theirRates.apm)},
+        {"VS", formatted("%.1f", myRates.vs), formatted("%.1f", theirRates.vs)},
+        {"Sent", std::to_string(duel.sentMine()), std::to_string(duel.sentTheirs())},
+        {"Cancelled", std::to_string(mine.cancelled), std::to_string(theirs.cancelled)},
+        {"Tetrises", std::to_string(mine.tetrises), std::to_string(theirs.tetrises)},
+        {"T-spins", std::to_string(mine.tSpins), std::to_string(theirs.tSpins)},
+        {"Max combo", comboText(mine.maxCombo), comboText(theirs.maxCombo)},
+    };
 }
 
 void DuelSession::openLobby() {

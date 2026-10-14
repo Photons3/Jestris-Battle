@@ -76,6 +76,8 @@ public:
     int sentMine() const { return sentMine_; }
     int sentTheirs() const { return sentTheirs_; }
     int matchClockMs() const { return matchClockMs_; }  // display only; the server decides time-up
+    // Time spent Playing this match: 0 in the countdown, and fixed once the clock stops or the match ends.
+    int playedMs() const { return kMatchMs - matchClockMs_; }
     int koFlashMs() const { return koFlashMs_; }        // > 0 while "KO!" shows after our top-out
     // While true the local game must not tick or take input: during the KO flash, or once the clock hits 0.
     bool frozen() const;
@@ -122,5 +124,22 @@ private:
 
 // The line under the result title, e.g. "Time up · KO 1 : 1 · 12 : 7 sent". Empty outside Result.
 std::string resultReasonText(const DuelSession& duel);
+
+struct MatchRates {
+    double pps = 0.0;
+    double apm = 0.0;
+    double vs = 0.0;
+};
+// PPS, APM and VS for `stats` over `playedMs` of play. All zero when playedMs <= 0.
+MatchRates ratesOf(const GameStats& stats, int playedMs);
+
+struct StatRow {
+    std::string label;
+    std::string mine;
+    std::string theirs;
+    friend bool operator==(const StatRow&, const StatRow&) = default;
+};
+// The result screen's stats table, ours on the left. Empty outside Result.
+std::vector<StatRow> resultStatRows(const DuelSession& duel);
 
 }  // namespace tetris

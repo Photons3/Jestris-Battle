@@ -243,3 +243,18 @@ TEST_CASE("local match: a real duel session plays the bot") {
     for (int i = 0; i < 2000 && duel.sentTheirs() == 0; ++i) frame(16);
     CHECK(duel.sentTheirs() > 0);  // the bot's garbage reached us
 }
+
+TEST_CASE("local match: the bot's snapshots carry its stats") {
+    LocalMatch match(BotLevel::Hard, 1);
+    startPlaying(match);
+    std::vector<Snapshot> snapshots;
+    for (int i = 0; i < 5; ++i) {
+        match.update(1000);
+        for (const Snapshot& s : allOf<Snapshot>(drain(match))) snapshots.push_back(s);
+    }
+    REQUIRE_FALSE(snapshots.empty());
+    REQUIRE(match.botGame() != nullptr);
+    const Snapshot& last = snapshots.back();
+    CHECK(last.stats == match.botGame()->stats());
+    CHECK(last.stats.pieces > 0);
+}
