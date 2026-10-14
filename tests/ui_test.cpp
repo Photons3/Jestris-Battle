@@ -151,3 +151,14 @@ TEST_CASE("ui: the garbage meter warns from four pending lines") {
     CHECK_FALSE(garbageMeterDanger(kGarbageDangerLines - 1));
     CHECK(garbageMeterDanger(kGarbageDangerLines));
 }
+
+TEST_CASE("ui: the arcade style has square corners and the plate colors") {
+    ImGui::CreateContext();
+    ImGuiStyle& style = ImGui::GetStyle();
+    applyArcadeStyle(style);
+    CHECK(style.WindowRounding == 0.0f);
+    CHECK(style.FrameRounding == 0.0f);
+    CHECK(style.GrabRounding == 0.0f);
+    CHECK(style.FrameBorderSize > 0.0f);
+    ImGui::DestroyContext();
+}

@@ -36,9 +36,14 @@ constexpr std::array<Rgb, kPieceTypeCount> kPieceColors{{
 }};
 
 ImU32 color(Rgb c, float alpha) { return IM_COL32(c.r, c.g, c.b, static_cast<int>(alpha * 255.0f)); }
+ImVec4 colorVec(Rgb c, float alpha = 1.0f) { return ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, alpha); }
 Rgb lighten(Rgb c) { return {c.r + (255 - c.r) * 2 / 5, c.g + (255 - c.g) * 2 / 5, c.b + (255 - c.b) * 2 / 5}; }
 Rgb darken(Rgb c) { return {c.r * 3 / 5, c.g * 3 / 5, c.b * 3 / 5}; }
 constexpr Rgb kGarbageColor{128, 128, 136};
+constexpr Rgb kWellFill{18, 18, 26};
+constexpr Rgb kWellBorder{110, 110, 140};
+constexpr Rgb kLabelColor{150, 160, 190};
+constexpr Rgb kTextColor{235, 235, 245};
 Rgb pieceRgb(PieceType type) {
     if (type == PieceType::Garbage || type == PieceType::Bomb) return kGarbageColor;
     return kPieceColors[static_cast<int>(type)];
@@ -96,9 +101,9 @@ void drawCell(ImDrawList* dl, ImVec2 p, float size, PieceType type, float alpha)
 void drawWell(ImDrawList* dl, const Layout& l) {
     const ImVec2 top = cellTopLeft(l, 0, kVisibleHeight - 1);
     const ImVec2 bottom(top.x + kBoardWidth * l.cell, top.y + kVisibleHeight * l.cell);
-    dl->AddRectFilled(top, bottom, IM_COL32(18, 18, 26, 255));
-    dl->AddRect(ImVec2(top.x - 2, top.y - 2), ImVec2(bottom.x + 2, bottom.y + 2), IM_COL32(110, 110, 140, 255),
-                0.0f, 0, 2.0f);
+    dl->AddRectFilled(top, bottom, color(kWellFill, 1.0f));
+    dl->AddRect(ImVec2(top.x - 2, top.y - 2), ImVec2(bottom.x + 2, bottom.y + 2), color(kWellBorder, 1.0f), 0.0f, 0,
+                2.0f);
 }
 
 void drawBoardCells(ImDrawList* dl, const Layout& l, const Game& game) {
@@ -235,6 +240,7 @@ constexpr Rgb kMyPlateColor{30, 90, 220};
 constexpr Rgb kTheirPlateColor{220, 70, 30};
 constexpr Rgb kKoPipColor{255, 210, 40};
 constexpr Rgb kBackdropColor{6, 10, 28};
+constexpr Rgb kPanelColor{14, 20, 44};  // menu windows, a step lighter than the backdrop
 constexpr Rgb kGridColor{16, 24, 50};
 constexpr Rgb kDangerColor{230, 40, 40};
 
@@ -319,8 +325,8 @@ void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout
                     const ComboLabel& combo) {
     const float cell = layout.mine.cell;
     const float cx = layout.left + (kCenterCol + kCenterColumns * 0.5f) * cell;
-    const ImU32 label = IM_COL32(150, 160, 190, 255);
-    const ImU32 value = IM_COL32(235, 235, 245, 255);
+    const ImU32 label = color(kLabelColor, 1.0f);
+    const ImU32 value = color(kTextColor, 1.0f);
     char text[32];
     float y = wellTop(layout.mine) + cell;
 
@@ -411,6 +417,8 @@ int nameCharFilter(ImGuiInputTextCallbackData* data) {
 void beginMenu(const char* id) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    // Never taller than the screen: a menu that doesn't fit scrolls (wheel or keyboard focus) instead of clipping.
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), vp->WorkSize);
     ImGui::Begin(id, nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings);
@@ -426,10 +434,30 @@ float menuTitle(const Fonts& fonts, const char* title) {
     return width;
 }
 
-float menuButtonWidth() { return ImGui::GetFontSize() * 12.0f; }
+// Press Start 2P is one em per character: wide enough for "Create public room" plus the frame padding.
+float menuButtonWidth() { return ImGui::GetFontSize() * 21.0f; }
 
-bool menuButton(const char* label, float width = menuButtonWidth()) {
-    return ImGui::Button(label, ImVec2(width, 0.0f));
+// A button with the minos' bevel: light top-left, dark bottom-right, swapped while held down. `base` is the
+// button's fill color, and the edges follow the disabled alpha.
+bool bevelButton(const char* label, ImVec2 size, Rgb base = kMyPlateColor) {
+    const bool pressed = ImGui::Button(label, size);
+    const ImVec2 p(std::floor(ImGui::GetItemRectMin().x), std::floor(ImGui::GetItemRectMin().y));
+    const ImVec2 q(std::floor(ImGui::GetItemRectMax().x), std::floor(ImGui::GetItemRectMax().y));
+    const float alpha = ImGui::GetStyle().Alpha;
+    const bool held = ImGui::IsItemActive();
+    const ImU32 topLeft = color(held ? darken(base) : lighten(base), alpha);
+    const ImU32 bottomRight = color(held ? lighten(base) : darken(base), alpha);
+    constexpr float kEdge = 2.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(q.x, p.y + kEdge), topLeft);
+    dl->AddRectFilled(p, ImVec2(p.x + kEdge, q.y), topLeft);
+    dl->AddRectFilled(ImVec2(p.x, q.y - kEdge), q, bottomRight);
+    dl->AddRectFilled(ImVec2(q.x - kEdge, p.y), q, bottomRight);
+    return pressed;
+}
+
+bool menuButton(const char* label, float width = menuButtonWidth(), Rgb base = kMyPlateColor) {
+    return bevelButton(label, ImVec2(width, 0.0f), base);
 }
 
 // The ### keeps one ImGui ID while the label flips, so keyboard focus stays on the item.
@@ -527,7 +555,12 @@ constexpr int kLobbyVisibleRows = 8;  // the list scrolls past this many
 UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     beginMenu("##lobby");
-    const float width = std::max(menuTitle(fonts, "OPEN ROOMS"), menuButtonWidth());
+    // Wide enough for the longest name next to the Level and Join columns.
+    const std::string widest = std::string(kMaxNameLength, 'M') + " Level Join";
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float tableWidth = ImGui::CalcTextSize(widest.c_str()).x + style.CellPadding.x * 6.0f +
+                             style.FramePadding.x * 2.0f + style.ScrollbarSize;
+    const float width = std::max({menuTitle(fonts, "OPEN ROOMS"), menuButtonWidth(), tableWidth});
     if (!duel.error().empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", duel.error().c_str());
     if (duel.rooms().empty()) {
         ImGui::TextUnformatted("No open rooms yet.");
@@ -565,6 +598,42 @@ UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu
 }
 
 }  // namespace
+
+void applyArcadeStyle(ImGuiStyle& style) {
+    style.FontSizeBase = 12.0f;  // Press Start 2P is wide; 12 keeps the menus on a phone held sideways
+    style.WindowRounding = style.ChildRounding = style.PopupRounding = style.FrameRounding = 0.0f;
+    style.ScrollbarRounding = style.GrabRounding = style.TabRounding = style.ImageRounding = 0.0f;
+    style.TreeLinesRounding = style.MenuItemRounding = 0.0f;
+    style.WindowBorderSize = 2.0f;
+    style.FrameBorderSize = 2.0f;
+    // Tighter than chunky arcade padding, so the start screen's dozen rows still fit a phone held sideways.
+    style.WindowPadding = ImVec2(16.0f, 10.0f);
+    style.FramePadding = ImVec2(10.0f, 4.0f);
+    style.ItemSpacing = ImVec2(8.0f, 4.0f);
+
+    ImVec4* c = style.Colors;
+    c[ImGuiCol_WindowBg] = colorVec(kPanelColor);
+    c[ImGuiCol_Border] = colorVec(kWellBorder);
+    c[ImGuiCol_Separator] = colorVec(kWellBorder);
+    c[ImGuiCol_Button] = colorVec(kMyPlateColor);
+    c[ImGuiCol_ButtonHovered] = colorVec(lighten(kMyPlateColor));
+    c[ImGuiCol_ButtonActive] = colorVec(darken(kMyPlateColor));
+    c[ImGuiCol_FrameBg] = colorVec(kWellFill);
+    c[ImGuiCol_FrameBgHovered] = colorVec(lighten(kWellFill));
+    c[ImGuiCol_FrameBgActive] = colorVec(lighten(lighten(kWellFill)));
+    c[ImGuiCol_SliderGrab] = colorVec(kKoPipColor);
+    c[ImGuiCol_SliderGrabActive] = colorVec(lighten(kKoPipColor));
+    c[ImGuiCol_CheckMark] = colorVec(kKoPipColor);
+    c[ImGuiCol_NavCursor] = colorVec(kKoPipColor);
+    c[ImGuiCol_Header] = colorVec(kMyPlateColor, 0.35f);
+    c[ImGuiCol_HeaderHovered] = colorVec(kMyPlateColor, 0.55f);
+    c[ImGuiCol_HeaderActive] = colorVec(kMyPlateColor, 0.75f);
+    c[ImGuiCol_TableHeaderBg] = colorVec(kMyPlateColor, 0.35f);
+    c[ImGuiCol_TableRowBgAlt] = colorVec(kMyPlateColor, 0.12f);
+    c[ImGuiCol_TextSelectedBg] = colorVec(kMyPlateColor, 0.6f);
+    c[ImGuiCol_Text] = colorVec(kTextColor);
+    c[ImGuiCol_TextDisabled] = colorVec(kLabelColor);
+}
 
 void configureImGuiIo(ImGuiIO& io) {
     io.IniFilename = nullptr;
@@ -620,10 +689,14 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
             }
         }
         if (!menu.inviteCode.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.25f, 1.0f));
+            // Gold, so the invite stands out from the plate-blue buttons.
+            ImGui::PushStyleColor(ImGuiCol_Button, colorVec(kKoPipColor));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, colorVec(lighten(kKoPipColor)));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, colorVec(darken(kKoPipColor)));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
             const std::string label = "Join room " + menu.inviteCode;
-            if (menuButton(label.c_str(), width)) command = UiCommand::JoinInvite;
-            ImGui::PopStyleColor();
+            if (menuButton(label.c_str(), width, kKoPipColor)) command = UiCommand::JoinInvite;
+            ImGui::PopStyleColor(4);
         }
         if (menuButton("Quick match", width)) command = UiCommand::QuickMatch;
         if (menuButton("Browse rooms", width)) command = UiCommand::BrowseRooms;
@@ -641,7 +714,7 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
             ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank | ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SameLine();
         ImGui::BeginDisabled(!complete);
-        if ((ImGui::Button("Join room", ImVec2(half, 0.0f)) || entered) && complete) command = UiCommand::JoinRoom;
+        if ((menuButton("Join room", half) || entered) && complete) command = UiCommand::JoinRoom;
         ImGui::EndDisabled();
         if (!menu.error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", menu.error.c_str());
     } else if (menuButton("Quit", width)) {  // a browser tab has nothing to quit
@@ -753,7 +826,10 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
                 static char link[256];  // InputText needs a mutable buffer even when read-only
                 std::snprintf(link, sizeof link, "%s%s", menu.inviteLinkBase.c_str(), duel.roomCode().c_str());
                 ImGui::SetNextItemWidth(menuButtonWidth());
+                // The one field left in the default font: a long URL in the pixel font is unreadable at this size.
+                ImGui::PushFont(fonts.ui, 0.0f);
                 ImGui::InputText("##link", link, sizeof link, ImGuiInputTextFlags_ReadOnly);
+                ImGui::PopFont();
                 if (menu.canCopyLink && menuButton("Copy link")) command = UiCommand::CopyInviteLink;
             }
         }

@@ -10,6 +10,7 @@
 #include "core/game.hpp"
 
 struct ImGuiIO;
+struct ImGuiStyle;
 
 namespace tetris {
 
@@ -60,6 +61,9 @@ bool garbageMeterDanger(int pending);
 
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
+// Square corners, beveled frames, the plate and gold colors, and Press Start 2P at a readable base size. Call
+// after StyleColorsDark and before ScaleAllSizes.
+void applyArcadeStyle(ImGuiStyle& style);
 UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu);
 // Each action with its two key buttons; clicking one sets `controls.capturing`.
 UiCommand drawControlsScreen(const Fonts& fonts, const Keymap& keymap, ControlsMenu& controls);
