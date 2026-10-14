@@ -62,7 +62,7 @@ func (t *fakeTimer) fire() { t.f() }
 
 const testMatchLength = 20 * time.Second
 
-func newTestHub(t *testing.T) (*httptest.Server, *fakeClock) {
+func newConfiguredHub(t *testing.T, configure func(*Hub)) (*httptest.Server, *fakeClock) {
 	t.Helper()
 	hub := NewHub()
 	codes := 0
@@ -72,9 +72,15 @@ func newTestHub(t *testing.T) (*httptest.Server, *fakeClock) {
 	clock := &fakeClock{}
 	hub.afterFunc = clock.afterFunc
 	hub.matchLength = testMatchLength
+	configure(hub)
 	srv := httptest.NewServer(hub)
 	t.Cleanup(srv.Close)
 	return srv, clock
+}
+
+func newTestHub(t *testing.T) (*httptest.Server, *fakeClock) {
+	t.Helper()
+	return newConfiguredHub(t, func(*Hub) {})
 }
 
 func newTestServer(t *testing.T) *httptest.Server {
@@ -414,4 +420,110 @@ func TestHelloInsideARoomIsIgnored(t *testing.T) {
 	c := dial(t, srv)
 	c.send("JOIN AAAB")
 	c.expect("OPP Player")
+}
+
+// watch dials a lobby watcher and consumes its first (empty) list.
+func watch(t *testing.T, srv *httptest.Server) *client {
+	t.Helper()
+	w := dial(t, srv)
+	w.send("LIST")
+	w.expect("ROOMS")
+	return w
+}
+
+func TestPublicRoomsAreListedUntilFull(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("HELLO Sam")
+	a.send("CREATE 3 PUB")
+	a.expect("ROOM AAAA")
+	w.expect("ROOMS AAAA:3:Sam")
+	b.send("JOIN AAAA")
+	w.expect("ROOMS")
+}
+
+func TestPrivateRoomsAreNotListed(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("CREATE 5 PUB")
+	b.expect("ROOM AAAB")
+	w.expect("ROOMS AAAB:5:Player") // the private room sent nothing before this
+}
+
+func TestHostLeavingRemovesTheRoom(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	a := dial(t, srv)
+	a.send("CREATE 2 PUB")
+	a.expect("ROOM AAAA")
+	w.expect("ROOMS AAAA:2:Player")
+	a.conn.Close(websocket.StatusNormalClosure, "")
+	w.expect("ROOMS")
+}
+
+func TestCreatingUnsubscribes(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	w.send("CREATE 1 PUB")
+	w.expect("ROOM AAAA") // no ROOMS: w stopped watching
+	x := dial(t, srv)
+	x.send("CREATE 2 PUB")
+	x.expect("ROOM AAAB")
+	y := dial(t, srv)
+	y.send("JOIN AAAA")
+	w.expect("OPP Player") // still nothing in between
+}
+
+func TestUnlistStopsUpdates(t *testing.T) {
+	srv := newTestServer(t)
+	w := watch(t, srv)
+	w.send("UNLIST")
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("CREATE 1 PUB")
+	a.expect("ROOM AAAA")
+	b.send("CREATE 1 PUB")
+	b.expect("ROOM AAAB")
+	w.send("LIST")
+	w.expect("ROOMS AAAA:1:Player AAAB:1:Player") // a push would have arrived first with one room
+}
+
+func TestListIsOldestFirstAndCapped(t *testing.T) {
+	srv := newTestServer(t)
+	for i := 0; i < maxListedRooms+1; i++ {
+		c := dial(t, srv)
+		c.send("CREATE 1 PUB")
+		c.expect(fmt.Sprintf("ROOM AAA%c", 'A'+i))
+	}
+	w := dial(t, srv)
+	w.send("LIST")
+	var want strings.Builder
+	want.WriteString("ROOMS")
+	for i := 0; i < maxListedRooms; i++ {
+		fmt.Fprintf(&want, " AAA%c:1:Player", 'A'+i)
+	}
+	w.expect(want.String())
+}
+
+func TestBadRoomOptionsAndFullServer(t *testing.T) {
+	srv, _ := newConfiguredHub(t, func(h *Hub) { h.maxRooms = 1 })
+	a, b := dial(t, srv), dial(t, srv)
+	a.send("CREATE 3 OPEN")
+	a.expect("ERR bad room options")
+	a.send("CREATE 3")
+	a.expect("ROOM AAAA")
+	b.send("CREATE 3 PUB")
+	b.expect("ERR server is full")
+}
+
+func TestLobbyVerbsInsideARoomAreNotRelayed(t *testing.T) {
+	a, b := pair(t, newTestServer(t))
+	a.send("LIST")
+	a.send("UNLIST")
+	a.send("ROOMS AAAA:1:Sam")
+	a.send("ATK 1")
+	b.expect("ATK 1")
 }

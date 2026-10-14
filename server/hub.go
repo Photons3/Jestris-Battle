@@ -1,11 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,14 +31,20 @@ const (
 	defaultMatchGrace  = 500 * time.Millisecond
 	maxNameLength      = 12       // kMaxNameLength in src/net/protocol.hpp
 	defaultName        = "Player" // for clients that send no valid HELLO
+	maxListedRooms     = 20       // kMaxListedRooms in src/net/protocol.hpp
+	defaultMaxRooms    = 500
 )
 
 // Hub pairs browsers into two-player rooms, relays game messages between them and referees each match.
-// It handles HELLO, CREATE, JOIN, REMATCH, ATK and DEAD itself; other game messages go to the opponent
-// unchanged, and the verbs only the server sends (ROOM, START, LEFT, ERR, KO, OVER, OPP) are dropped.
+// It handles HELLO, CREATE, JOIN, LIST, UNLIST, QUICK, REMATCH, ATK and DEAD itself; other game messages go
+// to the opponent unchanged, and the verbs only the server sends (ROOM, START, LEFT, ERR, KO, OVER, OPP, ROOMS)
+// are dropped. Lobby watchers get the full ROOMS list whenever the set of open public rooms changes.
 type Hub struct {
 	mu          sync.Mutex
 	rooms       map[string]*room
+	watchers    map[*player]bool // players outside a room who asked for the lobby list
+	nextSeq     uint64           // orders rooms oldest first
+	maxRooms    int
 	newCode     func() string
 	newSeed     func() uint32
 	afterFunc   func(d time.Duration, f func()) stopper
@@ -53,6 +61,9 @@ type stopper interface{ Stop() bool }
 type room struct {
 	code    string
 	level   int
+	public  bool   // listed in the lobby while it has a free seat
+	host    string // the creator's name when the room opened
+	seq     uint64 // creation order, for the oldest-first list
 	players [2]*player
 	rematch [2]bool
 	// The current match, reset by every START.
@@ -78,6 +89,8 @@ type outgoing struct {
 func NewHub() *Hub {
 	return &Hub{
 		rooms:       map[string]*room{},
+		watchers:    map[*player]bool{},
+		maxRooms:    defaultMaxRooms,
 		newCode:     randomCode,
 		newSeed:     rand.Uint32,
 		afterFunc:   func(d time.Duration, f func()) stopper { return time.AfterFunc(d, f) },
@@ -154,12 +167,23 @@ func (h *Hub) route(p *player, text string) []outgoing {
 			return h.create(p, arg)
 		case "JOIN":
 			return h.join(p, arg)
+		case "LIST":
+			if arg != "" {
+				return nil
+			}
+			h.watchers[p] = true
+			return []outgoing{{p, h.roomsMessage()}}
+		case "UNLIST":
+			delete(h.watchers, p)
+			return nil
 		}
 		return nil // relay traffic that raced a LEFT; nothing to do
 	}
 	switch verb {
 	case "CREATE", "JOIN":
 		return []outgoing{{p, "ERR already in a room"}}
+	case "LIST", "UNLIST":
+		return nil
 	case "REMATCH":
 		return h.rematch(p)
 	case "ATK":
@@ -169,7 +193,7 @@ func (h *Hub) route(p *player, text string) []outgoing {
 			return nil
 		}
 		return p.room.knockOut(p)
-	case "ROOM", "START", "LEFT", "ERR", "KO", "OVER", "OPP":
+	case "ROOM", "START", "LEFT", "ERR", "KO", "OVER", "OPP", "ROOMS":
 		return nil // only the server sends these; never relay a forged one
 	}
 	if other := p.room.opponent(p); other != nil {
@@ -179,22 +203,48 @@ func (h *Hub) route(p *player, text string) []outgoing {
 }
 
 func (h *Hub) create(p *player, arg string) []outgoing {
-	level, err := strconv.Atoi(arg)
+	levelText, vis, hasVis := strings.Cut(arg, " ")
+	level, err := strconv.Atoi(levelText)
 	if err != nil || level < minStartLevel || level > maxStartLevel {
 		return []outgoing{{p, "ERR bad start level"}}
 	}
+	public := false
+	if hasVis {
+		switch vis {
+		case "PUB":
+			public = true
+		case "PRIV":
+		default:
+			return []outgoing{{p, "ERR bad room options"}}
+		}
+	}
+	return h.open(p, level, public)
+}
+
+// open puts p alone in a new room and, if it is public, tells the lobby.
+func (h *Hub) open(p *player, level int, public bool) []outgoing {
+	if len(h.rooms) >= h.maxRooms {
+		return []outgoing{{p, "ERR server is full"}}
+	}
+	delete(h.watchers, p)
 	code := h.newCode()
 	for h.rooms[code] != nil {
 		code = h.newCode()
 	}
-	r := &room{code: code, level: level}
+	h.nextSeq++
+	r := &room{code: code, level: level, public: public, host: p.name, seq: h.nextSeq}
 	r.players[0] = p
 	p.room = r
 	h.rooms[code] = r
-	return []outgoing{{p, "ROOM " + code}}
+	out := []outgoing{{p, "ROOM " + code}}
+	if public {
+		out = append(out, h.lobbyUpdate()...)
+	}
+	return out
 }
 
 func (h *Hub) join(p *player, code string) []outgoing {
+	delete(h.watchers, p) // a refused join unsubscribes too; the client asks for the list again
 	r := h.rooms[code]
 	if r == nil {
 		return []outgoing{{p, "ERR unknown room"}}
@@ -205,7 +255,48 @@ func (h *Hub) join(p *player, code string) []outgoing {
 	r.players[1] = p
 	p.room = r
 	out := []outgoing{{r.players[0], "OPP " + p.name}, {p, "OPP " + r.players[0].name}}
-	return append(out, h.startMatch(r)...)
+	out = append(out, h.startMatch(r)...)
+	if r.public {
+		out = append(out, h.lobbyUpdate()...)
+	}
+	return out
+}
+
+// openPublic lists the rooms a lobby can join, oldest first.
+func (h *Hub) openPublic() []*room {
+	var open []*room
+	for _, r := range h.rooms {
+		if r.public && r.players[1] == nil {
+			open = append(open, r)
+		}
+	}
+	slices.SortFunc(open, func(a, b *room) int { return cmp.Compare(a.seq, b.seq) })
+	return open
+}
+
+func (h *Hub) roomsMessage() string {
+	var b strings.Builder
+	b.WriteString("ROOMS")
+	for i, r := range h.openPublic() {
+		if i == maxListedRooms {
+			break
+		}
+		fmt.Fprintf(&b, " %s:%d:%s", r.code, r.level, r.host)
+	}
+	return b.String()
+}
+
+// lobbyUpdate sends the current list to every watcher.
+func (h *Hub) lobbyUpdate() []outgoing {
+	if len(h.watchers) == 0 {
+		return nil
+	}
+	msg := h.roomsMessage()
+	out := make([]outgoing, 0, len(h.watchers))
+	for w := range h.watchers {
+		out = append(out, outgoing{w, msg})
+	}
+	return out
 }
 
 // validName mirrors isValidName in src/net/protocol.cpp.
@@ -237,16 +328,21 @@ func (h *Hub) rematch(p *player) []outgoing {
 func (h *Hub) leave(p *player) {
 	h.mu.Lock()
 	var out []outgoing
+	delete(h.watchers, p)
 	if r := p.room; r != nil {
 		if r.timer != nil {
 			r.timer.Stop()
 		}
+		wasListed := r.public && r.players[1] == nil
 		delete(h.rooms, r.code)
 		if other := r.opponent(p); other != nil {
 			other.room = nil
 			out = append(out, outgoing{other, "LEFT"})
 		}
 		p.room = nil
+		if wasListed {
+			out = append(out, h.lobbyUpdate()...)
+		}
 	}
 	h.mu.Unlock()
 	h.deliver(out)
