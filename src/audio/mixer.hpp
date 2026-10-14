@@ -21,6 +21,8 @@ public:
     void mix(float* out, int frames);  // overwrites `out` with the next `frames` samples
     void setMuted(bool muted);         // muting also stops the effects that are playing; the music keeps its place
     bool muted() const { return muted_; }
+    void setSoundVolume(float volume);  // 0 to 1, scales the effects; clamped
+    void setMusicVolume(float volume);  // 0 to 1, scales the music; clamped
     int activeVoices() const { return static_cast<int>(voices_.size()); }
 
     void startMusic() { music_.start(); }
@@ -40,6 +42,8 @@ private:
     std::vector<std::vector<float>> cache_;  // indexed by Sound
     std::vector<Voice> voices_;              // oldest first
     bool muted_ = false;
+    float soundVolume_ = 1.0f;
+    float musicVolume_ = 1.0f;
     Music music_;
     bool musicMuted_ = false;
 };

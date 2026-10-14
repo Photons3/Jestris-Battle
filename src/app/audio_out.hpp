@@ -20,6 +20,8 @@ public:
 
     void play(Sound sound);
     void setMuted(bool muted);
+    void setSoundVolume(float volume);
+    void setMusicVolume(float volume);
     void startMusic();
     void stopMusic();
     void setMusicPaused(bool paused);

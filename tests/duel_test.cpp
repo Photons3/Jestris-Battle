@@ -157,8 +157,7 @@ TEST_CASE("duel: topping out sends a final snapshot and DEAD, resets the board a
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    duel.game()->receiveGarbage(kBoardHeight - 1);
-    duel.game()->apply(Action::HardDrop);
+    topOutWithGarbage(*duel.game());
     duel.update(0);
     REQUIRE(wire.sent.size() == 2);
     CHECK(wire.sent[0].starts_with("SNAP "));
@@ -331,8 +330,7 @@ TEST_CASE("duel: the KO flash freezes the game for 1000 ms while the clock keeps
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     CHECK_FALSE(duel.frozen());
-    duel.game()->receiveGarbage(kBoardHeight - 1);
-    duel.game()->apply(Action::HardDrop);
+    topOutWithGarbage(*duel.game());
     duel.update(0);
     CHECK(duel.frozen());
     duel.update(kKoFlashMs - 1);
@@ -347,8 +345,7 @@ TEST_CASE("duel: garbage arriving during the KO flash is queued on the fresh boa
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    duel.game()->receiveGarbage(kBoardHeight - 1);
-    duel.game()->apply(Action::HardDrop);
+    topOutWithGarbage(*duel.game());
     duel.update(0);
     REQUIRE(duel.frozen());
     duel.onMessage("ATK 3");
@@ -516,11 +513,12 @@ TEST_CASE("duel events: our top-out survives the KO board reset") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    duel.game()->receiveGarbage(kBoardHeight - 1);
-    duel.game()->apply(Action::HardDrop);
+    topOutWithGarbage(*duel.game());
     duel.update(0);
-    CHECK(duel.game()->takeEvents() ==
-          std::vector<GameEvent>{{GameEventType::HardDropped}, {GameEventType::ToppedOut}});
+    const std::vector<GameEvent> events = duel.game()->takeEvents();  // the last lock may also raise garbage
+    REQUIRE_FALSE(events.empty());
+    CHECK(events.front().type == GameEventType::HardDropped);
+    CHECK(events.back().type == GameEventType::ToppedOut);
 }
 
 TEST_CASE("duel: frames replay a long stall only while a match runs") {

@@ -72,8 +72,7 @@ TEST_CASE("cues: solo music plays, pauses with the game and stops at game over")
     game.pause();
     CHECK(soloMusic(game) == MusicCue{MusicMode::Paused, soloBpm(5)});
     game.resume();
-    game.receiveGarbage(kBoardHeight - 1);
-    game.apply(Action::HardDrop);
+    topOutWithGarbage(game);
     REQUIRE(game.state() == GameState::GameOver);
     CHECK(soloMusic(game).mode == MusicMode::Stopped);
 }

@@ -1,5 +1,6 @@
 #include "app/settings.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
@@ -71,6 +72,8 @@ std::string serializeSettings(const Settings& settings) {
     std::string out = "version=" + std::string(kVersion) + "\n";
     out += settings.muted ? "sound=off\n" : "sound=on\n";
     out += settings.musicOff ? "music=off\n" : "music=on\n";
+    out += "soundvol=" + std::to_string(settings.soundVolume) + "\n";
+    out += "musicvol=" + std::to_string(settings.musicVolume) + "\n";
     if (isValidName(settings.playerName)) out += "name=" + settings.playerName + "\n";
     out += settings.publicRooms ? "public=on\n" : "public=off\n";
     out += "das=" + std::to_string(settings.handling.dasMs) + "\n";
@@ -112,6 +115,10 @@ Settings parseSettings(std::string_view text) {
             settings.muted = value == "off";
         } else if (name == "music") {
             settings.musicOff = value == "off";
+        } else if (name == "soundvol") {
+            settings.soundVolume = std::clamp(parseInt(value).value_or(kMaxVolume), 0, kMaxVolume);
+        } else if (name == "musicvol") {
+            settings.musicVolume = std::clamp(parseInt(value).value_or(kMaxVolume), 0, kMaxVolume);
         } else if (name == "name") {
             if (isValidName(value)) settings.playerName = std::string(value);
         } else if (name == "public") {

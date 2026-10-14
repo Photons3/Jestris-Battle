@@ -267,6 +267,45 @@ TEST_CASE("ui: the handling sliders change from the keyboard and ask to be saved
     ImGui::DestroyContext();
 }
 
+TEST_CASE("ui: the pause menu's sound slider changes from the keyboard and asks to be saved") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    Game game(1, 1);
+    game.pause();
+    StartMenu menu;
+    auto frame = [&] {
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(800.0f, 900.0f);
+        io.DeltaTime = 1.0f / 60.0f;
+        ImGui::NewFrame();
+        const UiCommand command = drawOverlay(game, Fonts{}, menu);
+        ImGui::EndFrame();
+        return command;
+    };
+    frame();
+    frame();
+    auto press = [&](ImGuiKey key) {
+        ImGui::GetIO().AddKeyEvent(key, true);
+        UiCommand command = frame();
+        ImGui::GetIO().AddKeyEvent(key, false);
+        if (command == UiCommand::None) command = frame();
+        return command;
+    };
+    // Resume, Restart and Sound: Off sit above the sound slider. Space starts editing it, Left lowers it, and
+    // Space again finishes the edit.
+    for (int i = 0; i < 3; ++i) press(ImGuiKey_DownArrow);
+    std::vector<UiCommand> commands;
+    for (ImGuiKey key : {ImGuiKey_Space, ImGuiKey_LeftArrow, ImGuiKey_Space}) commands.push_back(press(key));
+    for (int i = 0; i < 3; ++i) commands.push_back(frame());
+    CHECK(menu.soundVolume < kMaxVolume);
+    CHECK(menu.musicVolume == kMaxVolume);
+    CHECK(std::find(commands.begin(), commands.end(), UiCommand::ChangeVolume) != commands.end());
+    CHECK(std::find(commands.begin(), commands.end(), UiCommand::SaveVolume) != commands.end());
+    CHECK_FALSE(menu.muted);
+    ImGui::DestroyContext();
+}
+
 TEST_CASE("ui: solo clocks and scores read naturally") {
     CHECK(formatClock(0) == "0:00.00");
     CHECK(formatClock(42180) == "0:42.18");
@@ -297,5 +336,24 @@ TEST_CASE("ui: the duel result draws the stats table") {
         CHECK(drawDuel(duel, Fonts{font, font}, ComboLabel{}, ClearCallout{}, AttackTrails{}, menu) == UiCommand::None);
         ImGui::EndFrame();
     }
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the garbage meter draws travelling lines above ready ones") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 900.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    ImGui::NewFrame();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const int before = dl->VtxBuffer.Size;
+    drawGarbageMeter(dl, 10.0f, 800.0f, 30.0f, 5, 2);
+    const int mixed = dl->VtxBuffer.Size - before;
+    drawGarbageMeter(dl, 10.0f, 800.0f, 30.0f, 0, 0);
+    CHECK(dl->VtxBuffer.Size - before == mixed);  // nothing pending draws nothing
+    CHECK(mixed > 0);
+    ImGui::EndFrame();
     ImGui::DestroyContext();
 }

@@ -211,16 +211,18 @@ void drawBoardCells(ImDrawList* dl, const Layout& l, const Game& game) {
     }
 }
 
+// The landing preview: an outline in the piece's color.
+void drawGhostCell(ImDrawList* dl, const Layout& l, int x, int y, PieceType type) {
+    const ImVec2 p = cellTopLeft(l, x, y);
+    dl->AddRect(ImVec2(p.x + 1, p.y + 1), ImVec2(p.x + l.cell - 1, p.y + l.cell - 1), color(pieceRgb(type), 0.6f),
+                0.0f, 0, 2.0f);
+}
+
 void drawActivePiece(ImDrawList* dl, const Layout& l, const Game& game) {
     Piece ghost = game.active();
     ghost.pos.y -= game.ghostDistance();
-    const Rgb rgb = pieceRgb(ghost.type);
-    for (Point c : ghost.cells()) {
-        if (c.y >= kDrawnRows) continue;
-        const ImVec2 p = cellTopLeft(l, c.x, c.y);
-        dl->AddRect(ImVec2(p.x + 1, p.y + 1), ImVec2(p.x + l.cell - 1, p.y + l.cell - 1), color(rgb, 0.6f), 0.0f, 0,
-                    2.0f);
-    }
+    for (Point c : ghost.cells())
+        if (c.y < kDrawnRows) drawGhostCell(dl, l, c.x, c.y, ghost.type);
     for (Point c : game.active().cells())
         if (c.y < kDrawnRows) drawCell(dl, cellTopLeft(l, c.x, c.y), l.cell, game.active().type, rowAlpha(c.y));
 }
@@ -416,23 +418,6 @@ void drawGridBackground(float cell, ImVec2 anchor) {
         bg->AddRectFilled(ImVec2(vp->Pos.x, y), ImVec2(end.x, y + 1.0f), line);
 }
 
-// Garbage waiting to rise, as a stack of beveled garbage cells, one per line, with its left edge at `x`. From
-// kGarbageDangerLines it turns red and blinks every 250 ms.
-void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending) {
-    if (pending <= 0) return;
-    const bool danger = garbageMeterDanger(pending);
-    const Rgb base = danger ? kDangerColor : kGarbageColor;
-    const float alpha = danger && static_cast<int>(ImGui::GetTime() * 4.0) % 2 != 0 ? 0.45f : 1.0f;
-    const float width = std::floor(cell * 0.5f);
-    const float bevel = bevelFor(cell);
-    x = std::floor(x);
-    for (int i = 0; i < std::min(pending, kVisibleHeight); ++i) {
-        const float lower = std::floor(bottom - static_cast<float>(i) * cell);
-        drawBevelRect(dl, ImVec2(x, lower - cell), ImVec2(x + width, lower), bevel, base, lighten(base), darken(base),
-                      alpha);
-    }
-}
-
 // A nameplate built like one wide mino: flat player color, the cells' bevel, the name with a hard drop shadow,
 // and a row of KO slots on the right that fill with gold mini-blocks as KOs land.
 void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float top, const char* name, Rgb base,
@@ -533,7 +518,10 @@ void drawOpponent(ImDrawList* dl, const DuelLayout& layout, const Snapshot& snap
     drawWell(dl, l);
     for (int y = 0; y < kVisibleHeight; ++y)
         for (int x = 0; x < kBoardWidth; ++x)
-            if (const Cell c = snapshot.cells[y * kBoardWidth + x]) drawCell(dl, cellTopLeft(l, x, y), l.cell, *c, 1.0f);
+            if (const Cell c = snapshot.cells[y * kBoardWidth + x])
+                drawCell(dl, cellTopLeft(l, x, y), l.cell, *c, 1.0f);
+            else if (const Cell g = snapshot.ghost[y * kBoardWidth + x])
+                drawGhostCell(dl, l, x, y, *g);
 
     const float statsX = layout.left + kStatsCol * l.cell;
     const float textSize = l.cell * 0.6f;
@@ -722,6 +710,28 @@ bool musicButton(bool off, float width = menuButtonWidth()) {
     return menuButton(off ? "Music: Off###music" : "Music: On###music", width);
 }
 
+// A volume slider in percent. Dragging returns ChangeVolume so the change is heard at once; letting go
+// returns SaveVolume.
+UiCommand volumeSlider(const char* id, const char* format, int& volume, float width) {
+    ImGui::SetNextItemWidth(width);
+    const bool changed = ImGui::SliderInt(id, &volume, 0, kMaxVolume, format, ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit()) return UiCommand::SaveVolume;
+    return changed ? UiCommand::ChangeVolume : UiCommand::None;
+}
+
+// The Sound and Music buttons, each with its volume slider under it.
+UiCommand audioControls(StartMenu& menu, float width = menuButtonWidth()) {
+    UiCommand command = UiCommand::None;
+    auto take = [&command](UiCommand c) {
+        if (c != UiCommand::None) command = c;
+    };
+    if (soundButton(menu.muted, width)) command = UiCommand::ToggleSound;
+    take(volumeSlider("##soundvol", "Sound volume: %d%%", menu.soundVolume, width));
+    if (musicButton(menu.musicOff, width)) command = UiCommand::ToggleMusic;
+    take(volumeSlider("##musicvol", "Music volume: %d%%", menu.musicVolume, width));
+    return command;
+}
+
 void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
                     const AttackTrails& trails, const StartMenu& menu) {
     const Game& game = *duel.game();
@@ -733,10 +743,11 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     ImDrawList* dl = beginBoardWindow();
     drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, duel.kosMine());
     drawPlayfield(dl, layout.mine, game, fonts, combo, callout, false);
-    drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage());
+    drawGarbageMeter(dl, layout.left + kMyMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage(),
+                     game.readyGarbage());
     drawScoreboard(dl, fonts, layout, duel, combo);
     drawGarbageMeter(dl, layout.left + kTheirMeterCol * cell, wellBottom(layout.theirs), cell,
-                     duel.opponent().pending);
+                     duel.opponent().pending, duel.opponent().ready);
     drawNameBar(dl, fonts, layout.theirs, layout.top, theirs, kTheirPlateColor, duel.kosTheirs());
     drawOpponent(dl, layout, duel.opponent(), fonts);
     drawAttackTrails(dl, layout, duel, trails);
@@ -923,6 +934,24 @@ bool showGoBanner(int matchClockMs) { return matchClockMs > kMatchMs - kGoBanner
 
 bool garbageMeterDanger(int pending) { return pending >= kGarbageDangerLines; }
 
+void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending, int ready) {
+    if (pending <= 0) return;
+    ready = std::clamp(ready, 0, pending);
+    const bool danger = garbageMeterDanger(pending);
+    const Rgb base = danger ? kDangerColor : kGarbageColor;
+    const float readyAlpha = danger && static_cast<int>(ImGui::GetTime() * 4.0) % 2 != 0 ? 0.45f : 1.0f;
+    const float width = std::floor(cell * 0.5f);
+    const float bevel = bevelFor(cell);
+    x = std::floor(x);
+    for (int i = 0; i < std::min(pending, kVisibleHeight); ++i) {
+        const float lower = std::floor(bottom - static_cast<float>(i) * cell);
+        const float alpha = i < ready ? readyAlpha : kTravellingGarbageAlpha;
+        drawBevelRect(dl, ImVec2(x, lower - cell), ImVec2(x + width, lower), bevel, base, lighten(base), darken(base),
+                      alpha);
+    }
+}
+
+
 void ComboLabel::update(int combo, int ms) {
     if (combo >= 1) {
         shown = combo;
@@ -1013,8 +1042,7 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     }
     if (menuButton("vs Bot", width)) command = UiCommand::PlayBot;
     ImGui::Spacing();
-    if (soundButton(menu.muted, width)) command = UiCommand::ToggleSound;
-    if (musicButton(menu.musicOff, width)) command = UiCommand::ToggleMusic;
+    if (const UiCommand audio = audioControls(menu, width); audio != UiCommand::None) command = audio;
     if (menuButton("Controls", width)) command = UiCommand::OpenControls;
     if (menu.duelsEnabled) {
         ImGui::Spacing();
@@ -1139,15 +1167,14 @@ void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo, con
     ImGui::End();
 }
 
-UiCommand drawOverlay(const Game& game, const Fonts& fonts, bool muted, bool musicOff) {
+UiCommand drawOverlay(const Game& game, const Fonts& fonts, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     if (game.state() == GameState::Paused) {
         beginMenu("##paused");
         menuTitle(fonts, "PAUSED");
         if (menuButton("Resume")) command = UiCommand::Resume;
         if (menuButton("Restart")) command = UiCommand::Restart;
-        if (soundButton(muted)) command = UiCommand::ToggleSound;
-        if (musicButton(musicOff)) command = UiCommand::ToggleMusic;
+        if (const UiCommand audio = audioControls(menu); audio != UiCommand::None) command = audio;
         if (menuButton("Controls")) command = UiCommand::OpenControls;
         if (menuButton("Quit to menu")) command = UiCommand::QuitToMenu;
         ImGui::End();
@@ -1213,15 +1240,14 @@ void drawSoloStatus(const SoloSession& solo, const Fonts& fonts) {
     ImGui::End();
 }
 
-UiCommand drawSoloOverlay(const SoloSession& solo, const PersonalBests& bests, bool newBest, const Fonts& fonts,
-                          bool muted, bool musicOff) {
+UiCommand drawSoloOverlay(const SoloSession& solo, bool newBest, const Fonts& fonts, StartMenu& menu) {
     const SoloPhase phase = solo.phase();
     if (phase == SoloPhase::Countdown) {
         drawCountdown(solo.countdownMs(), fonts);
         return UiCommand::None;
     }
     if (!isTimed(solo.mode()) || (phase != SoloPhase::Finished && phase != SoloPhase::ToppedOut))
-        return drawOverlay(solo.game(), fonts, muted, musicOff);
+        return drawOverlay(solo.game(), fonts, menu);
 
     const bool blitz = solo.mode() == SoloMode::Blitz;
     auto format = [blitz](int value) { return blitz ? formatScore(value) : formatClock(value); };
@@ -1237,7 +1263,7 @@ UiCommand drawSoloOverlay(const SoloSession& solo, const PersonalBests& bests, b
     if (phase == SoloPhase::ToppedOut) ImGui::TextDisabled("not recorded");
     if (newBest)
         ImGui::TextColored(colorVec(kKoPipColor), "NEW PB!");
-    else if (const std::optional<int> best = bests.best(solo.mode()))
+    else if (const std::optional<int> best = menu.bests.best(solo.mode()))
         ImGui::TextDisabled("PB %s", format(*best).c_str());
     ImGui::Spacing();
     if (menuButton("Retry", width) || ImGui::IsKeyPressed(ImGuiKey_R, false)) command = UiCommand::Restart;

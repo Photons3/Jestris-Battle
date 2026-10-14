@@ -34,6 +34,14 @@ void AudioOut::setMuted(bool muted) {
     locked([muted](Mixer& m) { m.setMuted(muted); });
 }
 
+void AudioOut::setSoundVolume(float volume) {
+    locked([volume](Mixer& m) { m.setSoundVolume(volume); });
+}
+
+void AudioOut::setMusicVolume(float volume) {
+    locked([volume](Mixer& m) { m.setMusicVolume(volume); });
+}
+
 void AudioOut::startMusic() {
     locked([](Mixer& m) { m.startMusic(); });
 }

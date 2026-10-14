@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <random>
 #include <utility>
@@ -50,6 +51,8 @@ struct GameEvent {
 inline constexpr int kLockDelayMs = 500;
 inline constexpr int kMaxLockResets = 15;
 inline constexpr int kClearDelayMs = 300;
+inline constexpr int kGarbageTravelMs = 333;  // incoming garbage waits this long before it can rise
+inline constexpr int kMaxGarbagePerLock = 8;  // most lines that rise after one lock
 inline constexpr int kDefaultSoftDropFactor = 20;  // soft drop falls this many times faster than gravity
 inline constexpr int kSoftDropInstant = 0;         // a soft-drop factor that drops straight to the floor
 inline constexpr int kGravityLevelCap = 20;
@@ -107,9 +110,11 @@ class Game {
 public:
     Game(std::uint32_t seed, int startLevel, Board board = {}, GameOptions options = {});
 
-    // Queues garbage from the opponent. It rises when a piece next locks without clearing lines.
-    void receiveGarbage(int lines);
-    int pendingGarbage() const { return pendingGarbage_; }
+    // Queues garbage from the opponent. It travels for `travelMs` of play, then rises when a piece next locks
+    // without clearing lines, at most kMaxGarbagePerLock lines per lock, oldest first.
+    void receiveGarbage(int lines, int travelMs = kGarbageTravelMs);
+    int pendingGarbage() const;  // all queued lines, travelling and ready
+    int readyGarbage() const;    // queued lines that can rise now
     // Garbage this game has sent since the last call; resets the count to zero.
     int takeOutgoingAttack();
     // Events since the last call, oldest first; empties the list. resetBoard() leaves it alone.
@@ -184,7 +189,11 @@ private:
     int level_;
     int lines_ = 0;
     int score_ = 0;
-    int pendingGarbage_ = 0;
+    struct GarbageBatch {
+        int lines;
+        int msLeft;  // 0: ready to rise
+    };
+    std::deque<GarbageBatch> incoming_;  // oldest first
     int outgoingAttack_ = 0;
     int combo_ = -1;
     int backToBack_ = -1;

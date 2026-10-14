@@ -21,7 +21,7 @@ commands with `EMSDK_PYTHON=/opt/homebrew/bin/python3.14` (or any Python >= 3.10
 ## Controls
 
 Arrows move and soft-drop, Up or X rotates clockwise, Z or Left Ctrl rotates counter-clockwise, Space hard-drops,
-Left Shift or C holds, Esc or P pauses, M mutes the sound, and Ctrl+Cmd+F or Alt+Enter toggles fullscreen. The Music item on the start and pause menus turns the background music off or on.
+Left Shift or C holds, Esc or P pauses, M mutes the sound, and Ctrl+Cmd+F or Alt+Enter toggles fullscreen. The Music item on the start and pause menus turns the background music off or on, and the Sound volume and Music volume sliders under them set how loud each one plays.
 
 Controls on the start and pause menus changes the game keys: each action has two key slots.
 Click one (or press Enter on it) and press the new key; Esc cancels and Backspace clears the
@@ -34,7 +34,7 @@ and SDF (soft-drop speed as a multiple of gravity, default 20x; Instant drops th
 without locking it). Drag a slider, or focus it with the arrow keys and press Space, then Left/Right,
 then Space again. Reset to defaults resets the handling along with the keys.
 
-The keys, handling, sound and music settings and your solo personal bests are saved (localStorage
+The keys, handling, sound and music settings (volumes included) and your solo personal bests are saved (localStorage
 in the browser, the SDL preferences folder on desktop).
 
 ## Solo modes
@@ -119,6 +119,8 @@ in a room.
    and duels, and a callout under HOLD names them. Garbage waiting for you is cancelled first:
    each line you would send removes one queued line, and only the rest goes to the opponent.
    Queued garbage rises when a piece locks without clearing anything.
+   Incoming garbage travels for a third of a second before it can rise (the meter shows it dimmed),
+   and at most 8 lines rise per lock.
    Every garbage row has one bomb. A bomb lands on a lone bomb right above it 90% of the time,
    but never stacks more than two high. Land a piece directly on the top bomb to blow up the
    bombs touching it below. Exploded rows score and send like cleared lines, but only full

@@ -130,16 +130,29 @@ Game::Game(std::uint32_t seed, int startLevel, Board board, GameOptions options)
     spawn(bag_.next());
 }
 
-void Game::receiveGarbage(int lines) {
-    assert(lines >= 0);
-    pendingGarbage_ += lines;
+void Game::receiveGarbage(int lines, int travelMs) {
+    assert(lines >= 0 && travelMs >= 0);
+    if (lines > 0) incoming_.push_back({lines, travelMs});
+}
+
+int Game::pendingGarbage() const {
+    int total = 0;
+    for (const GarbageBatch& batch : incoming_) total += batch.lines;
+    return total;
+}
+
+int Game::readyGarbage() const {
+    int total = 0;
+    for (const GarbageBatch& batch : incoming_)
+        if (batch.msLeft == 0) total += batch.lines;
+    return total;
 }
 
 int Game::takeOutgoingAttack() { return std::exchange(outgoingAttack_, 0); }
 
 void Game::resetBoard() {
     board_ = Board{};
-    pendingGarbage_ = 0;
+    incoming_.clear();
     hold_.reset();
     canHold_ = true;
     combo_ = -1;
@@ -151,13 +164,21 @@ void Game::resetBoard() {
 }
 
 bool Game::applyGarbage() {
-    if (pendingGarbage_ == 0) return true;
+    int rising = 0;
+    while (!incoming_.empty() && incoming_.front().msLeft == 0 && rising < kMaxGarbagePerLock) {
+        GarbageBatch& batch = incoming_.front();
+        const int take = std::min(batch.lines, kMaxGarbagePerLock - rising);
+        rising += take;
+        batch.lines -= take;
+        if (batch.lines == 0) incoming_.pop_front();
+    }
+    if (rising == 0) return true;
     int aboveX = -1;
     for (int x = 0; x < kBoardWidth; ++x)
         if (board_.at(x, 0) == PieceType::Bomb) aboveX = x;
     int aboveRun = 0;
     while (aboveX >= 0 && aboveRun < kBoardHeight && board_.at(aboveX, aboveRun) == PieceType::Bomb) ++aboveRun;
-    const std::vector<int> columns = bombColumnsFor(std::exchange(pendingGarbage_, 0), aboveX, aboveRun, garbageRng_);
+    const std::vector<int> columns = bombColumnsFor(rising, aboveX, aboveRun, garbageRng_);
     if (!board_.pushGarbage(columns)) return false;
     emit(GameEventType::GarbageRose);
     return true;
@@ -232,6 +253,8 @@ int Game::ghostDistance() const {
 }
 
 void Game::step() {
+    if (state_ == GameState::Playing || state_ == GameState::Clearing)
+        for (GarbageBatch& batch : incoming_) batch.msLeft = std::max(batch.msLeft - 1, 0);
     if (state_ == GameState::Clearing) {
         if (++clearTimerMs_ >= kClearDelayMs) finishClear();
         return;
@@ -398,8 +421,14 @@ void Game::finishClear() {
     const int levelBefore = level_;
     const int cleared = static_cast<int>(clearingRows_.size());
     const int attack = awardAttack(award_, combo_);
-    const int cancelled = std::min(attack, pendingGarbage_);
-    pendingGarbage_ -= cancelled;
+    const int cancelled = std::min(attack, pendingGarbage());
+    for (int left = cancelled; left > 0;) {
+        GarbageBatch& batch = incoming_.front();
+        const int take = std::min(batch.lines, left);
+        batch.lines -= take;
+        left -= take;
+        if (batch.lines == 0) incoming_.pop_front();
+    }
     outgoingAttack_ += attack - cancelled;
     stats_.attack += attack;
     stats_.cancelled += cancelled;

@@ -61,3 +61,13 @@ inline void dropUprightI(tetris::Game& game) {
     game.apply(tetris::Action::RotateCW);
     game.apply(tetris::Action::HardDrop);
 }
+
+// Tops the game out with ready garbage, over as many locks as the per-lock cap needs. Events from all but the
+// final lock are taken, so the game's queue then holds only that lock's events.
+inline void topOutWithGarbage(tetris::Game& game) {
+    game.receiveGarbage(tetris::kBoardHeight - 1, 0);
+    for (int i = 0; i < 10 && game.state() != tetris::GameState::GameOver; ++i) {
+        game.takeEvents();
+        game.apply(tetris::Action::HardDrop);
+    }
+}

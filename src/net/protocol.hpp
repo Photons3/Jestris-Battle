@@ -26,13 +26,15 @@ bool isRoomCode(std::string_view text);
 bool isNameChar(char c);
 bool isValidName(std::string_view text);
 
-// What the opponent sees of a board: the visible field with the falling piece merged in, plus the hold and
-// the next queue.
+// What the opponent sees of a board: the visible field with the falling piece merged in, its ghost, the hold
+// and the next queue.
 struct Snapshot {
     int score = 0;
     int lines = 0;
     int pending = 0;                           // garbage waiting to rise
+    int ready = 0;                             // the part of pending that can rise now
     std::array<Cell, kSnapshotCells> cells{};  // index y * kBoardWidth + x; y = 0 is the bottom row
+    std::array<Cell, kSnapshotCells> ghost{};  // same indexing; set only where `cells` is empty
     Cell hold{};                               // nullopt: nothing held
     bool holdLocked = false;                   // hold already used this turn; drawn dimmed
     std::array<Cell, kSnapshotNext> next{};    // soonest first; nullopt only before the first SNAP arrives

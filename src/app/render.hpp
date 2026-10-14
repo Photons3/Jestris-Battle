@@ -9,17 +9,19 @@
 #include "app/duel.hpp"
 #include "app/fonts.hpp"
 #include "app/keymap.hpp"
+#include "app/settings.hpp"
 #include "app/solo.hpp"
 #include "bot/bot_player.hpp"
 #include "core/game.hpp"
 
+struct ImDrawList;
 struct ImGuiIO;
 struct ImGuiStyle;
 
 namespace tetris {
 
 enum class Screen { Start, Playing, Duel, Controls };
-enum class UiCommand { None, PlaySolo, PlayBot, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
+enum class UiCommand { None, PlaySolo, PlayBot, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, ChangeVolume, SaveVolume, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
 
 struct StartMenu {
     int startLevel = 1;
@@ -31,6 +33,8 @@ struct StartMenu {
     std::string error;                        // why the last duel attempt ended, e.g. "unknown room"
     bool muted = false;                       // sound effects off for this session
     bool musicOff = false;                    // background music off for this session
+    int soundVolume = kMaxVolume;             // effects volume in percent, saved with the settings
+    int musicVolume = kMaxVolume;             // music volume in percent, saved with the settings
     std::string playerName;                   // the saved display name, always valid
     char nameEdit[kMaxNameLength + 1] = {};   // the Name field while it is being edited
     bool publicRooms = false;                 // Create room lists the room in the lobby
@@ -116,6 +120,11 @@ bool showGoBanner(int matchClockMs);       // true for the first kGoBannerMs of 
 
 inline constexpr int kGarbageDangerLines = 4;  // the meter turns red and blinks from this many pending lines
 bool garbageMeterDanger(int pending);
+inline constexpr float kTravellingGarbageAlpha = 0.4f;  // meter cells for garbage that cannot rise yet
+// Garbage waiting to rise, as a stack of beveled garbage cells, one per line, with its left edge at `x`: the bottom
+// `ready` cells solid, the travelling ones above them dimmed. From kGarbageDangerLines the meter turns red and
+// its ready cells blink every 250 ms.
+void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending, int ready);
 
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
@@ -132,15 +141,14 @@ int sdfSliderValue(int softDropFactor);
 int sdfFromSlider(int value);
 // Well, pieces, hold/next panels and stats. The board and panels are hidden while paused.
 void drawGame(const Game& game, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout);
-// Pause and game-over menus; draws nothing while playing.
-UiCommand drawOverlay(const Game& game, const Fonts& fonts, bool muted, bool musicOff);
+// Pause and game-over menus; draws nothing while playing. The pause menu edits the audio fields of `menu`.
+UiCommand drawOverlay(const Game& game, const Fonts& fonts, StartMenu& menu);
 std::string formatClock(int ms);     // "0:42.18": minutes, seconds and hundredths
 std::string formatScore(int score);  // "48,200"
 // The mode line under the side-panel stats: the clock and lines left, the Blitz time left, or ZEN.
 void drawSoloStatus(const SoloSession& solo, const Fonts& fonts);
 // The countdown, the result of a timed run (Retry, or R, returns Restart), else the pause and game-over menus.
-UiCommand drawSoloOverlay(const SoloSession& solo, const PersonalBests& bests, bool newBest, const Fonts& fonts,
-                          bool muted, bool musicOff);
+UiCommand drawSoloOverlay(const SoloSession& solo, bool newBest, const Fonts& fonts, StartMenu& menu);
 // A small MUTED label in the top-right corner, over every screen.
 void drawMutedBadge(const Fonts& fonts);
 // Lobby, waiting room, countdown, both boards and the result menu, depending on the session phase. `menu`
