@@ -413,6 +413,8 @@ func TestHelloInsideARoomIsIgnored(t *testing.T) {
 	srv := newTestServer(t)
 	a, b := pair(t, srv)
 	a.send("HELLO Zed") // dropped: a is in a room
+	a.send("ATK 1")
+	b.expect("ATK 1") // a's HELLO was handled before b leaves; each connection is read in order
 	b.conn.Close(websocket.StatusNormalClosure, "")
 	a.expect("LEFT")
 	a.send("CREATE 1")
@@ -482,6 +484,8 @@ func TestUnlistStopsUpdates(t *testing.T) {
 	srv := newTestServer(t)
 	w := watch(t, srv)
 	w.send("UNLIST")
+	w.send("CREATE 99")
+	w.expect("ERR bad start level") // UNLIST was handled; a bad level never reaches the watcher set
 	a, b := dial(t, srv), dial(t, srv)
 	a.send("CREATE 1 PUB")
 	a.expect("ROOM AAAA")
