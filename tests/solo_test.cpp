@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "app/duel.hpp"
 #include "app/solo.hpp"
 #include "test_helpers.hpp"
 
@@ -37,6 +38,26 @@ TEST_CASE("solo: the countdown blocks play, ticks each second, then starts") {
 TEST_CASE("solo: pausing during the countdown does nothing") {
     SoloSession solo(rulesFor(SoloMode::Blitz), makeSoloGame(SoloMode::Blitz, 1, 1));
     solo.pause();
+    CHECK(solo.game().state() == GameState::Playing);
+}
+
+TEST_CASE("solo: a pause asked for during the countdown takes effect when play starts") {
+    SoloSession solo(rulesFor(SoloMode::Sprint), makeSoloGame(SoloMode::Sprint, 1, 1));
+    solo.update(1000);
+    solo.pause();  // e.g. the window lost focus
+    CHECK(solo.game().state() == GameState::Playing);  // input is blocked, so Esc could not unpause it yet
+    solo.update(1999);
+    CHECK(solo.phase() == SoloPhase::Countdown);
+    CHECK(solo.game().state() == GameState::Playing);
+    solo.update(1);
+    CHECK(solo.phase() == SoloPhase::Playing);
+    CHECK(solo.game().state() == GameState::Paused);
+}
+
+TEST_CASE("solo: without a pause request the run starts unpaused") {
+    SoloSession solo(rulesFor(SoloMode::Cheese), makeSoloGame(SoloMode::Cheese, 1, 1));
+    solo.update(kCountdownMs);
+    CHECK(solo.phase() == SoloPhase::Playing);
     CHECK(solo.game().state() == GameState::Playing);
 }
 

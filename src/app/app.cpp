@@ -322,7 +322,7 @@ void handleEvent(App& app, SDL_Window* window, const SDL_Event& event) {
         app.quit = true;
         break;
     case SDL_EVENT_WINDOW_FOCUS_LOST:
-        if (app.solo) app.solo->pause();  // does nothing in the countdown, where nothing could unpause it
+        if (app.solo) app.solo->pause();  // in the countdown it waits for play to start
         app.input.releaseAll();  // key-up events are lost while unfocused
         break;
     case SDL_EVENT_KEY_DOWN:

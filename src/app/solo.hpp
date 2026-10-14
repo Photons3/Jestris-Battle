@@ -37,7 +37,9 @@ public:
     SoloSession(SoloRules rules, Game game);
 
     void update(int ms);
-    void pause();  // pauses the game only while Playing: during the countdown nothing could unpause it
+    // Pauses the game while Playing. During the countdown input is blocked, so nothing could unpause it yet:
+    // the request is kept and the game pauses as soon as play starts.
+    void pause();
 
     SoloMode mode() const { return rules_.mode; }
     SoloPhase phase() const { return phase_; }
@@ -58,6 +60,7 @@ private:
     SoloPhase phase_ = SoloPhase::Playing;
     int countdownMs_ = 0;
     int elapsedMs_ = 0;
+    bool pauseOnStart_ = false;
     std::vector<SoloEvent> events_;
 };
 

@@ -47,6 +47,7 @@ SoloSession::SoloSession(SoloRules rules, Game game) : rules_(rules), game_(std:
 
 void SoloSession::pause() {
     if (phase_ == SoloPhase::Playing) game_.pause();
+    if (phase_ == SoloPhase::Countdown) pauseOnStart_ = true;
 }
 
 int SoloSession::clockMs() const {
@@ -78,6 +79,7 @@ void SoloSession::update(int ms) {
             countdownMs_ = 0;
             phase_ = SoloPhase::Playing;
             events_.push_back(SoloEvent::Start);
+            if (pauseOnStart_) game_.pause();
         } else if ((before - 1) / 1000 != (countdownMs_ - 1) / 1000) {  // the shown second changed
             events_.push_back(SoloEvent::CountdownTick);
         }
