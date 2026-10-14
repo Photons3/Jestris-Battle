@@ -37,7 +37,7 @@ const (
 )
 
 // Hub gathers browsers into rooms of up to maxRoomPlayers, starts a match when the host sends BEGIN, relays
-// game messages between the match's participants and referees each match. It handles HELLO, CREATE, JOIN,
+// game messages between the match's participants and referees each match: a duel for 2, a royale for 3 or more. It handles HELLO, CREATE, JOIN,
 // LIST, UNLIST, QUICK, BEGIN, ATK, DEAD and SNAP itself; anything else inside a room, including the verbs
 // only the server sends (ROOM, PLAYERS, START, KO, OVER, OUT, LEFT, ERR, ROOMS), is dropped. Lobby watchers
 // get the full ROOMS list whenever a listed room appears, disappears, or changes its player count or host.
@@ -49,6 +49,7 @@ type Hub struct {
 	maxRooms    int
 	newCode     func() string
 	newSeed     func() uint32
+	pickTarget  func(n int) int // a royale ATK goes to living[pickTarget(len(living))]
 	afterFunc   func(d time.Duration, f func()) stopper
 	matchLength time.Duration
 	matchGrace  time.Duration // covers clients starting their clocks a one-way latency after the server
@@ -103,6 +104,7 @@ func NewHub() *Hub {
 		maxRooms:    defaultMaxRooms,
 		newCode:     randomCode,
 		newSeed:     rand.Uint32,
+		pickTarget:  rand.IntN,
 		afterFunc:   func(d time.Duration, f func()) stopper { return time.AfterFunc(d, f) },
 		matchLength: defaultMatchLength,
 		matchGrace:  defaultMatchGrace,
@@ -200,7 +202,7 @@ func (h *Hub) route(p *player, text string) []outgoing {
 		}
 		return h.begin(p)
 	case "ATK":
-		return p.room.attack(p, arg)
+		return h.attack(p, arg)
 	case "DEAD":
 		if text != "DEAD" {
 			return nil
@@ -365,8 +367,9 @@ func validName(s string) bool {
 	return true
 }
 
-// leave takes p out of its room. A duel p was playing ends with LEFT to the other participant. The longest
-// present player becomes host if p was, and an empty room is deleted.
+// leave takes p out of its room. A duel p was playing ends with LEFT to the other participant; in a royale a
+// living p is eliminated as if by DEAD, but gets nothing. The longest present player becomes host if p was,
+// and an empty room is deleted.
 func (h *Hub) leave(p *player) {
 	h.mu.Lock()
 	var out []outgoing
@@ -377,6 +380,9 @@ func (h *Hub) leave(p *player) {
 		if m := r.match; m != nil && !m.royale && m.has(p) {
 			r.endMatch()
 			out = append(out, outgoing{m.opponent(p), "LEFT"})
+		}
+		if m := r.match; m != nil && m.royale && m.alive[p] {
+			out = append(out, r.eliminate(p)...)
 		}
 		if len(r.players) == 0 {
 			r.endMatch()
@@ -510,21 +516,72 @@ func (r *room) duelist(p *player) bool {
 	return r.match != nil && !r.match.royale && r.match.has(p)
 }
 
-// attack counts a valid ATK toward the sender's lines sent and relays it in canonical form.
-func (r *room) attack(p *player, arg string) []outgoing {
+// attack counts a valid ATK from a living participant toward its lines sent and relays it in canonical form:
+// in a duel to the opponent, in a royale to a living opponent that pickTarget chooses.
+func (h *Hub) attack(p *player, arg string) []outgoing {
+	m := p.room.match
 	n, err := strconv.Atoi(arg)
-	if !r.duelist(p) || err != nil || n < 1 || n > maxAttack {
+	if m == nil || !m.alive[p] || err != nil || n < 1 || n > maxAttack {
 		return nil
 	}
-	r.match.sent[p] += n
-	return []outgoing{{r.match.opponent(p), fmt.Sprintf("ATK %d", n)}}
+	m.sent[p] += n
+	to := m.opponent(p)
+	if m.royale {
+		living := slices.DeleteFunc(slices.Clone(m.players), func(q *player) bool { return q == p || !m.alive[q] })
+		to = living[h.pickTarget(len(living))]
+	}
+	return []outgoing{{to, fmt.Sprintf("ATK %d", n)}}
 }
 
-// knockOut scores a KO for p's opponent, tells both players, and ends the match at kosToWin.
+// knockOut handles DEAD: a KO in a duel, an elimination in a royale.
 func (r *room) knockOut(p *player) []outgoing {
+	if m := r.match; m != nil && m.royale && m.alive[p] {
+		out := r.eliminate(p)
+		if r.match == nil {
+			out = append(out, r.broadcast(r.rosterMessage())...)
+		}
+		return out
+	}
 	if !r.duelist(p) {
 		return nil
 	}
+	return r.scoreKO(p)
+}
+
+// eliminate puts living royale participant p out in place n, the number alive before it, telling every
+// participant still in the room. When one player is left it wins with OUT <id> 1 and the match ends; the
+// caller then broadcasts PLAYERS.
+func (r *room) eliminate(p *player) []outgoing {
+	m := r.match
+	place := 0
+	for _, q := range m.players {
+		if m.alive[q] {
+			place++
+		}
+	}
+	m.alive[p] = false
+	out := m.tellConnected(r, fmt.Sprintf("OUT %d %d", p.id, place))
+	if place == 2 {
+		i := slices.IndexFunc(m.players, func(q *player) bool { return m.alive[q] })
+		out = append(out, m.tellConnected(r, fmt.Sprintf("OUT %d 1", m.players[i].id))...)
+		r.endMatch()
+	}
+	return out
+}
+
+// tellConnected sends text to every participant still in room r, in START order.
+func (m *match) tellConnected(r *room, text string) []outgoing {
+	out := make([]outgoing, 0, len(m.players))
+	for _, q := range m.players {
+		if q.room == r {
+			out = append(out, outgoing{q, text})
+		}
+	}
+	return out
+}
+
+// scoreKO scores a KO for duelist p's opponent, tells both players, and ends the match at kosToWin.
+func (r *room) scoreKO(p *player) []outgoing {
 	m := r.match
 	winner := m.opponent(p)
 	m.kos[winner]++

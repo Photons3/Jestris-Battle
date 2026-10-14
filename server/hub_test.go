@@ -71,6 +71,7 @@ func newConfiguredHub(t *testing.T, configure func(*Hub)) (*httptest.Server, *fa
 	clock := &fakeClock{}
 	hub.afterFunc = clock.afterFunc
 	hub.matchLength = testMatchLength
+	hub.pickTarget = func(int) int { return 0 }
 	configure(hub)
 	srv := httptest.NewServer(hub)
 	t.Cleanup(srv.Close)
@@ -772,4 +773,143 @@ func TestBadStartLevelIsRejected(t *testing.T) {
 	c := dial(t, newTestServer(t))
 	c.send("CREATE 99")
 	c.expect("ERR bad start level")
+}
+
+// royale puts the named players in room AAAA at level 1, in order with IDs 1, 2, ..., and has the host
+// begin, consuming START and PLAYERS.
+func royale(t *testing.T, srv *httptest.Server, names ...string) []*client {
+	t.Helper()
+	clients := []*client{createRoom(t, srv, names[0], "1")}
+	roster := "PLAYERS 1 1:" + names[0] + ":0"
+	for i, name := range names[1:] {
+		clients = append(clients, joinRoom(t, srv, "AAAA", name))
+		roster += fmt.Sprintf(" %d:%s:0", i+2, name)
+		expectAll(roster, clients...)
+	}
+	clients[0].send("BEGIN")
+	start := "START 101 1"
+	for i := range names {
+		start += fmt.Sprintf(" %d", i+1)
+	}
+	expectAll(start, clients...)
+	expectAll(strings.ReplaceAll(roster, ":0", ":1"), clients...)
+	return clients
+}
+
+func TestThreePlayersStartARoyaleWithoutTimer(t *testing.T) {
+	srv, clock := newTestHub(t)
+	royale(t, srv, "Ann", "Bob", "Cat") // START 101 1 1 2 3 reaches all three
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	if len(clock.timers) != 0 {
+		t.Errorf("%d timers armed, want 0", len(clock.timers))
+	}
+}
+
+func TestRoyaleAttackGoesToAPickedLivingOpponent(t *testing.T) {
+	var mu sync.Mutex
+	var seen []int
+	srv, _ := newConfiguredHub(t, func(h *Hub) {
+		h.pickTarget = func(n int) int {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, n)
+			return n - 1 // 1 while Bob and Cat are alive
+		}
+	})
+	c := royale(t, srv, "Ann", "Bob", "Cat")
+	a, b, cat := c[0], c[1], c[2]
+	a.send("ATK 2")
+	cat.expect("ATK 2")
+	b.flush() // the ATK went to Cat alone
+	b.send("DEAD")
+	expectAll("OUT 2 3", a, b, cat)
+	a.send("ATK 1")
+	cat.expect("ATK 1")
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(seen, []int{2, 1}) {
+		t.Errorf("pickTarget saw %v, want [2 1]", seen)
+	}
+}
+
+func TestRoyaleSnapReachesEveryOtherParticipant(t *testing.T) {
+	c := royale(t, newTestServer(t), "Ann", "Bob", "Cat")
+	c[1].send("SNAP 0 0 0 board")
+	expectAll("SNAP 2 0 0 0 board", c[0], c[2])
+	c[1].flush()
+}
+
+func TestRoyaleDeadGivesPlacesAndTheLastWins(t *testing.T) {
+	c := royale(t, newTestServer(t), "Ann", "Bob", "Cat", "Dan")
+	c[1].send("DEAD")
+	expectAll("OUT 2 4", c...)
+	c[3].send("DEAD")
+	expectAll("OUT 4 3", c...)
+	c[0].send("DEAD")
+	expectAll("OUT 1 2", c...)
+	expectAll("OUT 3 1", c...)
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0 3:Cat:0 4:Dan:0", c...)
+}
+
+func TestEliminatedPlayersCannotAttackOrDieAgain(t *testing.T) {
+	c := royale(t, newTestServer(t), "Ann", "Bob", "Cat")
+	c[1].send("DEAD")
+	expectAll("OUT 2 3", c...)
+	c[1].send("ATK 3")
+	c[1].send("DEAD")
+	c[1].flush()
+	c[0].send("SNAP probe")
+	c[2].expect("SNAP 1 probe") // an ATK or OUT would have reached Cat first
+	c[1].expect("SNAP 1 probe")
+}
+
+// DEAD racing the end of a royale: the second DEAD arrives after OUT ... 1.
+func TestDeadAfterRoyaleEndIsDropped(t *testing.T) {
+	c := royale(t, newTestServer(t), "Ann", "Bob", "Cat")
+	c[1].send("DEAD")
+	expectAll("OUT 2 3", c...)
+	c[0].send("DEAD")
+	expectAll("OUT 1 2", c...)
+	expectAll("OUT 3 1", c...)
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0 3:Cat:0", c...)
+	c[2].send("DEAD")
+	c[2].flush()
+	c[0].send("BEGIN")
+	expectAll("START 102 1 1 2 3", c...) // nothing reached anyone before this
+}
+
+func TestLeavesEndRoyaleAndMoveHost(t *testing.T) {
+	c := royale(t, newTestServer(t), "Ann", "Bob", "Cat")
+	c[0].conn.Close(websocket.StatusNormalClosure, "")
+	expectAll("OUT 1 3", c[1], c[2])
+	expectAll("PLAYERS 2 2:Bob:1 3:Cat:1", c[1], c[2])
+	c[1].conn.Close(websocket.StatusNormalClosure, "")
+	c[2].expect("OUT 2 2")
+	c[2].expect("OUT 3 1")
+	c[2].expect("PLAYERS 3 3:Cat:0")
+}
+
+func TestLateJoinerGetsNoMatchTraffic(t *testing.T) {
+	srv, _ := newConfiguredHub(t, func(h *Hub) { h.pickTarget = func(n int) int { return n - 1 } })
+	c := royale(t, srv, "Ann", "Bob", "Cat")
+	d := joinRoom(t, srv, "AAAA", "Dan") // checks ROOM AAAA 4
+	expectAll("PLAYERS 1 1:Ann:1 2:Bob:1 3:Cat:1 4:Dan:0", append(c, d)...)
+	c[0].send("SNAP 0 0 0 board")
+	expectAll("SNAP 1 0 0 0 board", c[1], c[2])
+	c[0].send("ATK 1")
+	c[2].expect("ATK 1") // the last living opponent is Cat, not Dan
+	c[1].send("DEAD")
+	expectAll("OUT 2 3", c...)
+	d.flush() // Dan got nothing since PLAYERS
+}
+
+func TestServerOnlyVerbsFromClientsAreDropped(t *testing.T) {
+	c := royale(t, newTestServer(t), "Ann", "Bob", "Cat")
+	for _, forged := range []string{"PLAYERS 1 1:x:1", "OUT 1 1", "ROOM AAAA 1"} {
+		c[0].send(forged)
+	}
+	c[0].send("SNAP probe")
+	expectAll("SNAP 1 probe", c[1], c[2])
+	c[0].flush()
 }
