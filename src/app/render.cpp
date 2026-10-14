@@ -964,7 +964,7 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     ImGui::SetNextItemWidth(width);
     ImGui::SliderInt("##level", &menu.startLevel, kMinStartLevel, kMaxStartLevel, "Start level: %d",
                      ImGuiSliderFlags_AlwaysClamp);
-    ImGui::TextDisabled("Marathon, Blitz, Zen");
+    ImGui::TextDisabled("Marathon, Blitz, Zen, vs Bot");
     ImGui::Spacing();
     ImGui::Spacing();
     ImGui::SeparatorText("PRACTICE");
@@ -1198,6 +1198,7 @@ UiCommand drawSoloOverlay(const SoloSession& solo, const PersonalBests& bests, b
     ImGui::PushFont(fonts.hud, ImGui::GetFontSize() * 2.5f);
     ImGui::TextUnformatted(result.c_str());
     ImGui::PopFont();
+    if (phase == SoloPhase::ToppedOut) ImGui::TextDisabled("not recorded");
     if (newBest)
         ImGui::TextColored(colorVec(kKoPipColor), "NEW PB!");
     else if (const std::optional<int> best = bests.best(solo.mode()))
