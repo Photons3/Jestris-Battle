@@ -78,7 +78,8 @@ target_link_libraries(tetris_input PUBLIC tetris_core)
 target_compile_options(tetris_input PRIVATE ${TETRIS_WARNINGS})
 
 add_library(tetris_bot STATIC
-  src/bot/planner.cpp)
+  src/bot/planner.cpp
+  src/bot/bot_player.cpp)
 target_include_directories(tetris_bot PUBLIC src)
 target_link_libraries(tetris_bot PUBLIC tetris_core)
 target_compile_options(tetris_bot PRIVATE ${TETRIS_WARNINGS})
@@ -136,6 +137,7 @@ add_executable(tetris_tests
   tests/duel_test.cpp
   tests/solo_test.cpp
   tests/planner_test.cpp
+  tests/bot_player_test.cpp
   tests/audio_test.cpp
   tests/sound_cues_test.cpp
   tests/keymap_test.cpp
