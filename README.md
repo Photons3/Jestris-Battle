@@ -72,12 +72,14 @@ in a room.
 
 ## Playing a duel
 
-1. One player picks Create room and shares the 4-letter code.
-2. The friend types the code and joins; the match starts after a short countdown.
-3. Clearing 2, 3 or 4 lines sends 1, 2 or 4 garbage lines to the opponent. Clearing
+1. Type the name you want your opponent to see in the Name field (it is remembered). Letters,
+   digits and `_ - .`, up to 12 characters.
+2. One player picks Create room and shares the 4-letter code.
+3. The friend types the code and joins; the match starts after a short countdown.
+4. Clearing 2, 3 or 4 lines sends 1, 2 or 4 garbage lines to the opponent. Clearing
    lines cancels incoming garbage first. Each garbage batch carries a column of bombs:
    land a piece directly on the top bomb to blow up the whole stack below it. Exploded
    rows count as cleared lines.
-4. Topping out is a KO: your board resets and your opponent scores a KO. The first to
+5. Topping out is a KO: your board resets and your opponent scores a KO. The first to
    3 KOs wins. When the 2:00 clock runs out, more KOs wins, then more lines sent; a full
    tie is a draw. Either side can ask for a rematch.
