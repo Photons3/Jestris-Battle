@@ -13,6 +13,7 @@ public:
     virtual void send(const std::string& text) = 0;
     virtual std::vector<std::string> receive() = 0;  // messages that arrived since the last call
     virtual bool closed() const = 0;                 // the server went away or could not be reached
+    virtual void update(int /*ms*/) {}               // advances a local opponent; network links do nothing
 };
 
 // True only in the browser build, which is served by (and can reach) the duel server.

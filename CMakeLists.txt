@@ -88,9 +88,10 @@ add_library(tetris_duel STATIC
   src/net/protocol.cpp
   src/app/duel.cpp
   src/app/solo.cpp
-  src/app/sound_cues.cpp)
+  src/app/sound_cues.cpp
+  src/bot/local_match.cpp)
 target_include_directories(tetris_duel PUBLIC src)
-target_link_libraries(tetris_duel PUBLIC tetris_core tetris_audio)
+target_link_libraries(tetris_duel PUBLIC tetris_core tetris_audio tetris_bot)
 target_compile_options(tetris_duel PRIVATE ${TETRIS_WARNINGS})
 
 add_library(tetris_settings STATIC
@@ -138,6 +139,7 @@ add_executable(tetris_tests
   tests/solo_test.cpp
   tests/planner_test.cpp
   tests/bot_player_test.cpp
+  tests/local_match_test.cpp
   tests/audio_test.cpp
   tests/sound_cues_test.cpp
   tests/keymap_test.cpp
