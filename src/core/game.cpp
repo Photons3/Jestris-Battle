@@ -242,7 +242,16 @@ void Game::step() {
         if (++lockTimerMs_ >= kLockDelayMs) lockPiece();
         return;
     }
-    dropTimerMs_ += softDrop_ ? kSoftDropFactor : 1;
+    if (softDrop_ && softDropFactor_ == kSoftDropInstant) {
+        const int rows = ghostDistance();  // more than 0: the piece is not on the ground
+        active_.pos.y -= rows;
+        rotatedLast_ = false;
+        score_ += rows;
+        updateLowest();
+        dropTimerMs_ = 0.0;
+        return;
+    }
+    dropTimerMs_ += softDrop_ ? softDropFactor_ : 1;
     const double msPerRow = gravityMsPerRow(level_);
     while (dropTimerMs_ >= msPerRow) {
         if (!tryMove(0, -1)) {

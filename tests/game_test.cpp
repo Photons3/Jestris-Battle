@@ -60,6 +60,43 @@ TEST_CASE("game: soft drop is 20x gravity and scores 1 per row") {
     CHECK(game.score() == 1);
 }
 
+TEST_CASE("game: the soft-drop factor sets how much faster soft drop falls") {
+    for (int factor : {5, 40}) {
+        Game game(seedWithFirst(PieceType::T), 1);
+        game.setSoftDropFactor(factor);
+        game.setSoftDrop(true);
+        game.tick(1000 / factor - 1);
+        CHECK(game.active().pos.y == 21);
+        game.tick(1);
+        CHECK(game.active().pos.y == 20);
+    }
+}
+
+TEST_CASE("game: instant soft drop reaches the floor in one tick, scores 1 per row and leaves the lock delay") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setSoftDropFactor(kSoftDropInstant);
+    game.setSoftDrop(true);
+    game.tick(1);
+    CHECK(game.ghostDistance() == 0);
+    CHECK(game.score() == 20);
+    CHECK(countFilled(game.board()) == 0);
+    game.tick(kLockDelayMs - 1);
+    CHECK(countFilled(game.board()) == 0);
+    game.tick(1);
+    CHECK(countFilled(game.board()) == 4);
+}
+
+TEST_CASE("game: instant soft drop also drops a piece swapped in from hold") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setSoftDropFactor(kSoftDropInstant);
+    game.setSoftDrop(true);
+    game.tick(1);
+    game.apply(Action::Hold);
+    REQUIRE(game.ghostDistance() > 0);
+    game.tick(1);
+    CHECK(game.ghostDistance() == 0);
+}
+
 TEST_CASE("game: moving stops at the wall") {
     Game game(seedWithFirst(PieceType::T), 1);
     game.apply(Action::Left);
