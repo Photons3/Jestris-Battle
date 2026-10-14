@@ -43,7 +43,25 @@ void applyCommand(App& app, UiCommand command) {
         break;
     case UiCommand::CreateRoom:
         app.openDuel();
-        app.duel.createRoom(app.menu.startLevel);
+        app.duel.createRoom(app.menu.startLevel, app.menu.publicRooms);
+        break;
+    case UiCommand::CreatePublicRoom:
+        app.openDuel();
+        app.duel.createRoom(app.menu.startLevel, true);
+        break;
+    case UiCommand::BrowseRooms:
+        app.openDuel();
+        app.duel.openLobby();
+        break;
+    case UiCommand::QuickMatch:
+        app.openDuel();
+        app.duel.quickMatch(app.menu.startLevel);
+        break;
+    case UiCommand::JoinListedRoom:
+        app.duel.joinRoom(app.menu.pickedRoom);
+        break;
+    case UiCommand::SavePublic:
+        app.saveSettings();
         break;
     case UiCommand::JoinRoom:
         app.openDuel();
@@ -149,6 +167,7 @@ App::App()
     keymap = saved.keys;
     menu.muted = saved.muted;
     menu.musicOff = saved.musicOff;
+    menu.publicRooms = saved.publicRooms;
     menu.playerName = saved.playerName;
     if (menu.playerName.empty()) {
         menu.playerName = defaultPlayerName(static_cast<std::uint32_t>(SDL_GetTicksNS()));
@@ -159,7 +178,7 @@ App::App()
     audio.setMusicMuted(menu.musicOff);
 }
 
-void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.playerName})); }
+void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.playerName, menu.publicRooms})); }
 
 void App::newGame() {
     syncMusic({});  // a new game always starts the song from the top
@@ -172,8 +191,10 @@ void App::newGame() {
 }
 
 void App::openDuel() {
-    connection = connectToServer();
-    if (connection) connection->send(encode(Hello{menu.playerName}));  // queued until the socket opens
+    if (!connection) {  // the lobby keeps its connection when it opens a room
+        connection = connectToServer();
+        if (connection) connection->send(encode(Hello{menu.playerName}));  // queued until the socket opens
+    }
     menu.error.clear();
     screen = Screen::Duel;
 }

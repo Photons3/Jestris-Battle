@@ -438,6 +438,48 @@ UiCommand drawDuelResult(const DuelSession& duel, const Fonts& fonts) {
     return command;
 }
 
+constexpr int kLobbyVisibleRows = 8;  // the list scrolls past this many
+
+UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu) {
+    UiCommand command = UiCommand::None;
+    beginMenu("##lobby");
+    const float width = std::max(menuTitle(fonts, "OPEN ROOMS"), menuButtonWidth());
+    if (!duel.error().empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", duel.error().c_str());
+    if (duel.rooms().empty()) {
+        ImGui::TextUnformatted("No open rooms yet.");
+    } else {
+        const float height = ImGui::GetFrameHeightWithSpacing() * kLobbyVisibleRows;
+        if (ImGui::BeginTable("##rooms", 3, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg, ImVec2(width, height))) {
+            ImGui::TableSetupColumn("Host", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("##join", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+            for (const RoomInfo& room : duel.rooms()) {
+                ImGui::PushID(room.code.c_str());
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(room.host.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%d", room.startLevel);
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton("Join")) {
+                    menu.pickedRoom = room.code;
+                    command = UiCommand::JoinListedRoom;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::Spacing();
+    if (menuButton("Quick match", width)) command = UiCommand::QuickMatch;
+    if (menuButton("Create public room", width)) command = UiCommand::CreatePublicRoom;
+    if (menuButton("Back", width)) command = UiCommand::LeaveDuel;
+    ImGui::End();
+    return command;
+}
+
 }  // namespace
 
 void configureImGuiIo(ImGuiIO& io) {
@@ -482,7 +524,13 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
                 std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
             }
         }
-        if (menuButton("Create room", width)) command = UiCommand::CreateRoom;
+        if (menuButton("Quick match", width)) command = UiCommand::QuickMatch;
+        if (menuButton("Browse rooms", width)) command = UiCommand::BrowseRooms;
+        // Create room and the Public box share one row.
+        const float createWidth = width * 0.62f;
+        if (menuButton("Create room", createWidth)) command = UiCommand::CreateRoom;
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Public", &menu.publicRooms)) command = UiCommand::SavePublic;
         const bool complete = static_cast<int>(std::strlen(menu.joinCode)) == kRoomCodeLength;
         // The code box and Join room share one row, half each.
         const float half = (width - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
@@ -576,22 +624,28 @@ void drawMutedBadge(const Fonts& fonts) {
     drawLabel(ImGui::GetForegroundDrawList(), fonts, size, pos, text);
 }
 
-UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const StartMenu& menu) {
+UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     switch (duel.phase()) {
     case DuelPhase::Idle:
+        break;
     case DuelPhase::Lobby:
+        command = drawLobby(duel, fonts, menu);
         break;
     case DuelPhase::Waiting:
         beginMenu("##waiting");
         if (duel.roomCode().empty()) {
-            menuTitle(fonts, "CONNECTING");
+            // A quick match may join straight into a countdown without ever getting a code.
+            menuTitle(fonts, duel.quickMatching() ? "SEARCHING" : "CONNECTING");
         } else {
             menuTitle(fonts, "ROOM CODE");
             ImGui::PushFont(fonts.hud, ImGui::GetFontSize() * 3.0f);
             ImGui::TextUnformatted(duel.roomCode().c_str());
             ImGui::PopFont();
-            ImGui::TextUnformatted("Waiting for an opponent to join...");
+            ImGui::TextUnformatted(duel.quickMatching() ? "Looking for an opponent..."
+                                                        : "Waiting for an opponent to join...");
+            ImGui::TextUnformatted(duel.publicRoom() ? "Public room, listed in Browse rooms"
+                                                     : "Private room, share the code");
         }
         if (menuButton("Cancel")) command = UiCommand::LeaveDuel;
         ImGui::End();
