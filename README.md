@@ -83,10 +83,13 @@ in a room.
    [Tetris Guideline](https://tetris.wiki/Garbage): a T-spin single, double or triple sends 2, 4
    or 6 (a T-spin mini sends like a plain clear), back-to-back tetrises and T-spins add 1, combos
    add 1 to 5, and a perfect clear adds 10. The same clears score the guideline points in solo
-   and duels, and a callout under HOLD names them. Clearing
-   lines cancels incoming garbage first. Each garbage batch carries a column of bombs:
-   land a piece directly on the top bomb to blow up the whole stack below it. Exploded
-   rows count as cleared lines.
+   and duels, and a callout under HOLD names them. Garbage waiting for you is cancelled first:
+   each line you would send removes one queued line, and only the rest goes to the opponent.
+   Queued garbage rises when a piece locks without clearing anything.
+   Every garbage row has one bomb. A bomb lands on a lone bomb right above it 90% of the time,
+   but never stacks more than two high. Land a piece directly on the top bomb to blow up the
+   bombs touching it below. Exploded rows score and send like cleared lines, but only full
+   rows count as a tetris or toward back-to-back.
 5. Topping out is a KO: your board resets and your opponent scores a KO. The first to
    3 KOs wins. When the 2:00 clock runs out, more KOs wins, then more lines sent; a full
    tie is a draw. Either side can ask for a rematch.

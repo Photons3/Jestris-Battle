@@ -44,24 +44,25 @@ bool isDifficult(const ClearAward& award) {
     return award.lines > 0 && (award.lines == 4 || award.spin != Spin::None);
 }
 
+int countedLines(const ClearAward& award) { return std::min(award.lines + award.bombRows, kMaxScoredLines); }
+
 int awardScore(const ClearAward& award, int combo, int level) {
     static constexpr std::array<int, 5> kMini{100, 200, 400, 500, 800};
     static constexpr std::array<int, 5> kFull{400, 800, 1200, 1600, 1600};
     static constexpr std::array<int, 5> kPerfect{0, 800, 1200, 1800, 2000};
-    assert(award.lines >= 0 && award.lines <= 4);
-    int points = award.spin == Spin::Full ? kFull[award.lines]
-                 : award.spin == Spin::Mini ? kMini[award.lines]
-                                            : lineClearScore(award.lines, 1);
+    const int lines = countedLines(award);
+    int points = award.spin == Spin::Full ? kFull[lines] : award.spin == Spin::Mini ? kMini[lines] : lineClearScore(lines, 1);
     if (award.backToBack > 0) points = points * 3 / 2;
-    if (award.lines > 0 && combo >= 1) points += 50 * combo;
-    if (award.perfectClear) points += award.lines == 4 && award.backToBack > 0 ? 3200 : kPerfect[award.lines];
+    if (lines > 0 && combo >= 1) points += 50 * combo;
+    if (award.perfectClear) points += lines == 4 && award.backToBack > 0 ? 3200 : kPerfect[lines];
     return points * level;
 }
 
 int awardAttack(const ClearAward& award, int combo) {
     static constexpr std::array<int, 5> kFull{0, 2, 4, 6, 6};
-    if (award.lines == 0) return 0;
-    int attack = award.spin == Spin::Full ? kFull[award.lines] : attackFor(award.lines);  // a mini sends as plain
+    const int lines = countedLines(award);
+    if (lines == 0) return 0;
+    int attack = award.spin == Spin::Full ? kFull[lines] : attackFor(lines);  // a mini sends as plain
     if (award.backToBack > 0) ++attack;
     attack += comboBonus(combo);
     if (award.perfectClear) attack += 10;
@@ -97,6 +98,27 @@ Spin tSpinFor(const Board& board, const Piece& piece, int kick) {
     return front || kick == 4 ? Spin::Full : Spin::Mini;
 }
 
+std::vector<int> bombColumnsFor(int rows, int aboveX, int aboveRun, std::mt19937& rng) {
+    std::vector<int> columns(static_cast<std::size_t>(std::max(rows, 0)));
+    int previous = aboveX;
+    int run = aboveX < 0 ? 0 : aboveRun;
+    for (auto it = columns.rbegin(); it != columns.rend(); ++it) {  // top row first, under the existing stack
+        const bool pair = previous >= 0 && run == 1 && static_cast<int>(rng() % 100) < kBombPairPercent;
+        if (pair) {
+            ++run;
+        } else if (previous >= 0) {  // any other column
+            const int x = static_cast<int>(rng() % (kBoardWidth - 1));
+            previous = x >= previous ? x + 1 : x;
+            run = 1;
+        } else {
+            previous = static_cast<int>(rng() % kBoardWidth);
+            run = 1;
+        }
+        *it = previous;
+    }
+    return columns;
+}
+
 Game::Game(std::uint32_t seed, int startLevel, Board board, GameOptions options)
     : board_(std::move(board)),
       bag_(seed),
@@ -130,8 +152,13 @@ void Game::resetBoard() {
 
 bool Game::applyGarbage() {
     if (pendingGarbage_ == 0) return true;
-    const int bombX = static_cast<int>(garbageRng_() % kBoardWidth);
-    if (!board_.pushGarbage(std::exchange(pendingGarbage_, 0), bombX)) return false;
+    int aboveX = -1;
+    for (int x = 0; x < kBoardWidth; ++x)
+        if (board_.at(x, 0) == PieceType::Bomb) aboveX = x;
+    int aboveRun = 0;
+    while (aboveX >= 0 && aboveRun < kBoardHeight && board_.at(aboveX, aboveRun) == PieceType::Bomb) ++aboveRun;
+    const std::vector<int> columns = bombColumnsFor(std::exchange(pendingGarbage_, 0), aboveX, aboveRun, garbageRng_);
+    if (!board_.pushGarbage(columns)) return false;
     emit(GameEventType::GarbageRose);
     return true;
 }
@@ -315,12 +342,13 @@ void Game::lockPiece(bool hardDropped) {
     clearingRows_ = full;
     clearingRows_.insert(clearingRows_.end(), exploded.begin(), exploded.end());
     std::sort(clearingRows_.begin(), clearingRows_.end());
-    award_ = {std::min(static_cast<int>(clearingRows_.size()), kMaxScoredLines), spin};
-    if (award_.lines > 0) {
+    award_ = {static_cast<int>(full.size()), spin};
+    award_.bombRows = static_cast<int>(exploded.size());
+    if (award_.lines > 0) {  // only full rows move the back-to-back chain
         backToBack_ = isDifficult(award_) ? backToBack_ + 1 : -1;
         award_.backToBack = isDifficult(award_) ? std::max(backToBack_, 0) : 0;
-        award_.perfectClear = clearEmptiesBoard();
     }
+    if (!clearingRows_.empty()) award_.perfectClear = clearEmptiesBoard();
     if (!full.empty()) emit(GameEventType::LinesCleared, static_cast<int>(full.size()));
     if (!exploded.empty()) emit(GameEventType::BombExploded);
     if (combo_ >= 1) emit(GameEventType::Combo, combo_);

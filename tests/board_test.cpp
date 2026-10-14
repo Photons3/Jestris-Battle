@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "core/board.hpp"
+#include "test_helpers.hpp"
 
 using namespace tetris;
 
@@ -74,6 +75,18 @@ TEST_CASE("board: garbage pushes the stack up with a bomb in the same column of 
     for (int y = 0; y < 2; ++y)
         for (int x = 0; x < kBoardWidth; ++x)
             CHECK(board.at(x, y) == (x == 7 ? PieceType::Bomb : PieceType::Garbage));
+}
+
+TEST_CASE("board: garbage rows can each put their bomb in a different column") {
+    Board board;
+    board.set(2, 0, PieceType::T);
+    REQUIRE(board.pushGarbage(std::vector<int>{3, 3, 8}));  // bottom row first
+    CHECK(board.at(2, 3) == PieceType::T);
+    CHECK(board.at(3, 0) == PieceType::Bomb);
+    CHECK(board.at(3, 1) == PieceType::Bomb);
+    CHECK(board.at(8, 2) == PieceType::Bomb);
+    CHECK(board.at(3, 2) == PieceType::Garbage);
+    CHECK(countFilled(board) == 1 + 3 * kBoardWidth);
 }
 
 TEST_CASE("board: garbage that would push a block off the top is refused") {

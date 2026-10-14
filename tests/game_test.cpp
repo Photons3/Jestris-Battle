@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <optional>
+#include <random>
 #include <vector>
 
 #include "core/game.hpp"
@@ -294,13 +296,69 @@ TEST_CASE("game: pending garbage rises when a piece locks without clearing") {
     CHECK(game.pendingGarbage() == 0);
     CHECK(game.state() == GameState::Playing);
     CHECK(countFilled(game.board()) == 4 + 2 * kBoardWidth);
-    int bombX = -1;
-    for (int x = 0; x < kBoardWidth; ++x)
-        if (game.board().at(x, 0) == PieceType::Bomb) bombX = x;
-    REQUIRE(bombX >= 0);
-    for (int y = 0; y < 2; ++y)  // the same bomb column in every row of the batch
-        for (int x = 0; x < kBoardWidth; ++x)
-            CHECK(game.board().at(x, y) == (x == bombX ? PieceType::Bomb : PieceType::Garbage));
+    for (int y = 0; y < 2; ++y) {  // one bomb per row, the rest plain garbage
+        int bombs = 0;
+        for (int x = 0; x < kBoardWidth; ++x) {
+            const Cell cell = game.board().at(x, y);
+            CHECK((cell == PieceType::Bomb || cell == PieceType::Garbage));
+            bombs += cell == PieceType::Bomb ? 1 : 0;
+        }
+        CHECK(bombs == 1);
+    }
+}
+
+namespace {
+
+// Bombs stacked in `columns` (bottom row first): the longest run in one column.
+int longestBombRun(const std::vector<int>& columns, int aboveX = -1, int aboveRun = 0) {
+    int longest = aboveRun;
+    int run = aboveRun;
+    int previous = aboveX;
+    for (auto it = columns.rbegin(); it != columns.rend(); ++it) {
+        run = *it == previous ? run + 1 : 1;
+        previous = *it;
+        longest = std::max(longest, run);
+    }
+    return longest;
+}
+
+}  // namespace
+
+TEST_CASE("game: bombs stack at most two high, in every batch and against the row above") {
+    std::mt19937 rng(7);
+    for (int i = 0; i < 2000; ++i) {
+        const int rows = 1 + i % 12;
+        const int aboveX = i % 3 == 0 ? -1 : i % kBoardWidth;
+        const int aboveRun = aboveX < 0 ? 0 : 1 + i % 3;
+        const std::vector<int> columns = bombColumnsFor(rows, aboveX, aboveRun, rng);
+        REQUIRE(static_cast<int>(columns.size()) == rows);
+        for (int x : columns) CHECK((x >= 0 && x < kBoardWidth));
+        CHECK(longestBombRun(columns, aboveX, std::min(aboveRun, 2)) <= 2);
+        if (aboveRun >= 2) CHECK(columns.back() != aboveX);  // the top new row never makes a third
+    }
+}
+
+TEST_CASE("game: a bomb pairs with a lone bomb above it about 90% of the time") {
+    std::mt19937 rng(11);
+    int lone = 0;
+    int paired = 0;
+    for (int i = 0; i < 20000; ++i) {
+        const std::vector<int> columns = bombColumnsFor(1, i % kBoardWidth, 1, rng);
+        ++lone;
+        paired += columns[0] == i % kBoardWidth ? 1 : 0;
+    }
+    CHECK(static_cast<double>(paired) / lone == doctest::Approx(kBombPairPercent / 100.0).epsilon(0.03));
+}
+
+TEST_CASE("game: rising garbage never stacks a third bomb on a pair") {
+    Board board;
+    board.pushGarbage(2, 9);  // a pair in column 9 at the bottom, away from where the T lands
+    Game game(seedWithFirst(PieceType::T), 1, board);
+    game.receiveGarbage(1);
+    game.apply(Action::HardDrop);  // the T lands on the garbage and the new row goes under the pair
+    REQUIRE(game.board().at(9, 1) == PieceType::Bomb);
+    REQUIRE(game.board().at(9, 2) == PieceType::Bomb);
+    CHECK(game.board().at(9, 0) == PieceType::Garbage);
 }
 
 TEST_CASE("game: a clearing lock holds garbage back until the next lock") {
@@ -417,7 +475,7 @@ TEST_CASE("game: more than four cleared rows are capped at the four-line attack 
     CHECK(game.lines() == 6);
     CHECK(game.takeOutgoingAttack() == 4);
     CHECK(game.score() == 2 * distance + lineClearScore(4, 1));
-    CHECK(game.backToBack() == 0);  // counted as a tetris, so it starts a back-to-back chain
+    CHECK(game.backToBack() == -1);  // scored like a tetris, but bomb rows don't start a back-to-back chain
 }
 
 TEST_CASE("game: a detonating lock cancels pending garbage and holds the rest back") {
@@ -580,6 +638,8 @@ TEST_CASE("game: guideline garbage for T-spins, back-to-back, combos and perfect
     CHECK(awardAttack({2}, 2) == 1 + comboBonus(2));
     CHECK(awardAttack({1, Spin::None, 0, true}, 0) == 10);
     CHECK(awardAttack({4, Spin::None, 0, true}, 0) == 14);
+    CHECK(awardAttack({0, Spin::None, 0, false, 6}, 0) == 4);  // bomb rows send like lines, up to a tetris
+    CHECK(awardAttack({1, Spin::None, 0, false, 2}, 0) == 2);
 }
 
 TEST_CASE("game: only tetrises and T-spins that clear lines are difficult") {
@@ -588,6 +648,7 @@ TEST_CASE("game: only tetrises and T-spins that clear lines are difficult") {
     CHECK(isDifficult({2, Spin::Full}));
     CHECK_FALSE(isDifficult({3}));
     CHECK_FALSE(isDifficult({0, Spin::Full}));
+    CHECK_FALSE(isDifficult({0, Spin::None, 0, false, 4}));  // four bomb rows are not a tetris
 }
 
 TEST_CASE("game: the three-corner rule tells full T-spins from minis") {
@@ -616,9 +677,22 @@ Board tSpinDoubleBoard() {
     return board;
 }
 
-// Four bomb rows (bomb in column 4) under four rows open only at column 5, and one leftover block on top. An
-// upright I clears the four rows, then an O dropped from spawn sets off all four bombs: two tetrises in a row.
+// Four rows open only at column 4 under the T-spin double slot, whose open cells sit in column 4 too. An upright
+// I moved one column left clears the four, which drops the slot to the floor for the T that comes next.
 Board backToBackBoard() {
+    Board board;
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (x != 4) board.set(x, y, PieceType::Z);
+    const Board slot = tSpinDoubleBoard();
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < kBoardWidth; ++x) board.set(x, y + 4, slot.at(x, y));
+    return board;
+}
+
+// Four bomb rows (bomb in column 4) under four rows open only at column 5, and one leftover block on top. An
+// upright I clears the four rows, then an O dropped from spawn sets off all four bombs.
+Board bombTetrisBoard() {
     Board board;
     board.pushGarbage(4, 4);
     for (int y = 4; y < 8; ++y)
@@ -676,24 +750,45 @@ TEST_CASE("game: a T that drops into the slot without spinning is no T-spin") {
     for (const GameEvent& event : game.takeEvents()) CHECK(event.type != GameEventType::SpecialClear);
 }
 
-TEST_CASE("game: two tetrises in a row are back-to-back") {
-    Game game(seedWithFirstTwo(PieceType::I, PieceType::O), 1, backToBackBoard());
-    dropUprightI(game);
+TEST_CASE("game: a tetris then a T-spin double is back-to-back") {
+    Game game(seedWithFirstTwo(PieceType::I, PieceType::T), 1, backToBackBoard());
+    game.apply(Action::RotateCW);
+    game.apply(Action::Left);  // the I drops down column 4
+    game.apply(Action::HardDrop);
     game.tick(kClearDelayMs);
+    REQUIRE(game.lines() == 4);
     CHECK(game.takeOutgoingAttack() == 4);
     CHECK(game.backToBack() == 0);
+    game.apply(Action::RotateCW);
+    dropToFloor(game);
+    game.apply(Action::RotateCW);
     const int before = game.score();
-    const int distance = game.ghostDistance();
     game.takeEvents();
-    game.apply(Action::HardDrop);  // the O sets off all four bombs: a tetris, in a combo
+    game.apply(Action::HardDrop);
     CHECK(game.takeEvents() == std::vector<GameEvent>{{GameEventType::HardDropped},
-                                                      {GameEventType::BombExploded},
+                                                      {GameEventType::LinesCleared, 2},
                                                       {GameEventType::Combo, 1},
-                                                      {GameEventType::SpecialClear, 0, {4, Spin::None, 1}}});
+                                                      {GameEventType::SpecialClear, 0, {2, Spin::Full, 1}}});
     game.tick(kClearDelayMs);
     CHECK(game.backToBack() == 1);
-    CHECK(game.score() == before + 2 * distance + 1200 + 50);
+    CHECK(game.score() == before + 1200 * 3 / 2 + 50);
     CHECK(game.takeOutgoingAttack() == 4 + 1 + comboBonus(1));
+}
+
+TEST_CASE("game: a bomb-only clear neither continues nor breaks the back-to-back chain") {
+    Game game(seedWithFirstTwo(PieceType::I, PieceType::O), 1, bombTetrisBoard());
+    dropUprightI(game);
+    game.tick(kClearDelayMs);
+    REQUIRE(game.backToBack() == 0);
+    REQUIRE(game.takeOutgoingAttack() == 4);
+    game.takeEvents();
+    game.apply(Action::HardDrop);  // the O sets off four bombs: scored like a tetris, but no full rows
+    CHECK(game.takeEvents() == std::vector<GameEvent>{{GameEventType::HardDropped},
+                                                      {GameEventType::BombExploded},
+                                                      {GameEventType::Combo, 1}});
+    game.tick(kClearDelayMs);
+    CHECK(game.backToBack() == 0);
+    CHECK(game.takeOutgoingAttack() == 4 + comboBonus(1));  // no back-to-back line
 }
 
 TEST_CASE("game: a plain line clear ends the back-to-back chain, a lock that clears nothing does not") {
@@ -821,7 +916,7 @@ TEST_CASE("game events: garbage rising after a lock is reported") {
 TEST_CASE("game events: reaching the next level is reported when the clear finishes") {
     Game game(seedWithFirst(PieceType::O), 1, bombBoard(10, 4, 0));  // ten bomb rows clear as ten lines
     game.apply(Action::HardDrop);
-    CHECK(game.takeEvents() == Events{kHardDropped, kBombExploded, kTetris});  // ten rows count as a tetris
+    CHECK(game.takeEvents() == Events{kHardDropped, kBombExploded});  // bomb rows are never called a tetris
     game.tick(kClearDelayMs);
     CHECK(game.level() == 2);
     CHECK(game.takeEvents() == Events{kLevelUp});

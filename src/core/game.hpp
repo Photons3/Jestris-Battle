@@ -24,15 +24,19 @@ enum class Spin : std::uint8_t { None, Mini, Full };
 
 // What one lock cleared, as scored: the rows, whether it was a T-spin, and the bonuses it earned.
 struct ClearAward {
-    int lines = 0;              // rows cleared, bomb rows included, counted up to 4
+    int lines = 0;              // full rows the piece completed, 0-4
     Spin spin = Spin::None;
     int backToBack = 0;         // 0 unless this clear continues a back-to-back chain; then 1, 2, 3...
     bool perfectClear = false;  // the clear leaves the board empty
+    int bombRows = 0;           // rows blown up by bombs; they score and send like lines, up to 4 in all
     friend bool operator==(const ClearAward&, const ClearAward&) = default;
 };
 
-// A tetris, or a T-spin that clears lines. Two in a row, with no other line clear between, are back-to-back.
+// A tetris, or a T-spin that clears lines, counting full rows only. Two in a row, with no other line clear
+// between, are back-to-back; bomb rows neither count toward the chain nor break it.
 bool isDifficult(const ClearAward& award);
+// Rows the award scores and sends for: full and bomb rows together, at most 4.
+int countedLines(const ClearAward& award);
 
 // Something that just happened in a game, for sound. Locked is only for a piece that locks on its own.
 struct GameEvent {
@@ -73,6 +77,12 @@ int awardAttack(const ClearAward& award, int combo);
 // `kick` (0-4). Three of the four corners around the T's center must be filled (walls and floor count): both
 // corners on the side it points to make a full T-spin, otherwise a mini, unless the rotation took the last kick.
 Spin tSpinFor(const Board& board, const Piece& piece, int kick);
+
+inline constexpr int kBombPairPercent = 90;  // how often a bomb lands on a lone bomb in the row above it
+// Bomb columns for `rows` new garbage rows, bottom row first. A bomb stacks on the bomb in the row above it
+// kBombPairPercent of the time, but never more than two high; otherwise it moves to another column. `aboveX` is
+// the bomb column of the row the new rows go under (-1 for none), and `aboveRun` how many bombs stack there.
+std::vector<int> bombColumnsFor(int rows, int aboveX, int aboveRun, std::mt19937& rng);
 
 struct GameOptions {
     bool allowPause = true;  // duels turn pausing off so one player can't freeze the match

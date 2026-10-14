@@ -102,6 +102,23 @@ TEST_CASE("duel: line clears are sent as attacks") {
     CHECK(duel.sentMine() == 4);
 }
 
+TEST_CASE("duel: a clear cancels queued garbage first and sends only what is left") {
+    Wire wire;
+    DuelSession duel(wire.sender(), [](const StartMatch& start) {
+        return Game(seedWithFirst(PieceType::I), start.startLevel, boardWithWell(4, 5));
+    });
+    startMatch(duel, wire);
+    duel.onMessage("ATK 3");
+    REQUIRE(duel.game()->pendingGarbage() == 3);
+    dropUprightI(*duel.game());  // a tetris: 4 lines against the 3 queued
+    duel.game()->tick(kClearDelayMs);
+    duel.update(0);
+    CHECK(duel.game()->pendingGarbage() == 0);
+    CHECK(wire.sent == std::vector<std::string>{"ATK 1"});
+    CHECK(duel.sentMine() == 1);
+    CHECK(countFilled(duel.game()->board()) == 1);  // just the well's extra block: no garbage rose
+}
+
 TEST_CASE("duel: a clear still animating at 0:00 is settled and sent") {
     Wire wire;
     DuelSession duel(wire.sender(), [](const StartMatch& start) {
