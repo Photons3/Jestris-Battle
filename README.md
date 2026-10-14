@@ -34,8 +34,24 @@ and SDF (soft-drop speed as a multiple of gravity, default 20x; Instant drops th
 without locking it). Drag a slider, or focus it with the arrow keys and press Space, then Left/Right,
 then Space again. Reset to defaults resets the handling along with the keys.
 
-The keys, handling, sound and music settings are saved (localStorage in the browser, the SDL
-preferences folder on desktop).
+The keys, handling, sound and music settings and your solo personal bests are saved (localStorage
+in the browser, the SDL preferences folder on desktop).
+
+## Solo modes
+
+The SOLO section of the start menu has five modes:
+
+- **Marathon**: the classic endless game, from the chosen start level, until you top out.
+- **Sprint 40L**: clear 40 lines as fast as you can, from level 1.
+- **Blitz 2:00**: score as much as you can in two minutes. The level rises every 5 lines.
+- **Cheese 10L**: dig out 10 garbage rows, each with one hole, as fast as you can, from level 1.
+- **Zen**: no clock and no game over; topping out just clears the board. Leave from the pause menu.
+
+The start level slider applies to Marathon, Blitz and Zen. Sprint, Blitz and Cheese start after a
+3-second countdown, and the side panel shows the clock (Blitz counts down and turns red under 10
+seconds). When a timed run ends, the result screen shows your time or score and your personal best;
+Retry (or R) starts again. Only a finished run counts toward a best: the fastest Sprint and Cheese
+times and the highest Blitz score are shown beside their buttons on the start menu.
 
 ## Hosting LAN duels
 

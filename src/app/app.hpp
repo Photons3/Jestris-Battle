@@ -32,8 +32,8 @@ struct App {
     ControlsMenu controls;
     Keymap keymap = defaultKeymap();
     Handling handling;  // DAS, ARR and soft-drop speed, as last saved
-    PersonalBests bests;  // solo bests, as last saved; kept so saving the settings doesn't drop them
-    std::optional<Game> game;  // solo game
+    std::optional<SoloSession> solo;  // the solo run on Screen::Playing
+    bool newBest = false;             // the finished solo run set a personal best
     std::unique_ptr<Connection> connection;
     DuelSession duel;
     InputMapper input;
@@ -47,13 +47,13 @@ struct App {
     bool quit = false;
     bool hidden = false;  // tab hidden or window minimized: keep stepping, skip drawing and sound
 
-    void newGame();
+    void newSolo(SoloMode mode);  // starts a run at the menu's start level, replacing any other
     void openDuel();   // connects (once) and shows the duel screens
     void closeDuel();  // leaves the room, disconnects and returns to the start screen
     void toggleMusic();                   // flips the music on or off and saves it
     void syncMusic(const MusicCue& cue);  // starts, pauses, retimes or stops the music to match `cue`
     void toggleSound();  // flips mute and saves it
-    void saveSettings();  // stores the keymap, handling, mute and music for the next launch
+    void saveSettings();  // stores the keymap, handling, mute, music and bests for the next launch
     Game* activeGame();  // the game the keys control: solo, or the duel game while a match is running
 };
 
