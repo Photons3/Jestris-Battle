@@ -169,3 +169,21 @@ func TestPageWithoutScriptTagIsServedUnversioned(t *testing.T) {
 		t.Errorf("Cache-Control %q, want no-cache", got)
 	}
 }
+
+// Release builds of newer emsdk minify index.html, dropping the quotes around attributes.
+func TestMinifiedScriptTagIsVersioned(t *testing.T) {
+	for _, tag := range []string{`<script async src=index.js></script>`, `<script src='index.js'></script>`} {
+		dir := t.TempDir()
+		writeBuild(t, dir, "wasm")
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>"+tag+"</html>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, page, _, err := newWebBuild(dir).load()
+		if err != nil {
+			t.Fatalf("%s: %v", tag, err)
+		}
+		if !versionRE.Match(page) {
+			t.Errorf("%s: page has no versioned script tag: %s", tag, page)
+		}
+	}
+}
