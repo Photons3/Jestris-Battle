@@ -432,6 +432,13 @@ void Game::lockPiece(bool hardDropped) {
     spawn(bag_.next());
 }
 
+void Game::setLevelFloor(int floor) {
+    levelFloor_ = floor;
+    const int before = level_;
+    level_ = std::max(levelFor(startLevel_, lines_, options_.linesPerLevel), levelFloor_);
+    if (level_ > before) emit(GameEventType::LevelUp);
+}
+
 void Game::finishClear() {
     const int levelBefore = level_;
     const int cleared = static_cast<int>(clearingRows_.size());
@@ -449,7 +456,7 @@ void Game::finishClear() {
     stats_.cancelled += cancelled;
     score_ += awardScore(award_, combo_, level_);
     lines_ += cleared;
-    level_ = levelFor(startLevel_, lines_, options_.linesPerLevel);
+    level_ = std::max(levelFor(startLevel_, lines_, options_.linesPerLevel), levelFloor_);
     if (level_ > levelBefore) emit(GameEventType::LevelUp);
     for (int y : clearingRows_) {
         for (int x = 0; x < kBoardWidth; ++x) {

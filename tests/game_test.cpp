@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include <random>
 #include <vector>
@@ -1296,4 +1297,46 @@ TEST_CASE("game: hole garbage that overflows is a top-out") {
     game.receiveGarbage(kBoardHeight, 0);
     for (int i = 0; i < 10 && game.state() != GameState::GameOver; ++i) game.apply(Action::HardDrop);
     CHECK(game.state() == GameState::GameOver);
+}
+
+TEST_CASE("game: the level floor raises level and gravity") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setLevelFloor(5);
+    CHECK(game.level() == 5);
+    const int y = game.active().pos.y;
+    const int ms = static_cast<int>(std::ceil(gravityMsPerRow(5)));
+    game.tick(ms - 1);
+    CHECK(game.active().pos.y == y);
+    game.tick(1);
+    CHECK(game.active().pos.y == y - 1);
+}
+
+TEST_CASE("game: the level floor never lowers the level") {
+    Game game(seedWithFirst(PieceType::T), 8);
+    game.setLevelFloor(3);
+    CHECK(game.level() == 8);
+    CHECK(game.takeEvents().empty());
+}
+
+TEST_CASE("game: line-clear score uses the floored level") {
+    Board board;  // row 0 is full except the O's columns; one block above keeps it from a perfect clear
+    for (int x = 0; x < kBoardWidth; ++x)
+        if (x != 4 && x != 5) board.set(x, 0, PieceType::Z);
+    board.set(0, 5, PieceType::Z);
+    Game game(seedWithFirst(PieceType::O), 1, board);
+    game.setLevelFloor(4);
+    game.apply(Action::HardDrop);
+    REQUIRE(game.state() == GameState::Clearing);
+    const int before = game.score();
+    game.tick(kClearDelayMs);
+    CHECK(game.lines() == 1);
+    CHECK(game.score() - before == lineClearScore(1, 4));
+    CHECK(game.level() == 4);
+}
+
+TEST_CASE("game: raising the floor emits LevelUp once") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setLevelFloor(3);
+    game.setLevelFloor(3);
+    CHECK(game.takeEvents() == Events{kLevelUp});
 }

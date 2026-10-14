@@ -145,6 +145,8 @@ public:
     int clearElapsedMs() const { return clearTimerMs_; }  // time into the clear animation, 0 to kClearDelayMs
     int score() const { return score_; }
     int level() const { return level_; }
+    // Raises the level to at least `floor` (royale gravity); the level never drops below what the lines earn.
+    void setLevelFloor(int floor);
     int lines() const { return lines_; }
     // Clearing locks in a row, minus one: -1 with no combo, 0 after the first clear, 1 after the second...
     int combo() const { return combo_; }
@@ -191,6 +193,7 @@ private:
     int clearTimerMs_ = 0;
     int startLevel_;
     int level_;
+    int levelFloor_ = 0;
     int lines_ = 0;
     int score_ = 0;
     struct GarbageBatch {
