@@ -1,6 +1,8 @@
 // src/app/app.cpp
 #include "app/app.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -62,6 +64,15 @@ void applyCommand(App& app, UiCommand command) {
         break;
     case UiCommand::SavePublic:
         app.saveSettings();
+        break;
+    case UiCommand::JoinInvite:
+        std::snprintf(app.menu.joinCode, sizeof app.menu.joinCode, "%s", app.menu.inviteCode.c_str());
+        app.menu.inviteCode.clear();
+        app.openDuel();
+        app.duel.joinRoom(app.menu.joinCode);
+        break;
+    case UiCommand::CopyInviteLink:
+        copyInviteLink(app.duel.roomCode());
         break;
     case UiCommand::JoinRoom:
         app.openDuel();
@@ -174,6 +185,12 @@ App::App()
         saveSettings();  // keep the generated name across visits
     }
     std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    std::string invite = takeInviteCode();
+    std::transform(invite.begin(), invite.end(), invite.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (isRoomCode(invite)) menu.inviteCode = invite;
+    menu.inviteLinkBase = inviteLinkBase();
+    menu.canCopyLink = canCopyToClipboard();
     audio.setMuted(menu.muted);
     audio.setMusicMuted(menu.musicOff);
 }

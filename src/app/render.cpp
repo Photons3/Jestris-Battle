@@ -524,6 +524,12 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
                 std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
             }
         }
+        if (!menu.inviteCode.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.25f, 1.0f));
+            const std::string label = "Join room " + menu.inviteCode;
+            if (menuButton(label.c_str(), width)) command = UiCommand::JoinInvite;
+            ImGui::PopStyleColor();
+        }
         if (menuButton("Quick match", width)) command = UiCommand::QuickMatch;
         if (menuButton("Browse rooms", width)) command = UiCommand::BrowseRooms;
         // Create room and the Public box share one row.
@@ -646,6 +652,13 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
                                                         : "Waiting for an opponent to join...");
             ImGui::TextUnformatted(duel.publicRoom() ? "Public room, listed in Browse rooms"
                                                      : "Private room, share the code");
+            if (!menu.inviteLinkBase.empty()) {
+                static char link[256];  // InputText needs a mutable buffer even when read-only
+                std::snprintf(link, sizeof link, "%s%s", menu.inviteLinkBase.c_str(), duel.roomCode().c_str());
+                ImGui::SetNextItemWidth(menuButtonWidth());
+                ImGui::InputText("##link", link, sizeof link, ImGuiInputTextFlags_ReadOnly);
+                if (menu.canCopyLink && menuButton("Copy link")) command = UiCommand::CopyInviteLink;
+            }
         }
         if (menuButton("Cancel")) command = UiCommand::LeaveDuel;
         ImGui::End();

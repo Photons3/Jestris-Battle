@@ -20,4 +20,11 @@ bool duelsSupported();
 // Connects to ws://<page host>/ws, or wss:// when the page is served over https. Only called when duelsSupported().
 std::unique_ptr<Connection> connectToServer();
 
+// Invite links (browser only; the desktop stubs return nothing).
+// The raw ?room= value of the page address, which is then removed from the address bar so a reload doesn't rejoin.
+std::string takeInviteCode();
+std::string inviteLinkBase();  // e.g. "http://192.168.1.5:8080/?room="; a room code completes the link
+bool canCopyToClipboard();     // false on plain-http LAN pages, which have no Clipboard API
+void copyInviteLink(const std::string& code);  // does nothing unless `code` is a room code
+
 }  // namespace tetris

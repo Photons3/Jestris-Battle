@@ -14,7 +14,7 @@ struct ImGuiIO;
 namespace tetris {
 
 enum class Screen { Start, Playing, Duel, Controls };
-enum class UiCommand { None, Play, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, OpenControls, CloseControls, ResetControls, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic };
+enum class UiCommand { None, Play, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, OpenControls, CloseControls, ResetControls, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
 
 struct StartMenu {
     int startLevel = 1;
@@ -27,6 +27,9 @@ struct StartMenu {
     char nameEdit[kMaxNameLength + 1] = {};   // the Name field while it is being edited
     bool publicRooms = false;                 // Create room lists the room in the lobby
     std::string pickedRoom;                   // the code clicked in the lobby, for JoinListedRoom
+    std::string inviteCode;                   // from a ?room= link; shows a Join room button until used
+    std::string inviteLinkBase;               // the page address plus "?room="; empty on desktop
+    bool canCopyLink = false;                 // the browser offers the Clipboard API
 };
 
 // The Controls screen: which slot is waiting for a key, and what the last key press changed.
