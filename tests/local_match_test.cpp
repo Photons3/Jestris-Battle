@@ -68,16 +68,25 @@ TEST_CASE("local match: verdicts follow the server's rules") {
     CHECK(verdictFor(3, 0, 1, 2, MatchReason::KOs) == MatchOver{MatchResult::Win, MatchReason::KOs, 1, 2});
 }
 
-TEST_CASE("local match: creating a room names the bot and starts a match") {
+TEST_CASE("local match: CREATE answers ROOM, PLAYERS and START with two ids") {
     LocalMatch match(BotLevel::Hard, 1);
     match.send(encode(CreateRoom{4, false}));
     const auto got = drain(match);
     REQUIRE(got.size() == 3);
     CHECK(std::get<RoomEntered>(got[0]) == RoomEntered{"BOTS", 1});
-    CHECK(std::get<OpponentName>(got[1]).name == "Bot-Hard");
+    CHECK(std::get<Roster>(got[1]) == Roster{1, {{1, "You", true}, {2, "Bot-Hard", true}}});
     const StartMatch& start = std::get<StartMatch>(got[2]);
     CHECK(start.startLevel == 4);
     CHECK(start.players == std::vector<int>{1, 2});
+}
+
+TEST_CASE("local match: the roster uses the name from HELLO") {
+    LocalMatch match(BotLevel::Easy, 1);
+    match.send(encode(Hello{"Sam"}));
+    match.send(encode(CreateRoom{1, false}));
+    const auto got = drain(match);
+    REQUIRE(got.size() == 3);
+    CHECK(std::get<Roster>(got[1]) == Roster{1, {{1, "Sam", true}, {2, "Bot-Easy", true}}});
 }
 
 TEST_CASE("local match: the bot waits out the countdown, then plays and sends snapshots") {
@@ -87,7 +96,9 @@ TEST_CASE("local match: the bot waits out the countdown, then plays and sends sn
     match.update(kCountdownMs - 1);
     CHECK(countOf<PlayerSnapshot>(drain(match)) == 0);
     match.update(3000);
-    CHECK(countOf<PlayerSnapshot>(drain(match)) >= 1);
+    const std::vector<PlayerSnapshot> snapshots = allOf<PlayerSnapshot>(drain(match));
+    REQUIRE_FALSE(snapshots.empty());
+    for (const PlayerSnapshot& s : snapshots) CHECK(s.fromId == 2);  // SNAP 2 ...
 }
 
 TEST_CASE("local match: three deaths lose by KOs") {
@@ -191,7 +202,7 @@ TEST_CASE("local match: late and early messages are ignored") {
     // Before any match: nothing to score or attack.
     match.send(encode(Dead{}));
     match.send(encode(Attack{5}));
-    match.send(encode(Rematch{}));
+    match.send(encode(Begin{}));
     match.update(100);
     CHECK(drain(match).empty());
     CHECK(match.botGame() == nullptr);
@@ -199,7 +210,7 @@ TEST_CASE("local match: late and early messages are ignored") {
     startPlaying(match);
     match.update(500);
     drain(match);
-    match.send(encode(Rematch{}));  // mid-match
+    match.send(encode(Begin{}));  // mid-match
     match.update(100);
     CHECK(countOf<StartMatch>(drain(match)) == 0);
 
@@ -215,7 +226,7 @@ TEST_CASE("local match: late and early messages are ignored") {
     CHECK(match.botGame()->pendingGarbage() == 0);
 }
 
-TEST_CASE("local match: a rematch starts again with a new seed and no new name") {
+TEST_CASE("local match: BEGIN after OVER starts the next match") {
     LocalMatch match(BotLevel::Medium, 9);
     match.send(encode(CreateRoom{2, false}));
     const auto first = drain(match);
@@ -225,13 +236,13 @@ TEST_CASE("local match: a rematch starts again with a new seed and no new name")
     for (int i = 0; i < 3; ++i) match.send(encode(Dead{}));
     REQUIRE(countOf<MatchOver>(drain(match)) == 1);
 
-    match.send(encode(Rematch{}));
+    match.send(encode(Begin{}));
     const auto again = drain(match);
-    REQUIRE(again.size() == 1);
+    REQUIRE(again.size() == 1);  // no new ROOM or PLAYERS
     const StartMatch restart = std::get<StartMatch>(again[0]);
     CHECK(restart.seed != start.seed);
     CHECK(restart.startLevel == 2);
-    CHECK(countOf<OpponentName>(again) == 0);
+    CHECK(restart.players == std::vector<int>{1, 2});
     REQUIRE(match.botGame() != nullptr);
     CHECK(match.botGame()->score() == 0);
 }
@@ -248,9 +259,20 @@ TEST_CASE("local match: a real duel session plays the bot") {
     };
     frame(16);
     CHECK(duel.opponentName() == "Bot-Hard");
-    CHECK(duel.phase() == DuelPhase::Countdown);
+    CHECK(duel.phase() == DuelPhase::Countdown);  // no Start click
+    CHECK(duel.isHost());
     for (int i = 0; i < 2000 && duel.sentTheirs() == 0; ++i) frame(16);
     CHECK(duel.sentTheirs() > 0);  // the bot's garbage reached us
+    for (int i = 0; i < 2000 && duel.opponent().score == 0; ++i) frame(16);
+    CHECK(duel.opponent().score > 0);  // the bot's SNAP 2 reached its opponent view
+
+    for (int i = 0; i < kKosToWin; ++i) match->send(encode(Dead{}));
+    frame(16);
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    duel.begin();  // the host's "Start next match"
+    frame(16);
+    CHECK(duel.phase() == DuelPhase::Countdown);
+    CHECK(duel.opponentName() == "Bot-Hard");
 }
 
 TEST_CASE("local match: the bot's snapshots carry its stats") {

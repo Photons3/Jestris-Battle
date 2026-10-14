@@ -24,19 +24,31 @@ inline constexpr int kMaxCatchUpMs = 130000;  // a match replays stalls up to th
 // loop, so a running match replays the gap: gravity keeps going and the opponent keeps getting snapshots.
 int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch);
 
-// Lobby: connected, not in a room, watching the list of open public rooms.
-enum class DuelPhase { Idle, Lobby, Waiting, Countdown, Playing, Result };
+// Lobby: connected, not in a room, watching the list of open public rooms. Waiting: a room was asked for, no
+// ROOM yet. Room: in a room between matches, or before the first.
+enum class DuelPhase { Idle, Lobby, Waiting, Room, Countdown, Playing, Result };
+enum class DuelMode { Duel, Royale };  // from the number of players in START: 2 is a duel
 enum class DuelOutcome { None, Won, Lost, Draw, OpponentLeft };
 using DuelReason = MatchReason;  // why a Won, Lost or Draw match ended, from the server's OVER
 
 // Something that just happened in the duel, for sound and effects. Our own top-out is reported by the Game.
 enum class DuelEvent { CountdownTick, MatchStart, Attacked, Sent, KoMine, Won, Lost, Draw };
 
+// Another player in the current match, as this player sees them.
+struct OpponentView {
+    int id = 0;
+    std::string name;  // fixed at START
+    Snapshot snapshot;
+    bool alive = true;
+    int place = 0;  // 0 until OUT
+};
+
 // The local game for a match: same seed (so the same pieces) as the opponent, and no pausing.
 Game makeDuelGame(const StartMatch& start);
 
-// One player's side of a duel. Reacts to server messages, owns the local Game while a match runs, and
-// reports attacks, snapshots and top-outs through `send`. The server referees KOs and the result. Knows nothing about sockets or SDL.
+// One player's side of a room and its matches. Reacts to server messages, owns the local Game while a match
+// runs, and reports attacks, snapshots and top-outs through `send`. The server referees KOs and the result.
+// Knows nothing about sockets or SDL.
 class DuelSession {
 public:
     using Send = std::function<void(const std::string&)>;
@@ -49,7 +61,7 @@ public:
     void createRoom(int startLevel, bool isPublic = false);
     void joinRoom(const std::string& code);
     void quickMatch(int startLevel);  // joins the oldest open public room, or waits in a new one
-    void requestRematch();
+    void begin();  // BEGIN: only the host, in Room or Result, with 2 or more players in the room
     void leave();  // back to Idle; the caller closes the connection
     void onMessage(std::string_view text);
     void onDisconnected();
@@ -59,13 +71,17 @@ public:
     DuelPhase phase() const { return phase_; }
     bool inMatch() const { return phase_ == DuelPhase::Countdown || phase_ == DuelPhase::Playing; }
     DuelOutcome outcome() const { return outcome_; }
-    const std::string& roomCode() const { return roomCode_; }  // set once the server confirms a created room
+    const std::string& roomCode() const { return roomCode_; }  // set once the server confirms the room
     const std::string& error() const { return error_; }        // why the session last went back to Idle or Lobby
-    const Snapshot& opponent() const { return opponent_; }
+    int myId() const { return myId_; }                          // from ROOM; 0 outside a room
+    int hostId() const { return hostId_; }                      // from PLAYERS; 0 before the first
+    bool isHost() const { return myId_ != 0 && myId_ == hostId_; }
+    const std::vector<RosterEntry>& roster() const { return roster_; }  // everyone in the room, in join order
+    DuelMode mode() const { return mode_; }
+    const std::vector<OpponentView>& opponents() const { return opponents_; }  // the match's others, by id
+    const Snapshot& opponent() const;         // the first opponent's board, or an empty Snapshot
+    const std::string& opponentName() const;  // the first opponent's name, or "" before any match
     int countdownMs() const { return countdownMs_; }
-    bool rematchRequested() const { return rematchRequested_; }
-    bool opponentGone() const { return opponentGone_; }
-    const std::string& opponentName() const { return opponentName_; }  // from OPP; empty if not sent
     const std::vector<RoomInfo>& rooms() const { return rooms_; }      // the lobby list, while in Lobby
     bool publicRoom() const { return publicRoom_; }                    // the room we wait in is listed
     bool quickMatching() const { return quick_; }                      // waiting came from Quick match
@@ -76,8 +92,8 @@ public:
     int sentMine() const { return sentMine_; }
     int sentTheirs() const { return sentTheirs_; }
     int matchClockMs() const { return matchClockMs_; }  // display only; the server decides time-up
-    // Time spent Playing this match: 0 in the countdown, and fixed once the clock stops or the match ends.
-    int playedMs() const { return kMatchMs - matchClockMs_; }
+    // Time spent Playing this match: 0 in the countdown, and fixed once a duel's clock stops or the match ends.
+    int playedMs() const { return playedMs_; }
     int koFlashMs() const { return koFlashMs_; }        // > 0 while "KO!" shows after our top-out
     // While true the local game must not tick or take input: during the KO flash, or once the clock hits 0.
     bool frozen() const;
@@ -99,10 +115,13 @@ private:
     DuelPhase phase_ = DuelPhase::Idle;
     DuelOutcome outcome_ = DuelOutcome::None;
     std::optional<Game> game_;
-    Snapshot opponent_;
     std::optional<Snapshot> lastSent_;
     std::string roomCode_;
-    std::string opponentName_;
+    int myId_ = 0;
+    int hostId_ = 0;
+    std::vector<RosterEntry> roster_;
+    DuelMode mode_ = DuelMode::Duel;
+    std::vector<OpponentView> opponents_;
     std::vector<RoomInfo> rooms_;
     bool fromLobby_ = false;  // Waiting was entered from Lobby, so a refusal goes back there
     bool publicRoom_ = false;
@@ -110,14 +129,13 @@ private:
     std::string error_;
     int countdownMs_ = 0;
     int sinceSnapshotMs_ = 0;
-    bool rematchRequested_ = false;
-    bool opponentGone_ = false;
     DuelReason reason_ = DuelReason::KOs;
     int kosMine_ = 0;
     int kosTheirs_ = 0;
     int sentMine_ = 0;
     int sentTheirs_ = 0;
     int matchClockMs_ = 0;
+    int playedMs_ = 0;
     int koFlashMs_ = 0;
     std::vector<DuelEvent> events_;
 };

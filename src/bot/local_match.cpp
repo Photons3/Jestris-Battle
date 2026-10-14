@@ -27,12 +27,14 @@ void LocalMatch::send(const std::string& text) {
     std::visit(
         [this](const auto& m) {
             using T = std::decay_t<decltype(m)>;
-            if constexpr (std::is_same_v<T, CreateRoom>) {
+            if constexpr (std::is_same_v<T, Hello>) {
+                humanName_ = m.name;
+            } else if constexpr (std::is_same_v<T, CreateRoom>) {
                 startLevel_ = m.startLevel;
-                if (!named_) {
+                if (!entered_) {
                     queue(RoomEntered{"BOTS", 1});
-                    queue(OpponentName{botName(level_)});
-                    named_ = true;
+                    queue(Roster{1, {{1, humanName_, true}, {2, botName(level_), true}}});
+                    entered_ = true;
                 }
                 start();
             } else if constexpr (std::is_same_v<T, Attack>) {
@@ -41,7 +43,7 @@ void LocalMatch::send(const std::string& text) {
                 sentHuman_ += m.lines;
             } else if constexpr (std::is_same_v<T, Dead>) {
                 if (playing()) knockOut(false);
-            } else if constexpr (std::is_same_v<T, Rematch>) {
+            } else if constexpr (std::is_same_v<T, Begin>) {
                 if (over_) start();
             }
         },

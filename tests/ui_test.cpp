@@ -326,6 +326,7 @@ TEST_CASE("ui: the duel result draws the stats table") {
     io.DeltaTime = 1.0f / 60.0f;
     DuelSession duel([](const std::string&) {});
     duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs + 1000);
     duel.onMessage("OVER WIN KO 3 1");

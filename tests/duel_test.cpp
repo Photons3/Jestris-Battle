@@ -20,10 +20,11 @@ struct Wire {
     }
 };
 
-// Creates a room, receives START and runs out the countdown; clears what was sent so far.
+// Creates a room, receives the roster and START and runs out the countdown; clears what was sent so far.
 void startMatch(DuelSession& duel, Wire& wire) {
     duel.createRoom(1);
     duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Foe:0");
     duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs);
     REQUIRE(duel.phase() == DuelPhase::Playing);
@@ -58,6 +59,7 @@ TEST_CASE("duel: START counts down, then the match runs without pausing") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 2 1 2");
     CHECK(duel.phase() == DuelPhase::Countdown);
     REQUIRE(duel.game() != nullptr);
@@ -177,33 +179,27 @@ TEST_CASE("duel: a relayed DEAD is ignored now that the server referees") {
     CHECK(duel.phase() == DuelPhase::Playing);
 }
 
-TEST_CASE("duel: opponent leaving mid-match wins and blocks rematch") {
+TEST_CASE("duel: opponent leaving mid-match wins") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     duel.onMessage("LEFT");
     CHECK(duel.phase() == DuelPhase::Result);
     CHECK(duel.outcome() == DuelOutcome::OpponentLeft);
-    CHECK(duel.opponentGone());
-    duel.requestRematch();
     CHECK(wire.sent.empty());
 }
 
-TEST_CASE("duel: rematch is sent once and START begins a fresh match") {
+TEST_CASE("duel: Result goes back to Countdown on the next START") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     duel.onMessage("ATK 3");
     duel.onMessage("KO 3 0");
     duel.onMessage("OVER WIN KO 3 0");
-    duel.requestRematch();
-    duel.requestRematch();
-    CHECK(wire.sent == std::vector<std::string>{"REMATCH"});
-    CHECK(duel.rematchRequested());
+    REQUIRE(duel.phase() == DuelPhase::Result);
     duel.onMessage("START 9 1 1 2");
     CHECK(duel.phase() == DuelPhase::Countdown);
     CHECK(duel.outcome() == DuelOutcome::None);
-    CHECK_FALSE(duel.rematchRequested());
     CHECK(duel.game()->pendingGarbage() == 0);
     CHECK(duel.kosMine() == 0);
     CHECK(duel.sentMine() == 0);
@@ -254,24 +250,17 @@ TEST_CASE("duel: START during a match is ignored") {
     CHECK(duel.game()->pendingGarbage() == 2);
 }
 
-TEST_CASE("duel: START after the opponent left does not start a match") {
+TEST_CASE("duel: after the opponent left, the host's next START begins a new match") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     duel.onMessage("LEFT");
-    duel.onMessage("START 9 1 1 2");
-    CHECK(duel.phase() == DuelPhase::Result);
-    CHECK(duel.outcome() == DuelOutcome::OpponentLeft);
-}
-
-TEST_CASE("duel: START on the result screen is ignored without a rematch request") {
-    Wire wire;
-    DuelSession duel(wire.sender());
-    startMatch(duel, wire);
-    duel.onMessage("OVER WIN KO 0 0");
-    duel.onMessage("START 9 1 1 2");
-    CHECK(duel.phase() == DuelPhase::Result);
-    CHECK(duel.outcome() == DuelOutcome::Won);
+    REQUIRE(duel.outcome() == DuelOutcome::OpponentLeft);
+    duel.onMessage("PLAYERS 1 1:Me:0 3:New:0");
+    duel.onMessage("START 9 1 1 3");
+    CHECK(duel.phase() == DuelPhase::Countdown);
+    CHECK(duel.outcome() == DuelOutcome::None);
+    CHECK(duel.opponentName() == "New");
 }
 
 TEST_CASE("duel: a stray error mid-match is ignored") {
@@ -283,14 +272,14 @@ TEST_CASE("duel: a stray error mid-match is ignored") {
     CHECK(duel.error().empty());
 }
 
-TEST_CASE("duel: LEFT while waiting for an opponent returns to idle") {
+TEST_CASE("duel: LEFT in the room is ignored") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.createRoom(1);
     duel.onMessage("ROOM ABCD 1");
     duel.onMessage("LEFT");
-    CHECK(duel.phase() == DuelPhase::Idle);
-    CHECK(duel.error() == "Opponent left");
+    CHECK(duel.phase() == DuelPhase::Room);
+    CHECK(duel.error().empty());
     CHECK(duel.game() == nullptr);
 }
 
@@ -298,6 +287,7 @@ TEST_CASE("duel: an attack during the countdown is queued") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 1 1 2");
     REQUIRE(duel.phase() == DuelPhase::Countdown);
     duel.onMessage("ATK 2");
@@ -308,6 +298,7 @@ TEST_CASE("duel: OVER during our countdown ends the match") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 1 1 2");
     REQUIRE(duel.phase() == DuelPhase::Countdown);
     duel.onMessage("OVER WIN KO 0 0");
@@ -315,13 +306,13 @@ TEST_CASE("duel: OVER during our countdown ends the match") {
     CHECK(duel.outcome() == DuelOutcome::Won);
 }
 
-TEST_CASE("duel: a room that closes before START does not start a match") {
+TEST_CASE("duel: START before ROOM is ignored") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
     duel.onMessage("LEFT");
     duel.onMessage("START 7 1 1 2");
-    CHECK(duel.phase() == DuelPhase::Idle);
+    CHECK(duel.phase() == DuelPhase::Waiting);
     CHECK(duel.game() == nullptr);
 }
 
@@ -395,6 +386,11 @@ TEST_CASE("duel: KO and OVER are ignored outside the countdown and play") {
     duel.onMessage("KO 1 0");
     CHECK(duel.phase() == DuelPhase::Waiting);
     CHECK(duel.kosMine() == 0);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("OVER WIN KO 0 0");
+    duel.onMessage("KO 1 0");
+    CHECK(duel.phase() == DuelPhase::Room);
+    CHECK(duel.kosMine() == 0);
     duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs);
     duel.onMessage("OVER WIN KO 0 0");
@@ -409,6 +405,7 @@ TEST_CASE("duel: the match clock runs only while playing, stops at 0 and freezes
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs - 1);
     CHECK(duel.matchClockMs() == kMatchMs);
@@ -446,7 +443,7 @@ TEST_CASE("duel: the result line explains how the match ended") {
         {{"KO 2 1", "OVER WIN TIME 3 9"}, "Time up \xC2\xB7 KO 2 : 1"},
         {{"KO 1 1", "OVER WIN TIME 12 7"}, "Time up \xC2\xB7 KO 1 : 1 \xC2\xB7 12 : 7 sent"},
         {{"OVER DRAW TIME 9 9"}, "Time up \xC2\xB7 KO 0 : 0 \xC2\xB7 9 : 9 sent"},
-        {{"LEFT"}, "Opponent left the match"},
+        {{"LEFT"}, "Foe left the match"},
     };
     for (const Case& c : cases) {
         CAPTURE(c.line);
@@ -463,6 +460,7 @@ TEST_CASE("duel events: the countdown ticks each second, then the match starts")
     Wire wire;
     DuelSession duel(wire.sender());
     duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 1 1 2");
     CHECK(duel.takeEvents() == std::vector<DuelEvent>{DuelEvent::CountdownTick});  // "3"
     duel.update(1000);
@@ -533,6 +531,7 @@ TEST_CASE("duel: inMatch covers the countdown and play, not waiting or the resul
     DuelSession duel(wire.sender());
     duel.createRoom(1);
     CHECK_FALSE(duel.inMatch());
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 1 1 2");
     CHECK(duel.inMatch());
     duel.update(kCountdownMs);
@@ -552,36 +551,30 @@ TEST_CASE("duel: catching up after a hidden tab runs the clock and sends the new
     CHECK(wire.sent[0].starts_with("SNAP "));
 }
 
-TEST_CASE("duel: OPP while waiting names the opponent, and leaving forgets it") {
+TEST_CASE("duel: the opponent is named from the roster at START, and leaving forgets it") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.joinRoom("ABCD");
-    duel.onMessage("OPP Kai");
-    CHECK(duel.opponentName() == "Kai");
+    duel.onMessage("ROOM ABCD 2");
+    duel.onMessage("PLAYERS 1 1:Kai:0 2:Me:0");
+    CHECK(duel.opponentName().empty());  // no match yet
     duel.onMessage("START 7 1 1 2");
+    CHECK(duel.opponentName() == "Kai");
+    duel.onMessage("PLAYERS 1 1:Zed:1 2:Me:1");  // fixed at START
     CHECK(duel.opponentName() == "Kai");
     duel.leave();
     CHECK(duel.opponentName().empty());
 }
 
-TEST_CASE("duel: OPP outside Waiting is ignored") {
-    Wire wire;
-    DuelSession duel(wire.sender());
-    duel.onMessage("OPP Kai");  // Idle
-    CHECK(duel.opponentName().empty());
-    startMatch(duel, wire);
-    duel.onMessage("OPP Zed");  // Playing
-    CHECK(duel.opponentName().empty());
-}
-
-TEST_CASE("duel: the opponent-left line uses the name when known") {
+TEST_CASE("duel: an opponent missing from the roster is named by id") {
     Wire wire;
     DuelSession duel(wire.sender());
     duel.createRoom(1);
-    duel.onMessage("OPP Kai");
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 1 1 2");
+    CHECK(duel.opponentName() == "P2");
     duel.onMessage("LEFT");
-    CHECK(resultReasonText(duel) == "Kai left the match");
+    CHECK(resultReasonText(duel) == "P2 left the match");
 }
 
 TEST_CASE("duel: the lobby sends LIST and keeps the pushed list") {
@@ -646,11 +639,12 @@ TEST_CASE("duel: quick match waits as a host or starts as a joiner") {
     CHECK(host.quickMatching());
     host.onMessage("ROOM ABCD 1");
     CHECK(host.roomCode() == "ABCD");
-    CHECK(host.phase() == DuelPhase::Waiting);
+    CHECK(host.phase() == DuelPhase::Room);
 
     DuelSession joiner(wire.sender());
     joiner.quickMatch(9);
-    joiner.onMessage("OPP Sam");
+    joiner.onMessage("ROOM ABCD 2");
+    joiner.onMessage("PLAYERS 1 1:Sam:0 2:Me:0");
     joiner.onMessage("START 7 2 1 2");
     CHECK(joiner.phase() == DuelPhase::Countdown);
     CHECK(joiner.opponentName() == "Sam");
@@ -668,6 +662,7 @@ TEST_CASE("duel stats: played time counts only play, and stops with the match") 
     Wire wire;
     DuelSession duel(wire.sender());
     duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
     duel.onMessage("START 7 1 1 2");
     duel.update(kCountdownMs - 1);
     CHECK(duel.playedMs() == 0);
@@ -719,7 +714,7 @@ TEST_CASE("duel stats: the result table, ours on the left") {
     CHECK(rows[7] == StatRow{"Max combo", "-", "5"});
 }
 
-TEST_CASE("duel stats: no opponent snapshot shows zeros, and a rematch starts from zero") {
+TEST_CASE("duel stats: no opponent snapshot shows zeros, and the next match starts from zero") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
@@ -729,7 +724,6 @@ TEST_CASE("duel stats: no opponent snapshot shows zeros, and a rematch starts fr
     duel.game()->apply(Action::HardDrop);
     duel.update(5000);
     duel.onMessage("OVER WIN KO 0 0");
-    duel.requestRematch();
     duel.onMessage("START 8 1 1 2");
     duel.update(kCountdownMs);
     CHECK(duel.playedMs() == 0);
@@ -740,4 +734,204 @@ TEST_CASE("duel stats: no opponent snapshot shows zeros, and a rematch starts fr
     REQUIRE(rows.size() == 8);
     CHECK(rows[0].theirs == "0.00");
     CHECK(rows[7].theirs == "-");
+}
+
+TEST_CASE("duel: ROOM moves Waiting to Room with my id") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.joinRoom("ABCD");
+    CHECK(duel.myId() == 0);
+    duel.onMessage("ROOM ABCD 1");
+    CHECK(duel.phase() == DuelPhase::Room);
+    CHECK(duel.myId() == 1);
+    CHECK(duel.roomCode() == "ABCD");
+    CHECK_FALSE(duel.inMatch());
+    duel.onMessage("ROOM WXYZ 5");  // only the answer to our request counts
+    CHECK(duel.myId() == 1);
+    CHECK(duel.roomCode() == "ABCD");
+}
+
+TEST_CASE("duel: PLAYERS updates roster and host") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0");
+    CHECK(duel.hostId() == 1);
+    CHECK(duel.isHost());
+    CHECK(duel.roster().size() == 1);
+    duel.onMessage("PLAYERS 2 1:Me:0 2:Foe:0");
+    CHECK(duel.hostId() == 2);
+    CHECK_FALSE(duel.isHost());
+    REQUIRE(duel.roster().size() == 2);
+    CHECK(duel.roster()[1] == RosterEntry{2, "Foe", false});
+}
+
+TEST_CASE("duel: PLAYERS is taken in the room, the match and the result, and nowhere else") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Foe:0");  // Idle
+    CHECK(duel.roster().empty());
+    duel.openLobby();
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Foe:0");
+    CHECK(duel.roster().empty());
+    duel.createRoom(1);
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Foe:0");  // Waiting
+    CHECK(duel.roster().empty());
+    CHECK(duel.hostId() == 0);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Foe:0");
+    CHECK(duel.roster().size() == 2);
+    duel.onMessage("START 7 1 1 2");
+    duel.onMessage("PLAYERS 1 1:Me:1 2:Foe:1 3:Late:0");  // Countdown
+    CHECK(duel.roster().size() == 3);
+    duel.update(kCountdownMs);
+    duel.onMessage("PLAYERS 2 2:Foe:1 3:Late:0");  // Playing
+    CHECK(duel.hostId() == 2);
+    duel.onMessage("OVER WIN KO 3 0");
+    duel.onMessage("PLAYERS 3 3:Late:0 1:Me:0");  // Result
+    CHECK(duel.hostId() == 3);
+    CHECK(duel.roster().size() == 2);
+}
+
+TEST_CASE("duel: begin sends BEGIN only for the host with two or more players") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.begin();  // Idle
+    duel.createRoom(1);
+    wire.sent.clear();
+    duel.begin();  // Waiting
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0");
+    duel.begin();  // alone
+    CHECK(wire.sent.empty());
+    duel.onMessage("PLAYERS 2 1:Me:0 2:Foe:0");
+    duel.begin();  // not the host
+    CHECK(wire.sent.empty());
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Foe:0");
+    duel.begin();
+    CHECK(wire.sent == std::vector<std::string>{"BEGIN"});
+    duel.onMessage("START 7 1 1 2");
+    wire.sent.clear();
+    duel.begin();  // Countdown
+    duel.update(kCountdownMs);
+    wire.sent.clear();
+    duel.begin();  // Playing
+    CHECK(wire.sent.empty());
+    duel.onMessage("OVER WIN KO 3 0");
+    duel.begin();
+    CHECK(wire.sent == std::vector<std::string>{"BEGIN"});
+}
+
+TEST_CASE("duel: START without my id is ignored") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 2 1:Me:0 2:Foe:0 3:Bo:0");
+    duel.onMessage("START 7 1 2 3");
+    CHECK(duel.phase() == DuelPhase::Room);
+    CHECK(duel.game() == nullptr);
+    CHECK(duel.opponents().empty());
+}
+
+TEST_CASE("duel: START without my id on the result screen is ignored") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.onMessage("OVER WIN KO 3 0");
+    duel.onMessage("START 9 1 2 3");
+    CHECK(duel.phase() == DuelPhase::Result);
+    CHECK(duel.outcome() == DuelOutcome::Won);
+}
+
+TEST_CASE("duel: START with two ids is a duel with one named opponent") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 2");
+    duel.onMessage("PLAYERS 2 1:Foe:0 2:Me:0 3:Late:0");
+    duel.onMessage("START 7 1 1 2");
+    CHECK(duel.phase() == DuelPhase::Countdown);
+    CHECK(duel.mode() == DuelMode::Duel);
+    REQUIRE(duel.opponents().size() == 1);
+    CHECK(duel.opponents()[0].id == 1);
+    CHECK(duel.opponents()[0].alive);
+    CHECK(duel.opponents()[0].place == 0);
+    CHECK(duel.opponentName() == "Foe");
+}
+
+TEST_CASE("duel: SNAP from a participant updates that opponent; unknown ids are ignored") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    const Snapshot theirs{.score = 300};
+    const Snapshot stranger{.score = 900};
+    duel.onMessage(encode(PlayerSnapshot{3, stranger}));
+    duel.onMessage(encode(PlayerSnapshot{1, stranger}));  // our own id
+    CHECK(duel.opponent() == Snapshot{});
+    duel.onMessage(encode(PlayerSnapshot{2, theirs}));
+    CHECK(duel.opponent() == theirs);
+    REQUIRE(duel.opponents().size() == 1);
+    CHECK(duel.opponents()[0].snapshot == theirs);
+}
+
+TEST_CASE("duel: ATK, KO, OVER and LEFT do nothing in the room or the result") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("ATK 2");
+    duel.onMessage("KO 1 0");
+    duel.onMessage("OVER WIN KO 0 0");
+    duel.onMessage("LEFT");
+    CHECK(duel.phase() == DuelPhase::Room);
+    CHECK(duel.sentTheirs() == 0);
+    CHECK(duel.kosMine() == 0);
+    CHECK(duel.outcome() == DuelOutcome::None);
+    duel.onMessage("START 7 1 1 2");
+    duel.update(kCountdownMs);
+    duel.onMessage("OVER LOSE KO 1 2");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    duel.onMessage("ATK 2");
+    duel.onMessage("LEFT");
+    CHECK(duel.outcome() == DuelOutcome::Lost);
+    CHECK(duel.sentTheirs() == 2);
+}
+
+TEST_CASE("duel: ERR in the room is ignored, and a lost connection there goes to idle") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("ERR room is full");
+    CHECK(duel.phase() == DuelPhase::Room);
+    CHECK(duel.error().empty());
+    duel.onDisconnected();
+    CHECK(duel.phase() == DuelPhase::Idle);
+    CHECK(duel.error() == "Connection lost");
+    CHECK(duel.myId() == 0);
+    CHECK(duel.roster().empty());
+}
+
+TEST_CASE("duel: leaving after a match forgets the room") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.onMessage("OVER WIN KO 3 0");
+    duel.leave();
+    CHECK(duel.phase() == DuelPhase::Idle);
+    CHECK(duel.myId() == 0);
+    CHECK(duel.hostId() == 0);
+    CHECK(duel.roster().empty());
+    CHECK(duel.opponents().empty());
+    CHECK(duel.roomCode().empty());
+}
+
+TEST_CASE("duel stats: played time stops at the duel's 0:00") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.update(kMatchMs + 5000);
+    CHECK(duel.playedMs() == kMatchMs);
 }

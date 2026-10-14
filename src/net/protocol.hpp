@@ -98,9 +98,6 @@ struct Attack {
 struct Dead {
     friend bool operator==(const Dead&, const Dead&) = default;
 };
-struct Rematch {
-    friend bool operator==(const Rematch&, const Rematch&) = default;
-};
 struct OpponentLeft {
     friend bool operator==(const OpponentLeft&, const OpponentLeft&) = default;
 };
@@ -111,10 +108,6 @@ struct ServerError {
 struct Hello {  // the sender's display name; the first message on every connection
     std::string name;
     friend bool operator==(const Hello&, const Hello&) = default;
-};
-struct OpponentName {  // from the server, just before a room's first START
-    std::string name;
-    friend bool operator==(const OpponentName&, const OpponentName&) = default;
 };
 
 struct ListRooms {  // start watching the lobby
@@ -154,9 +147,9 @@ struct MatchOver {  // the server's verdict, from the receiver's point of view
     friend bool operator==(const MatchOver&, const MatchOver&) = default;
 };
 
-using Message = std::variant<CreateRoom, JoinRoom, RoomEntered, StartMatch, Attack, Snapshot, Dead, Rematch,
-                             OpponentLeft, ServerError, KoCounts, MatchOver, Hello, OpponentName, ListRooms,
-                             UnlistRooms, QuickMatch, RoomList, PlayerSnapshot, Roster, Begin, PlayerOut>;
+using Message = std::variant<CreateRoom, JoinRoom, RoomEntered, StartMatch, Attack, Snapshot, Dead, OpponentLeft,
+                             ServerError, KoCounts, MatchOver, Hello, ListRooms, UnlistRooms, QuickMatch, RoomList,
+                             PlayerSnapshot, Roster, Begin, PlayerOut>;
 
 std::string encode(const Message& message);
 // nullopt for anything malformed or unknown.

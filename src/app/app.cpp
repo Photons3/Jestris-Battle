@@ -91,8 +91,8 @@ void applyCommand(App& app, UiCommand command) {
         app.openDuel();
         app.duel.joinRoom(app.menu.joinCode);
         break;
-    case UiCommand::Rematch:
-        app.duel.requestRematch();
+    case UiCommand::BeginMatch:
+        app.duel.begin();
         break;
     case UiCommand::LeaveDuel:
         app.closeDuel();

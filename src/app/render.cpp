@@ -819,14 +819,10 @@ UiCommand drawDuelResult(const DuelSession& duel, const Fonts& fonts) {
         ImGui::EndTable();
     }
     ImGui::Spacing();
-    if (duel.opponentGone()) {
-        if (duel.outcome() != DuelOutcome::OpponentLeft)
-            ImGui::TextUnformatted(
-                ((duel.opponentName().empty() ? std::string("Opponent") : duel.opponentName()) + " left.").c_str());
-    } else if (duel.rematchRequested()) {
-        ImGui::TextUnformatted("Waiting for opponent...");
-    } else if (menuButton("Rematch")) {
-        command = UiCommand::Rematch;
+    if (!duel.isHost()) {
+        ImGui::TextUnformatted("Waiting for the host\xE2\x80\xA6");
+    } else if (menuButton("Start next match")) {
+        command = UiCommand::BeginMatch;
     }
     if (menuButton("Leave")) command = UiCommand::LeaveDuel;
     ImGui::End();
@@ -1291,9 +1287,10 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
         command = drawLobby(duel, fonts, menu);
         break;
     case DuelPhase::Waiting:
+    case DuelPhase::Room:  // the full room screen comes with the roster UI
         beginMenu("##waiting");
         if (duel.roomCode().empty()) {
-            // A quick match may join straight into a countdown without ever getting a code.
+            // Waiting: the server has not answered the request yet.
             menuTitle(fonts, duel.quickMatching() ? "SEARCHING" : "CONNECTING");
         } else {
             menuTitle(fonts, "ROOM CODE");
