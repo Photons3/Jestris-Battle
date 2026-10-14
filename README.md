@@ -47,7 +47,7 @@ The SOLO section of the start menu has five modes:
 - **Cheese 10L**: dig out 10 garbage rows, each with one hole, as fast as you can, from level 1.
 - **Zen**: no clock and no game over; topping out just clears the board. Leave from the pause menu.
 
-The start level slider applies to Marathon, Blitz and Zen. Sprint, Blitz and Cheese start after a
+The start level slider applies to Marathon, Blitz, Zen and vs Bot. Sprint, Blitz and Cheese start after a
 3-second countdown, and the side panel shows the clock (Blitz counts down and turns red under 10
 seconds). When a timed run ends, the result screen shows your time or score and your personal best;
 Retry (or R) starts again. Only a finished run counts toward a best: the fastest Sprint and Cheese
@@ -57,7 +57,7 @@ times and the highest Blitz score are shown beside their buttons on the start me
 
 The PRACTICE section of the start menu plays a 1v1 duel against a bot, offline, on the desktop and in
 the browser alike. Pick Easy, Medium or Hard and press vs Bot. The bot is named Bot-Easy, Bot-Medium or
-Bot-Hard. Easy plays about 0.8 pieces per second and makes mistakes, Medium about 1.5, Hard about 2.5.
+Bot-Hard. Easy plays about 0.7 pieces per second and makes mistakes, Medium about 1.3, Hard about 2.5.
 The match has the same countdown, garbage, KOs and rematch as a network duel, and Leave returns to
 the menu.
 
