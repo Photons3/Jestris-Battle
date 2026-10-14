@@ -86,3 +86,36 @@ TEST_CASE("bot: replans when gravity moves the piece mid-plan") {
     CHECK(pieces >= 200);
     CHECK(game.state() != GameState::GameOver);
 }
+
+TEST_CASE("bot: a mistake is chosen once per piece, not again on every replan") {
+    // At level 8 gravity moves the piece between most of Easy's key presses, so the bot replans nearly every
+    // input. A replan keeps the piece's target; rolling the mistake again would send it back and forth.
+    for (BotLevel level : {BotLevel::Easy, BotLevel::Medium}) {
+        Game game(3, 8);
+        BotPlayer bot(level, 3);
+        int pieces = 0, reversed = 0;
+        bool movedLeft = false, movedRight = false;
+        for (int ms = 0; ms < 60000 && game.state() != GameState::GameOver; ++ms) {
+            const Piece before = game.active();
+            bot.update(game, 1);
+            bool pieceDone = false;
+            for (const GameEvent& e : game.takeEvents()) pieceDone |= e.type == GameEventType::HardDropped;
+            const Piece after = game.active();
+            if (!pieceDone && after.type == before.type && after.rotation == before.rotation) {  // no kicks
+                movedLeft |= after.pos.x < before.pos.x;
+                movedRight |= after.pos.x > before.pos.x;
+            }
+            game.tick(1);
+            for (const GameEvent& e : game.takeEvents()) pieceDone |= e.type == GameEventType::Locked;
+            if (pieceDone) {
+                ++pieces;
+                reversed += movedLeft && movedRight;
+                movedLeft = movedRight = false;
+            }
+        }
+        CAPTURE(botName(level));
+        CAPTURE(pieces);
+        CHECK(pieces >= 20);
+        CHECK(reversed == 0);
+    }
+}

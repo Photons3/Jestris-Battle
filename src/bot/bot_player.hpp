@@ -38,6 +38,7 @@ private:
     int thinkLeft_;
     int inputLeft_ = 0;
     Piece expected_{};  // where the active piece should be after the last action; gravity moving it voids the plan
+    Piece target_{};    // where the current plan locks the piece; a replan for the same piece aims there again
 };
 
 }  // namespace tetris
