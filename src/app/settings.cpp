@@ -1,7 +1,11 @@
 #include "app/settings.hpp"
 
 #include <charconv>
+#include <cstdint>
+#include <cstdio>
 #include <optional>
+
+#include "net/protocol.hpp"
 
 namespace tetris {
 namespace {
@@ -43,10 +47,17 @@ std::array<SDL_Scancode, kKeySlots> parseSlots(std::string_view text) {
 
 }  // namespace
 
+std::string defaultPlayerName(std::uint32_t random) {
+    char digits[5];
+    std::snprintf(digits, sizeof digits, "%04u", static_cast<unsigned>(random % 10000));
+    return "Player" + std::string(digits);
+}
+
 std::string serializeSettings(const Settings& settings) {
     std::string out = "version=" + std::string(kVersion) + "\n";
     out += settings.muted ? "sound=off\n" : "sound=on\n";
     out += settings.musicOff ? "music=off\n" : "music=on\n";
+    if (isValidName(settings.playerName)) out += "name=" + settings.playerName + "\n";
     for (int i = 0; i < kActionCount; ++i) {
         out += kActionKeys[i];
         out += '=';
@@ -78,6 +89,8 @@ Settings parseSettings(std::string_view text) {
             settings.muted = value == "off";
         } else if (name == "music") {
             settings.musicOff = value == "off";
+        } else if (name == "name") {
+            if (isValidName(value)) settings.playerName = std::string(value);
         } else if (const std::optional<int> action = actionIndex(name)) {
             loaded.keys[*action] = parseSlots(value);
         }

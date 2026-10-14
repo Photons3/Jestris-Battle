@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -12,7 +13,11 @@ struct Settings {
     Keymap keys = defaultKeymap();
     bool muted = false;
     bool musicOff = false;
+    std::string playerName;  // empty until one is chosen or generated
 };
+
+// "Player" and four digits taken from `random`, for a player who has not picked a name.
+std::string defaultPlayerName(std::uint32_t random);
 
 // One "name=value" per line. Keys are stored as scancode numbers, since names like "," would
 // clash with the format.

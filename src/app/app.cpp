@@ -149,7 +149,7 @@ App::App()
     audio.setMusicMuted(menu.musicOff);
 }
 
-void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff})); }
+void App::saveSettings() { saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, {}})); }
 
 void App::newGame() {
     syncMusic({});  // a new game always starts the song from the top
