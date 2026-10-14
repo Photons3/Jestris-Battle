@@ -32,6 +32,8 @@ public:
     bool pushGarbage(int rows, int bombX);
     // The same, one garbage row per entry, bottom row first, each with its bomb in the given column.
     bool pushGarbage(const std::vector<int>& bombColumns);
+    // The same, but each row has an empty cell instead of a bomb in the given column.
+    bool pushGarbageHoles(const std::vector<int>& holeColumns);
     // Fills rows 0..rows-1 with garbage, one hole each; a row's hole differs from the one below it.
     // Expects an empty board above those rows. No bombs.
     void pushCheese(int rows, std::mt19937& rng);
@@ -41,7 +43,10 @@ public:
     // touching that one below it in the same column. Sorted bottom-up, without duplicates.
     std::vector<int> bombRowsHitBy(const Piece& piece) const;
 
+    friend bool operator==(const Board&, const Board&) = default;
+
 private:
+    bool pushGarbageRows(const std::vector<int>& columns, Cell special);
     static int index(int x, int y) { return y * kBoardWidth + x; }
 
     std::array<Cell, kBoardWidth * kBoardHeight> cells_{};

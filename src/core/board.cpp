@@ -81,17 +81,25 @@ bool Board::pushGarbage(int rows, int bombX) {
 }
 
 bool Board::pushGarbage(const std::vector<int>& bombColumns) {
-    const int rows = std::min(static_cast<int>(bombColumns.size()), kBoardHeight);
+    return pushGarbageRows(bombColumns, Cell{PieceType::Bomb});
+}
+
+bool Board::pushGarbageHoles(const std::vector<int>& holeColumns) {
+    return pushGarbageRows(holeColumns, Cell{});
+}
+
+bool Board::pushGarbageRows(const std::vector<int>& columns, Cell special) {
+    const int rows = std::min(static_cast<int>(columns.size()), kBoardHeight);
     for (int y = kBoardHeight - rows; y < kBoardHeight; ++y)
         for (int x = 0; x < kBoardWidth; ++x)
             if (cells_[index(x, y)]) return false;
     for (int y = kBoardHeight - 1; y >= rows; --y)
         for (int x = 0; x < kBoardWidth; ++x) cells_[index(x, y)] = cells_[index(x, y - rows)];
     for (int y = 0; y < rows; ++y) {
-        const int bombX = bombColumns[static_cast<std::size_t>(y)];
-        assert(bombX >= 0 && bombX < kBoardWidth);
+        const int specialX = columns[static_cast<std::size_t>(y)];
+        assert(specialX >= 0 && specialX < kBoardWidth);
         for (int x = 0; x < kBoardWidth; ++x)
-            cells_[index(x, y)] = x == bombX ? Cell{PieceType::Bomb} : Cell{PieceType::Garbage};
+            cells_[index(x, y)] = x == specialX ? special : Cell{PieceType::Garbage};
     }
     return true;
 }
