@@ -1,5 +1,7 @@
 # Design: Player names
 
+> **Partly superseded** by `2026-10-14-multiplayer-rooms-design.md`: `OPP` is removed; names come from the `PLAYERS` roster, with room-unique suffixes for duplicate names.
+
 ## Context
 Duels today are anonymous: the hub's `player` is just a WebSocket, and the duel screen's name bars say YOU and FOE (`drawDuelBoards` in `src/app/render.cpp`). This spec lets each player pick a display name that is remembered between visits and shown to the opponent. It extends `2026-10-13-lan-duel-design.md` and `2026-10-13-bomb-battle-design.md`, and it is the base for the room lobby in `2026-10-13-room-lobby-design.md`, which lists rooms by the host's name.
 

@@ -27,11 +27,14 @@ void LocalMatch::send(const std::string& text) {
     std::visit(
         [this](const auto& m) {
             using T = std::decay_t<decltype(m)>;
-            if constexpr (std::is_same_v<T, CreateRoom>) {
+            if constexpr (std::is_same_v<T, Hello>) {
+                humanName_ = m.name;
+            } else if constexpr (std::is_same_v<T, CreateRoom>) {
                 startLevel_ = m.startLevel;
-                if (!named_) {
-                    queue(OpponentName{botName(level_)});
-                    named_ = true;
+                if (!entered_) {
+                    queue(RoomEntered{"BOTS", 1});
+                    queueRoster(true);
+                    entered_ = true;
                 }
                 start();
             } else if constexpr (std::is_same_v<T, Attack>) {
@@ -40,8 +43,10 @@ void LocalMatch::send(const std::string& text) {
                 sentHuman_ += m.lines;
             } else if constexpr (std::is_same_v<T, Dead>) {
                 if (playing()) knockOut(false);
-            } else if constexpr (std::is_same_v<T, Rematch>) {
-                if (over_) start();
+            } else if constexpr (std::is_same_v<T, Begin>) {
+                if (!over_) return;
+                start();
+                queueRoster(true);  // the server's order: START, then PLAYERS with the in-match flags
             }
         },
         *message);
@@ -50,7 +55,7 @@ void LocalMatch::send(const std::string& text) {
 std::vector<std::string> LocalMatch::receive() { return std::exchange(outbox_, {}); }
 
 void LocalMatch::start() {
-    const StartMatch startMatch{static_cast<std::uint32_t>(rng_()), startLevel_};
+    const StartMatch startMatch{static_cast<std::uint32_t>(rng_()), startLevel_, {1, 2}};
     bot_ = makeDuelGame(startMatch);
     player_ = BotPlayer(level_, static_cast<std::uint32_t>(rng_()));
     over_ = false;
@@ -87,7 +92,7 @@ void LocalMatch::step() {
             sinceSnapshotMs_ = 0;
             const Snapshot snapshot = snapshotOf(*bot_);
             if (snapshot != lastSent_) {
-                queue(snapshot);
+                queue(PlayerSnapshot{2, snapshot});
                 lastSent_ = snapshot;
             }
         }
@@ -110,7 +115,12 @@ void LocalMatch::knockOut(bool humanScores) {
 
 void LocalMatch::finish(MatchReason reason) {
     queue(verdictFor(kosHuman_, kosBot_, sentHuman_, sentBot_, reason));
+    queueRoster(false);  // like the server's PLAYERS after OVER: back between matches
     over_ = true;
+}
+
+void LocalMatch::queueRoster(bool inMatch) {
+    queue(Roster{1, {{1, humanName_, inMatch}, {2, botName(level_), inMatch}}});
 }
 
 }  // namespace tetris

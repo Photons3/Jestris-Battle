@@ -32,13 +32,20 @@ const (
 	maxNameLength      = 12       // kMaxNameLength in src/net/protocol.hpp
 	defaultName        = "Player" // for clients that send no valid HELLO
 	maxListedRooms     = 20       // kMaxListedRooms in src/net/protocol.hpp
+	maxRoomPlayers     = 16       // kMaxRoomPlayers in src/net/protocol.hpp
 	defaultMaxRooms    = 500
+	sendQueueLength    = 1024 // per player; a full 16-player room relays about 150 SNAPs a second to each
 )
 
-// Hub pairs browsers into two-player rooms, relays game messages between them and referees each match.
-// It handles HELLO, CREATE, JOIN, LIST, UNLIST, QUICK, REMATCH, ATK and DEAD itself; other game messages go
-// to the opponent unchanged, and the verbs only the server sends (ROOM, START, LEFT, ERR, KO, OVER, OPP, ROOMS)
-// are dropped. Lobby watchers get the full ROOMS list whenever the set of open public rooms changes.
+// Hub gathers browsers into rooms of up to maxRoomPlayers, starts a match when the host sends BEGIN, relays
+// game messages between the match's participants and referees each match: a duel for 2, a royale for 3 or
+// more. It handles HELLO, CREATE, JOIN, LIST, UNLIST, QUICK, BEGIN, ATK, DEAD and SNAP itself; anything
+// else inside a room, including the verbs only the server sends (ROOM, PLAYERS, START, KO, OVER, OUT, LEFT,
+// ERR, ROOMS), is dropped. Lobby watchers get the full ROOMS list whenever a listed room appears,
+// disappears, or changes its player count or host.
+//
+// Messages are queued to each recipient while the hub lock is held, so every player gets them in the order
+// the hub produced them; a writer goroutine per connection writes them outside the lock.
 type Hub struct {
 	mu          sync.Mutex
 	rooms       map[string]*room
@@ -47,6 +54,7 @@ type Hub struct {
 	maxRooms    int
 	newCode     func() string
 	newSeed     func() uint32
+	pickTarget  func(n int) int // a royale ATK goes to living[pickTarget(len(living))]
 	afterFunc   func(d time.Duration, f func()) stopper
 	matchLength time.Duration
 	matchGrace  time.Duration // covers clients starting their clocks a one-way latency after the server
@@ -58,29 +66,49 @@ type Hub struct {
 // stopper is a match timer; *time.Timer satisfies it.
 type stopper interface{ Stop() bool }
 
+// room and everything it points to is guarded by Hub.mu.
 type room struct {
 	code    string
 	level   int
-	public  bool   // listed in the lobby while it has a free seat
-	host    string // the creator's name when the room opened
-	seq     uint64 // creation order, for the oldest-first list
-	players [2]*player
-	rematch [2]bool
-	// The current match, reset by every START.
-	kos     [2]int
-	sent    [2]int // lines sent: the total of each seat's accepted ATK n
-	over    bool
-	matchID uint64 // tells a stale timer from the current match's
+	public  bool      // listed in the lobby while it has a free place
+	seq     uint64    // creation order, for the oldest-first list
+	players []*player // join order
+	hostID  int
+	match   *match // nil between matches
+	matchID uint64 // counts BEGINs; tells a stale timer from the current match's
 	timer   stopper
 }
 
 type player struct {
-	conn *websocket.Conn
-	room *room  // guarded by Hub.mu
-	name string // from HELLO, guarded by Hub.mu
+	conn     *websocket.Conn
+	room     *room         // guarded by Hub.mu
+	name     string        // from HELLO, guarded by Hub.mu
+	id       int           // in the room, 1 to maxRoomPlayers
+	roomName string        // name made unique in the room
+	queue    chan string   // outbound messages in production order, filled under Hub.mu
+	kick     chan struct{} // closed when queue overflows; the writer then closes the connection
+	kicked   bool          // guarded by Hub.mu
 }
 
-// outgoing is a message to write after the hub lock is released.
+func newPlayer(conn *websocket.Conn) *player {
+	return &player{
+		conn:  conn,
+		name:  defaultName,
+		queue: make(chan string, sendQueueLength),
+		kick:  make(chan struct{}),
+	}
+}
+
+// match is one match in a room: its participants are the room's players at BEGIN.
+type match struct {
+	royale  bool
+	players []*player // participants, in START order
+	kos     map[*player]int
+	sent    map[*player]int // lines sent: the total of each participant's accepted ATK n
+	alive   map[*player]bool
+}
+
+// outgoing is a message for the queue of player to.
 type outgoing struct {
 	to   *player
 	text string
@@ -93,6 +121,7 @@ func NewHub() *Hub {
 		maxRooms:    defaultMaxRooms,
 		newCode:     randomCode,
 		newSeed:     rand.Uint32,
+		pickTarget:  rand.IntN,
 		afterFunc:   func(d time.Duration, f func()) stopper { return time.AfterFunc(d, f) },
 		matchLength: defaultMatchLength,
 		matchGrace:  defaultMatchGrace,
@@ -118,7 +147,8 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	go keepAlive(ctx, conn)
-	p := &player{conn: conn, name: defaultName}
+	p := newPlayer(conn)
+	go p.write(ctx)
 	defer h.leave(p)
 	for {
 		typ, data, err := conn.Read(ctx)
@@ -126,9 +156,38 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if typ == websocket.MessageText {
-			h.deliver(h.route(p, string(data)))
+			h.receive(p, string(data))
 		}
 	}
+}
+
+// write sends p's queued messages until ctx ends, each with the write timeout. A failed write or a kick
+// closes the connection, whose read loop then leaves.
+func (p *player) write(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.kick:
+			p.conn.CloseNow()
+			return
+		case text := <-p.queue:
+			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+			err := p.conn.Write(writeCtx, websocket.MessageText, []byte(text))
+			cancel()
+			if err != nil {
+				p.conn.CloseNow()
+				return
+			}
+		}
+	}
+}
+
+// receive handles one message from p and queues what it causes, all under the lock.
+func (h *Hub) receive(p *player, text string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	enqueue(h.route(p, text))
 }
 
 // keepAlive pings until ctx ends. A ping that gets no pong closes the connection.
@@ -151,9 +210,8 @@ func keepAlive(ctx context.Context, conn *websocket.Conn) {
 	}
 }
 
+// route handles one message from p; the caller holds the lock.
 func (h *Hub) route(p *player, text string) []outgoing {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	verb, arg, _ := strings.Cut(text, " ")
 	if verb == "HELLO" {
 		if p.room == nil && validName(arg) {
@@ -179,29 +237,27 @@ func (h *Hub) route(p *player, text string) []outgoing {
 		case "QUICK":
 			return h.quick(p, arg)
 		}
-		return nil // relay traffic that raced a LEFT; nothing to do
+		return nil // a lobby or idle connection: match verbs and anything unknown mean nothing here
 	}
 	switch verb {
 	case "CREATE", "JOIN", "QUICK":
 		return []outgoing{{p, "ERR already in a room"}}
-	case "LIST", "UNLIST":
-		return nil
-	case "REMATCH":
-		return h.rematch(p)
+	case "BEGIN":
+		if text != "BEGIN" {
+			return nil
+		}
+		return h.begin(p)
 	case "ATK":
-		return p.room.attack(p, arg)
+		return h.attack(p, arg)
 	case "DEAD":
 		if text != "DEAD" {
 			return nil
 		}
 		return p.room.knockOut(p)
-	case "ROOM", "START", "LEFT", "ERR", "KO", "OVER", "OPP", "ROOMS":
-		return nil // only the server sends these; never relay a forged one
+	case "SNAP":
+		return p.room.relaySnapshot(p, arg)
 	}
-	if other := p.room.opponent(p); other != nil {
-		return []outgoing{{other, text}}
-	}
-	return nil
+	return nil // lobby verbs, server-only verbs (never relay a forged one) and unknown verbs
 }
 
 func (h *Hub) create(p *player, arg string) []outgoing {
@@ -234,15 +290,9 @@ func (h *Hub) open(p *player, level int, public bool) []outgoing {
 		code = h.newCode()
 	}
 	h.nextSeq++
-	r := &room{code: code, level: level, public: public, host: p.name, seq: h.nextSeq}
-	r.players[0] = p
-	p.room = r
+	r := &room{code: code, level: level, public: public, seq: h.nextSeq}
 	h.rooms[code] = r
-	out := []outgoing{{p, "ROOM " + code}}
-	if public {
-		out = append(out, h.lobbyUpdate()...)
-	}
-	return out
+	return h.enter(p, r)
 }
 
 func (h *Hub) join(p *player, code string) []outgoing {
@@ -251,36 +301,72 @@ func (h *Hub) join(p *player, code string) []outgoing {
 	if r == nil {
 		return []outgoing{{p, "ERR unknown room"}}
 	}
-	if r.players[1] != nil {
+	if len(r.players) >= maxRoomPlayers {
 		return []outgoing{{p, "ERR room is full"}}
 	}
-	r.players[1] = p
+	return h.enter(p, r)
+}
+
+// enter adds p to r with the lowest free ID and a room-unique name. p gets ROOM, the room gets PLAYERS, and
+// the lobby hears of a public room's new player count. A player who joins mid-match waits for the next one.
+func (h *Hub) enter(p *player, r *room) []outgoing {
+	p.id = 1
+	for r.player(p.id) != nil {
+		p.id++
+	}
+	p.roomName = uniqueName(p.name, func(s string) bool {
+		return slices.ContainsFunc(r.players, func(q *player) bool { return q.roomName == s })
+	})
+	if len(r.players) == 0 {
+		r.hostID = p.id
+	}
+	r.players = append(r.players, p)
 	p.room = r
-	out := []outgoing{{r.players[0], "OPP " + p.name}, {p, "OPP " + r.players[0].name}}
-	out = append(out, h.startMatch(r)...)
+	out := []outgoing{{p, fmt.Sprintf("ROOM %s %d", r.code, p.id)}}
+	out = append(out, r.broadcast(r.rosterMessage())...)
 	if r.public {
 		out = append(out, h.lobbyUpdate()...)
 	}
 	return out
 }
 
-// quick joins the oldest open public room, at that room's level, or opens a public room at level arg.
+// uniqueName returns base, or else base with the lowest free suffix 2, 3, ..., shortening base so the result
+// stays within maxNameLength.
+func uniqueName(base string, taken func(string) bool) string {
+	if !taken(base) {
+		return base
+	}
+	for n := 2; ; n++ {
+		suffix := strconv.Itoa(n)
+		name := base[:min(len(base), maxNameLength-len(suffix))] + suffix
+		if !taken(name) {
+			return name
+		}
+	}
+}
+
+// quick joins the oldest listed room with no match running, else the oldest listed room, at that room's
+// level, or opens a public room at level arg.
 func (h *Hub) quick(p *player, arg string) []outgoing {
 	level, err := strconv.Atoi(arg)
 	if err != nil || level < minStartLevel || level > maxStartLevel {
 		return []outgoing{{p, "ERR bad start level"}}
 	}
-	if open := h.openPublic(); len(open) > 0 {
-		return h.join(p, open[0].code)
+	open := h.openPublic()
+	if len(open) == 0 {
+		return h.open(p, level, true)
 	}
-	return h.open(p, level, true)
+	if i := slices.IndexFunc(open, func(r *room) bool { return r.match == nil }); i >= 0 {
+		return h.join(p, open[i].code)
+	}
+	return h.join(p, open[0].code)
 }
 
 // openPublic lists the rooms a lobby can join, oldest first.
 func (h *Hub) openPublic() []*room {
 	var open []*room
 	for _, r := range h.rooms {
-		if r.public && r.players[1] == nil {
+		if r.public && len(r.players) < maxRoomPlayers {
 			open = append(open, r)
 		}
 	}
@@ -295,7 +381,7 @@ func (h *Hub) roomsMessage() string {
 		if i == maxListedRooms {
 			break
 		}
-		fmt.Fprintf(&b, " %s:%d:%s", r.code, r.level, r.host)
+		fmt.Fprintf(&b, " %s:%d:%s:%d", r.code, r.level, r.player(r.hostID).roomName, len(r.players))
 	}
 	return b.String()
 }
@@ -327,123 +413,259 @@ func validName(s string) bool {
 	return true
 }
 
-func (h *Hub) rematch(p *player) []outgoing {
-	r := p.room
-	if r.opponent(p) == nil || !r.over {
-		return nil
-	}
-	r.rematch[r.seat(p)] = true
-	if r.rematch[0] && r.rematch[1] {
-		return h.startMatch(r)
-	}
-	return nil
-}
-
+// leave takes p out of its room. A duel p was playing ends with LEFT to the other participant; in a royale a
+// living p is eliminated as if by DEAD, but gets nothing. The longest present player becomes host if p was,
+// and an empty room is deleted.
 func (h *Hub) leave(p *player) {
 	h.mu.Lock()
 	var out []outgoing
 	delete(h.watchers, p)
 	if r := p.room; r != nil {
-		if r.timer != nil {
-			r.timer.Stop()
-		}
-		wasListed := r.public && r.players[1] == nil
-		delete(h.rooms, r.code)
-		if other := r.opponent(p); other != nil {
-			other.room = nil
-			out = append(out, outgoing{other, "LEFT"})
-		}
+		r.players = slices.DeleteFunc(r.players, func(q *player) bool { return q == p })
 		p.room = nil
-		if wasListed {
+		if m := r.match; m != nil && !m.royale && m.has(p) {
+			r.endMatch()
+			out = append(out, outgoing{m.opponent(p), "LEFT"})
+		}
+		if m := r.match; m != nil && m.royale && m.alive[p] {
+			out = append(out, r.eliminate(p)...)
+		}
+		if len(r.players) == 0 {
+			r.endMatch()
+			delete(h.rooms, r.code)
+		} else {
+			if r.hostID == p.id {
+				r.hostID = r.players[0].id
+			}
+			out = append(out, r.broadcast(r.rosterMessage())...)
+		}
+		if r.public {
 			out = append(out, h.lobbyUpdate()...)
 		}
 	}
+	enqueue(out)
 	h.mu.Unlock()
-	h.deliver(out)
 }
 
-// deliver writes outside the lock; a failed write closes that connection, whose read loop then cleans up.
-func (h *Hub) deliver(out []outgoing) {
+// enqueue adds each message to its recipient's queue without blocking; the caller holds the lock. A
+// recipient whose queue is full is kicked: its writer closes the connection and its read loop leaves.
+func enqueue(out []outgoing) {
 	for _, o := range out {
-		ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
-		_ = o.to.conn.Write(ctx, websocket.MessageText, []byte(o.text))
-		cancel()
+		select {
+		case o.to.queue <- o.text:
+		default:
+			if !o.to.kicked {
+				o.to.kicked = true
+				close(o.to.kick)
+			}
+		}
 	}
 }
 
-// startMatch resets the room's match state, arms the match timer and sends START to both players.
-func (h *Hub) startMatch(r *room) []outgoing {
-	if r.timer != nil {
-		r.timer.Stop()
+// begin starts a match for everyone in p's room if p is the host, there are 2 or more players and no match
+// is running. Each participant gets the same START, then the room gets PLAYERS. A duel arms the match timer.
+func (h *Hub) begin(p *player) []outgoing {
+	r := p.room
+	if p.id != r.hostID || len(r.players) < 2 || r.match != nil {
+		return nil
 	}
-	r.rematch = [2]bool{}
-	r.kos, r.sent, r.over = [2]int{}, [2]int{}, false
+	m := &match{
+		royale:  len(r.players) > 2,
+		players: slices.Clone(r.players),
+		kos:     map[*player]int{},
+		sent:    map[*player]int{},
+		alive:   map[*player]bool{},
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "START %d %d", h.newSeed(), r.level)
+	for _, q := range m.players {
+		m.alive[q] = true
+		fmt.Fprintf(&b, " %d", q.id)
+	}
+	r.match = m
 	r.matchID++
-	id := r.matchID
-	r.timer = h.afterFunc(countdown+h.matchLength+h.matchGrace, func() { h.timeUp(r, id) })
-	msg := fmt.Sprintf("START %d %d", h.newSeed(), r.level)
-	return []outgoing{{r.players[0], msg}, {r.players[1], msg}}
+	if !m.royale {
+		id := r.matchID
+		r.timer = h.afterFunc(countdown+h.matchLength+h.matchGrace, func() { h.timeUp(r, id) })
+	}
+	out := make([]outgoing, 0, 2*len(r.players))
+	for _, q := range m.players {
+		out = append(out, outgoing{q, b.String()})
+	}
+	return append(out, r.broadcast(r.rosterMessage())...)
 }
 
 // timeUp runs on the timer's goroutine and ends match id unless it is already over or replaced.
 func (h *Hub) timeUp(r *room, id uint64) {
 	h.mu.Lock()
 	var out []outgoing
-	if h.rooms[r.code] == r && r.matchID == id && !r.over {
+	if h.rooms[r.code] == r && r.matchID == id && r.match != nil {
 		out = r.finish("TIME")
 	}
+	enqueue(out)
 	h.mu.Unlock()
-	h.deliver(out)
 }
 
-func (r *room) playing() bool { return r.matchID > 0 && !r.over }
+// player returns the player with ID id, or nil.
+func (r *room) player(id int) *player {
+	for _, q := range r.players {
+		if q.id == id {
+			return q
+		}
+	}
+	return nil
+}
 
-// attack counts a valid ATK toward the sender's lines sent and relays it in canonical form.
-func (r *room) attack(p *player, arg string) []outgoing {
+// rosterMessage is "PLAYERS <hostID> id:name:m ..." in join order, where m is 1 for a match participant.
+func (r *room) rosterMessage() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "PLAYERS %d", r.hostID)
+	for _, q := range r.players {
+		inMatch := 0
+		if r.match != nil && r.match.has(q) {
+			inMatch = 1
+		}
+		fmt.Fprintf(&b, " %d:%s:%d", q.id, q.roomName, inMatch)
+	}
+	return b.String()
+}
+
+// broadcast sends text to everyone in the room, in join order.
+func (r *room) broadcast(text string) []outgoing {
+	out := make([]outgoing, 0, len(r.players))
+	for _, q := range r.players {
+		out = append(out, outgoing{q, text})
+	}
+	return out
+}
+
+// endMatch returns the room to between matches.
+func (r *room) endMatch() {
+	r.match = nil
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+}
+
+// relaySnapshot sends a participant's SNAP to every other participant, tagged with the sender's ID.
+func (r *room) relaySnapshot(p *player, arg string) []outgoing {
+	m := r.match
+	if m == nil || !m.has(p) || arg == "" {
+		return nil
+	}
+	msg := "SNAP " + strconv.Itoa(p.id) + " " + arg
+	out := make([]outgoing, 0, len(m.players)-1)
+	for _, q := range m.players {
+		if q != p && q.room == r {
+			out = append(out, outgoing{q, msg})
+		}
+	}
+	return out
+}
+
+// duelist reports whether p is playing in the room's running duel.
+func (r *room) duelist(p *player) bool {
+	return r.match != nil && !r.match.royale && r.match.has(p)
+}
+
+// attack counts a valid ATK from a living participant toward its lines sent and relays it in canonical form:
+// in a duel to the opponent, in a royale to a living opponent that pickTarget chooses.
+func (h *Hub) attack(p *player, arg string) []outgoing {
+	m := p.room.match
 	n, err := strconv.Atoi(arg)
-	if !r.playing() || err != nil || n < 1 || n > maxAttack {
+	if m == nil || !m.alive[p] || err != nil || n < 1 || n > maxAttack {
 		return nil
 	}
-	r.sent[r.seat(p)] += n
-	return []outgoing{{r.opponent(p), fmt.Sprintf("ATK %d", n)}}
+	m.sent[p] += n
+	msg := fmt.Sprintf("ATK %d", n)
+	if !m.royale {
+		return []outgoing{{m.opponent(p), msg}}
+	}
+	living := slices.DeleteFunc(slices.Clone(m.players), func(q *player) bool { return q == p || !m.alive[q] })
+	return []outgoing{{living[h.pickTarget(len(living))], msg}}
 }
 
-// knockOut scores a KO for p's opponent, tells both players, and ends the match at kosToWin.
+// knockOut handles DEAD: a KO in a duel, an elimination in a royale.
 func (r *room) knockOut(p *player) []outgoing {
-	if !r.playing() {
+	if m := r.match; m != nil && m.royale && m.alive[p] {
+		out := r.eliminate(p)
+		if r.match == nil {
+			out = append(out, r.broadcast(r.rosterMessage())...)
+		}
+		return out
+	}
+	if !r.duelist(p) {
 		return nil
 	}
-	winner := 1 - r.seat(p)
-	r.kos[winner]++
-	out := make([]outgoing, 0, 4)
-	for seat, q := range r.players {
-		out = append(out, outgoing{q, fmt.Sprintf("KO %d %d", r.kos[seat], r.kos[1-seat])})
+	return r.scoreKO(p)
+}
+
+// eliminate puts living royale participant p out in place n, the number alive before it, telling every
+// participant still in the room. When one player is left it wins with OUT <id> 1 and the match ends; the
+// caller then broadcasts PLAYERS.
+func (r *room) eliminate(p *player) []outgoing {
+	m := r.match
+	place := 0
+	for _, q := range m.players {
+		if m.alive[q] {
+			place++
+		}
 	}
-	if r.kos[winner] >= kosToWin {
+	m.alive[p] = false
+	out := m.tellConnected(r, fmt.Sprintf("OUT %d %d", p.id, place))
+	if place == 2 {
+		i := slices.IndexFunc(m.players, func(q *player) bool { return m.alive[q] })
+		out = append(out, m.tellConnected(r, fmt.Sprintf("OUT %d 1", m.players[i].id))...)
+		r.endMatch()
+	}
+	return out
+}
+
+// tellConnected sends text to every participant still in room r, in START order.
+func (m *match) tellConnected(r *room, text string) []outgoing {
+	out := make([]outgoing, 0, len(m.players))
+	for _, q := range m.players {
+		if q.room == r {
+			out = append(out, outgoing{q, text})
+		}
+	}
+	return out
+}
+
+// scoreKO scores a KO for duelist p's opponent, tells both players, and ends the match at kosToWin.
+func (r *room) scoreKO(p *player) []outgoing {
+	m := r.match
+	winner := m.opponent(p)
+	m.kos[winner]++
+	out := make([]outgoing, 0, 4)
+	for _, q := range m.players {
+		out = append(out, outgoing{q, fmt.Sprintf("KO %d %d", m.kos[q], m.kos[m.opponent(q)])})
+	}
+	if m.kos[winner] >= kosToWin {
 		out = append(out, r.finish("KO")...)
 	}
 	return out
 }
 
-// finish ends the match and sends each player the verdict from their own side.
+// finish ends the duel, sends each participant the verdict from their own side, then sends the room PLAYERS.
 func (r *room) finish(reason string) []outgoing {
-	r.over = true
-	if r.timer != nil {
-		r.timer.Stop()
-	}
-	out := make([]outgoing, 0, 2)
-	for seat, p := range r.players {
-		msg := fmt.Sprintf("OVER %s %s %d %d", r.verdict(seat), reason, r.sent[seat], r.sent[1-seat])
+	m := r.match
+	r.endMatch()
+	out := make([]outgoing, 0, 2+len(r.players))
+	for _, p := range m.players {
+		other := m.opponent(p)
+		msg := fmt.Sprintf("OVER %s %s %d %d", m.verdict(p), reason, m.sent[p], m.sent[other])
 		out = append(out, outgoing{p, msg})
 	}
-	return out
+	return append(out, r.broadcast(r.rosterMessage())...)
 }
 
-// verdict compares KOs, then lines sent, from seat's side.
-func (r *room) verdict(seat int) string {
-	mine, theirs := r.kos[seat], r.kos[1-seat]
+// verdict compares KOs, then lines sent, from p's side of the duel.
+func (m *match) verdict(p *player) string {
+	other := m.opponent(p)
+	mine, theirs := m.kos[p], m.kos[other]
 	if mine == theirs {
-		mine, theirs = r.sent[seat], r.sent[1-seat]
+		mine, theirs = m.sent[p], m.sent[other]
 	}
 	switch {
 	case mine > theirs:
@@ -454,16 +676,12 @@ func (r *room) verdict(seat int) string {
 	return "DRAW"
 }
 
-func (r *room) opponent(p *player) *player {
-	if r.players[0] == p {
-		return r.players[1]
-	}
-	return r.players[0]
-}
+func (m *match) has(p *player) bool { return slices.Contains(m.players, p) }
 
-func (r *room) seat(p *player) int {
-	if r.players[0] == p {
-		return 0
+// opponent is the other participant of a duel.
+func (m *match) opponent(p *player) *player {
+	if m.players[0] == p {
+		return m.players[1]
 	}
-	return 1
+	return m.players[0]
 }

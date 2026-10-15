@@ -421,7 +421,7 @@ void drawGridBackground(float cell, ImVec2 anchor) {
 // A nameplate built like one wide mino: flat player color, the cells' bevel, the name with a hard drop shadow,
 // and a row of KO slots on the right that fill with gold mini-blocks as KOs land.
 void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float top, const char* name, Rgb base,
-                 int kos) {
+                 int kos, bool pips = true) {
     const float cell = well.cell;
     const float bevel = bevelFor(cell);
     const ImVec2 p0(std::floor(well.origin.x), std::floor(top));
@@ -433,6 +433,7 @@ void drawNameBar(ImDrawList* dl, const Fonts& fonts, const Layout& well, float t
     drawShadowText(dl, fonts, textSize, textPos, IM_COL32(255, 255, 255, 255), name, bevel,
                    color(darken(darken(base)), 1.0f));
 
+    if (!pips) return;  // a royale has no KOs
     const float pip = std::floor(cell * 0.5f);
     const float gap = std::floor(cell * 0.2f);
     const float pipBevel = std::max(1.0f, bevel - 1.0f);
@@ -479,11 +480,13 @@ void drawScoreboard(ImDrawList* dl, const Fonts& fonts, const DuelLayout& layout
     char text[32];
     float y = wellTop(layout.mine) + cell;
 
-    const int seconds = (duel.matchClockMs() + 999) / 1000;
-    std::snprintf(text, sizeof text, "%d:%02d", seconds / 60, seconds % 60);
-    drawCentered(dl, fonts, cell * 0.5f, cx, y, "TIME", label);
-    drawCentered(dl, fonts, cell * 1.1f, cx, y + cell * 0.8f, text,
-                 seconds < kTimeWarningSeconds ? IM_COL32(255, 70, 70, 255) : value);
+    if (duel.mode() == DuelMode::Duel) {  // a royale has no clock
+        const int seconds = (duel.matchClockMs() + 999) / 1000;
+        std::snprintf(text, sizeof text, "%d:%02d", seconds / 60, seconds % 60);
+        drawCentered(dl, fonts, cell * 0.5f, cx, y, "TIME", label);
+        drawCentered(dl, fonts, cell * 1.1f, cx, y + cell * 0.8f, text,
+                     seconds < kTimeWarningSeconds ? IM_COL32(255, 70, 70, 255) : value);
+    }
     y += cell * 4.0f;
     std::snprintf(text, sizeof text, "FIRST TO %d", kKosToWin);  // explains the pips on the plates
     drawCenteredShadow(dl, fonts, cell * 0.45f, cx, y, text, color(kKoPipColor, 1.0f), bevelFor(cell * 0.45f));
@@ -755,6 +758,138 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     ImGui::End();
 }
 
+// Royale, left to right, in cells: hold 5 | your well 10 | meter | next 5, inside a 28-column budget; the rest of
+// the width goes to the opponents' mini boards. The cell size is the duel's, so your well looks the same.
+constexpr float kRoyaleOwnColumns = 28.0f;
+constexpr float kRoyaleMeterCol = 15.75f;
+
+struct RoyaleLayout {
+    Layout mine;
+    float top;      // top of the name bar
+    ImVec2 gridMin;  // the area for the mini boards
+    ImVec2 gridMax;
+};
+
+RoyaleLayout computeRoyaleLayout() {
+    const DuelLayout duel = computeDuelLayout();
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float cell = duel.mine.cell;
+    const float left = vp->Pos.x + kMargin;
+    return {{cell, ImVec2(left + kMyWellCol * cell, duel.mine.origin.y)},
+            duel.top,
+            ImVec2(left + kRoyaleOwnColumns * cell, vp->Pos.y + kMargin),
+            ImVec2(vp->Pos.x + vp->Size.x - kMargin, vp->Pos.y + vp->Size.y - kMargin)};
+}
+
+// One opponent at mini size: the name, the pending-garbage meter and the cells, with no hold, next or ghost. An
+// eliminated board is dimmed, without its meter, and labelled with its place.
+void drawMiniBoard(ImDrawList* dl, const Fonts& fonts, ImVec2 topLeft, float cell, const OpponentView& opponent) {
+    const float nameSize = std::floor(cell * 0.9f);
+    const float maxWidth = kBoardWidth * cell;
+    float size = nameSize;
+    if (const float width = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, opponent.name.c_str()).x; width > maxWidth)
+        size *= maxWidth / width;
+    dl->AddText(fonts.hud, size, topLeft, color(opponent.alive ? kTextColor : kLabelColor, 1.0f),
+                opponent.name.c_str());
+
+    const ImVec2 top(topLeft.x, topLeft.y + cell);
+    const ImVec2 bottom(top.x + maxWidth, top.y + kVisibleHeight * cell);
+    dl->AddRectFilled(top, bottom, color(kWellFill, 1.0f));
+    dl->AddRect(ImVec2(top.x - 1, top.y - 1), ImVec2(bottom.x + 1, bottom.y + 1), color(kWellBorder, 1.0f));
+    const Snapshot& snapshot = opponent.snapshot;
+    for (int y = 0; y < kVisibleHeight; ++y)
+        for (int x = 0; x < kBoardWidth; ++x)
+            if (const Cell c = snapshot.cells[y * kBoardWidth + x])
+                drawCell(dl, ImVec2(top.x + x * cell, bottom.y - (y + 1) * cell), cell, *c, 1.0f);
+    if (opponent.alive) {
+        drawGarbageMeter(dl, bottom.x + std::floor(cell * 0.25f), bottom.y, cell, snapshot.pending, snapshot.ready);
+        return;
+    }
+    dl->AddRectFilled(top, bottom, IM_COL32(0, 0, 0, 160));
+    char text[12];
+    std::snprintf(text, sizeof text, "#%d", opponent.place);
+    drawCenteredFit(dl, fonts, std::floor(cell * 3.0f), top.x + maxWidth * 0.5f,
+                    (top.y + bottom.y) * 0.5f - cell * 1.5f, text, color(kTextColor, 1.0f), maxWidth);
+}
+
+// "OUT · #7" over our own well once we're eliminated; just "OUT" until the server places us. Leave sits under it.
+void drawOutOverlay(ImDrawList* dl, const Fonts& fonts, const Layout& well, int place) {
+    const ImVec2 top = cellTopLeft(well, 0, kVisibleHeight - 1);
+    dl->AddRectFilled(top, ImVec2(top.x + kBoardWidth * well.cell, wellBottom(well)), IM_COL32(0, 0, 0, 140));
+    char text[24];
+    if (place > 0)
+        std::snprintf(text, sizeof text, "OUT \xC2\xB7 #%d", place);
+    else
+        std::snprintf(text, sizeof text, "OUT");
+    float size = std::floor(well.cell * 1.5f);
+    const float maxWidth = kBoardWidth * well.cell * 0.9f;
+    if (const float width = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x; width > maxWidth)
+        size = std::floor(size * maxWidth / width);
+    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    const ImVec2 pos(well.origin.x + (kBoardWidth * well.cell - extent.x) * 0.5f,
+                     (wellTop(well) + wellBottom(well) - extent.y) * 0.5f);
+    drawOutlinedText(dl, fonts, size, pos, text, kFlashFill, kFlashOutline, std::max(1.0f, std::floor(well.cell * 0.1f)));
+}
+
+// Our own well as in the duel, then a mini board per opponent in ID order.
+void drawRoyaleBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
+                      const StartMenu& menu) {
+    const Game& game = *duel.game();
+    // Our room name, which may carry a suffix ("Sam2"), so it matches the roster and the other players' grids.
+    const std::string& roomName = duel.myName().empty() ? menu.playerName : duel.myName();
+    const char* mine = roomName.empty() ? "YOU" : roomName.c_str();
+    const RoyaleLayout layout = computeRoyaleLayout();
+    const float cell = layout.mine.cell;
+    drawGridBackground(cell, layout.mine.origin);
+    ImDrawList* dl = beginBoardWindow();
+    drawNameBar(dl, fonts, layout.mine, layout.top, mine, kMyPlateColor, 0, false);
+    drawPlayfield(dl, layout.mine, game, fonts, combo, callout, true);
+    const float left = layout.mine.origin.x - kMyWellCol * cell;
+    drawGarbageMeter(dl, left + kRoyaleMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage(),
+                     game.readyGarbage());
+    if (duel.eliminated()) drawOutOverlay(dl, fonts, layout.mine, duel.myPlace());
+
+    const std::vector<OpponentView>& opponents = duel.opponents();
+    const float width = layout.gridMax.x - layout.gridMin.x;
+    const float height = layout.gridMax.y - layout.gridMin.y;
+    const GridShape grid = royaleGrid(static_cast<int>(opponents.size()), width, height);
+    const float mini = royaleMiniCell(grid.cell, cell);
+    if (mini >= 1.0f) {
+        // Centered in the area, each board on whole pixels.
+        const float x0 = std::floor(layout.gridMin.x + (width - grid.cols * kMiniCols * mini) * 0.5f);
+        const float y0 = std::floor(layout.gridMin.y + (height - grid.rows * kMiniRows * mini) * 0.5f);
+        for (int i = 0; i < static_cast<int>(opponents.size()); ++i) {
+            const ImVec2 at(x0 + (i % grid.cols) * kMiniCols * mini, y0 + (i / grid.cols) * kMiniRows * mini);
+            drawMiniBoard(dl, fonts, at, mini, opponents[i]);
+        }
+    }
+    ImGui::End();
+}
+
+// Under the "OUT · #7" overlay: Leave, so an eliminated player needn't watch to the end.
+UiCommand drawOutLeave() {
+    const Layout well = computeRoyaleLayout().mine;
+    const float width = kBoardWidth * well.cell;
+    const float y = wellTop(well) + (wellBottom(well) - wellTop(well)) * 0.6f;  // below the centered OUT text
+    ImGui::SetNextWindowPos(ImVec2(well.origin.x + width * 0.5f, y), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::Begin("##out", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    const UiCommand command = menuButton("Leave", std::min(menuButtonWidth(), width * 0.8f)) ? UiCommand::LeaveDuel
+                                                                                             : UiCommand::None;
+    ImGui::End();
+    return command;
+}
+
+void drawMatchBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
+                     const AttackTrails& trails, const StartMenu& menu) {
+    if (duel.mode() == DuelMode::Duel)
+        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
+    else
+        drawRoyaleBoards(duel, fonts, combo, callout, menu);
+}
+
 // The digit pops in at 1.3x and settles, centered on the screen, with a hard shadow.
 void drawCountdown(int ms, const Fonts& fonts) {
     char text[12];
@@ -797,8 +932,65 @@ const char* resultTitle(DuelOutcome outcome) {
     }
 }
 
-UiCommand drawDuelResult(const DuelSession& duel, const Fonts& fonts) {
+// Below the room screen and the result: the host's Start (Start next match on the result), held back until a
+// second player is in the room; everyone else waits for the host. Leave for everyone.
+UiCommand drawRoomControls(const DuelSession& duel) {
     UiCommand command = UiCommand::None;
+    const bool inRoom = duel.phase() == DuelPhase::Room;
+    if (duel.isHost()) {
+        const bool enough = duel.roster().size() >= 2;
+        ImGui::BeginDisabled(!enough);
+        if (menuButton(inRoom ? "Start" : "Start next match")) command = UiCommand::BeginMatch;
+        ImGui::EndDisabled();
+        if (!enough) ImGui::TextUnformatted("Need 2+ players");
+    } else {
+        ImGui::TextUnformatted(inRoom ? "Waiting for the host to start\xE2\x80\xA6"
+                                      : "Waiting for the host\xE2\x80\xA6");
+    }
+    if (menuButton("Leave")) command = UiCommand::LeaveDuel;
+    return command;
+}
+
+// "Players n/16", then a row per player in join order.
+void drawRoster(const DuelSession& duel) {
+    const std::vector<RosterEntry>& roster = duel.roster();
+    ImGui::Text("Players %d/%d", static_cast<int>(roster.size()), kMaxRoomPlayers);
+    for (const RosterRow& row : rosterRows(roster, duel.hostId(), duel.myId())) {
+        if (row.me)
+            ImGui::TextColored(colorVec(lighten(kMyPlateColor)), "%s", row.text.c_str());
+        else
+            ImGui::TextUnformatted(row.text.c_str());
+    }
+}
+
+// In a room between matches: the code and invite link, then the roster and the room controls.
+UiCommand drawRoom(const DuelSession& duel, const Fonts& fonts, StartMenu& menu) {
+    UiCommand command = UiCommand::None;
+    beginMenu("##room");
+    menuTitle(fonts, "ROOM CODE");
+    ImGui::PushFont(fonts.hud, ImGui::GetFontSize() * 3.0f);
+    ImGui::TextUnformatted(duel.roomCode().c_str());
+    ImGui::PopFont();
+    ImGui::TextUnformatted(roomVisibilityText(duel.visibility()));
+    if (!menu.inviteLinkBase.empty()) {
+        static char link[256];  // InputText needs a mutable buffer even when read-only
+        std::snprintf(link, sizeof link, "%s%s", menu.inviteLinkBase.c_str(), duel.roomCode().c_str());
+        ImGui::SetNextItemWidth(menuButtonWidth());
+        // The one field left in the default font: a long URL in the pixel font is unreadable at this size.
+        ImGui::PushFont(fonts.ui, 0.0f);
+        ImGui::InputText("##link", link, sizeof link, ImGuiInputTextFlags_ReadOnly);
+        ImGui::PopFont();
+        if (menu.canCopyLink && menuButton("Copy link")) command = UiCommand::CopyInviteLink;
+    }
+    ImGui::Spacing();
+    drawRoster(duel);
+    ImGui::Spacing();
+    if (const UiCommand controls = drawRoomControls(duel); controls != UiCommand::None) command = controls;
+    ImGui::End();
+    return command;
+}
+
+UiCommand drawDuelResult(const DuelSession& duel, const Fonts& fonts) {
     beginMenu("##result");
     menuTitle(fonts, resultTitle(duel.outcome()));
     ImGui::TextUnformatted(resultReasonText(duel).c_str());
@@ -819,16 +1011,39 @@ UiCommand drawDuelResult(const DuelSession& duel, const Fonts& fonts) {
         ImGui::EndTable();
     }
     ImGui::Spacing();
-    if (duel.opponentGone()) {
-        if (duel.outcome() != DuelOutcome::OpponentLeft)
-            ImGui::TextUnformatted(
-                ((duel.opponentName().empty() ? std::string("Opponent") : duel.opponentName()) + " left.").c_str());
-    } else if (duel.rematchRequested()) {
-        ImGui::TextUnformatted("Waiting for opponent...");
-    } else if (menuButton("Rematch")) {
-        command = UiCommand::Rematch;
+    drawRoster(duel);
+    ImGui::Spacing();
+    const UiCommand command = drawRoomControls(duel);
+    ImGui::End();
+    return command;
+}
+
+// "YOU WIN" or "#4 of 9", the standings in place order with our row in our plate color, then the roster (players
+// who joined mid-match included) and the room controls.
+UiCommand drawRoyaleResult(const DuelSession& duel, const Fonts& fonts) {
+    beginMenu("##result");
+    menuTitle(fonts, royaleResultTitle(duel).c_str());
+    if (ImGui::BeginTable("##standings", 3, ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("Place");
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("Attack");
+        ImGui::TableHeadersRow();
+        for (const Standing& standing : royaleStandings(duel)) {
+            const ImVec4 tone = standing.me ? colorVec(lighten(kMyPlateColor)) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextColored(tone, "#%d", standing.place);
+            ImGui::TableNextColumn();
+            ImGui::TextColored(tone, "%s", standing.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextColored(tone, "%d", standing.attack);
+        }
+        ImGui::EndTable();
     }
-    if (menuButton("Leave")) command = UiCommand::LeaveDuel;
+    ImGui::Spacing();
+    drawRoster(duel);
+    ImGui::Spacing();
+    const UiCommand command = drawRoomControls(duel);
     ImGui::End();
     return command;
 }
@@ -838,10 +1053,12 @@ constexpr int kLobbyVisibleRows = 8;  // the list scrolls past this many
 UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu) {
     UiCommand command = UiCommand::None;
     beginMenu("##lobby");
-    // Wide enough for the longest name next to the Level and Join columns.
-    const std::string widest = std::string(kMaxNameLength, 'M') + " Level Join";
+    // Wide enough for the longest name with the level and player count, next to the Join column.
+    char widest[64];
+    std::snprintf(widest, sizeof widest, "%s \xC2\xB7 Lv %d \xC2\xB7 %d/%d Join",
+                  std::string(kMaxNameLength, 'M').c_str(), kMaxStartLevel, kMaxRoomPlayers - 1, kMaxRoomPlayers);
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float tableWidth = ImGui::CalcTextSize(widest.c_str()).x + style.CellPadding.x * 6.0f +
+    const float tableWidth = ImGui::CalcTextSize(widest).x + style.CellPadding.x * 4.0f +
                              style.FramePadding.x * 2.0f + style.ScrollbarSize;
     const float width = std::max({menuTitle(fonts, "OPEN ROOMS"), menuButtonWidth(), tableWidth});
     if (!duel.error().empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", duel.error().c_str());
@@ -849,9 +1066,8 @@ UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu
         ImGui::TextUnformatted("No open rooms yet.");
     } else {
         const float height = ImGui::GetFrameHeightWithSpacing() * kLobbyVisibleRows;
-        if (ImGui::BeginTable("##rooms", 3, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg, ImVec2(width, height))) {
-            ImGui::TableSetupColumn("Host", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed);
+        if (ImGui::BeginTable("##rooms", 2, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg, ImVec2(width, height))) {
+            ImGui::TableSetupColumn("Room", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableSetupColumn("##join", ImGuiTableColumnFlags_WidthFixed);
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
@@ -859,9 +1075,8 @@ UiCommand drawLobby(const DuelSession& duel, const Fonts& fonts, StartMenu& menu
                 ImGui::PushID(room.code.c_str());
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(room.host.c_str());
-                ImGui::TableNextColumn();
-                ImGui::Text("%d", room.startLevel);
+                ImGui::Text("%s \xC2\xB7 Lv %d \xC2\xB7 %d/%d", room.host.c_str(), room.startLevel, room.players,
+                            kMaxRoomPlayers);
                 ImGui::TableNextColumn();
                 if (ImGui::SmallButton("Join")) {
                     menu.pickedRoom = room.code;
@@ -931,6 +1146,43 @@ float countdownPopScale(int countdownMs) {
 }
 
 bool showGoBanner(int matchClockMs) { return matchClockMs > kMatchMs - kGoBannerMs; }
+
+GridShape royaleGrid(int boards, float width, float height) {
+    GridShape best;
+    for (int cols = 1; cols <= boards; ++cols) {
+        const int rows = (boards + cols - 1) / cols;
+        const float cell = std::min(width / static_cast<float>(cols * kMiniCols),
+                                    height / static_cast<float>(rows * kMiniRows));
+        if (cell > best.cell) best = {cols, rows, cell};
+    }
+    return best;
+}
+
+float royaleMiniCell(float gridCell, float ownCell) { return std::floor(std::min(gridCell, ownCell * kMiniCellCap)); }
+
+const char* roomVisibilityText(RoomVisibility visibility) {
+    switch (visibility) {
+    case RoomVisibility::Public:
+        return "Public room, listed in Browse rooms";
+    case RoomVisibility::Private:
+        return "Private room, share the code";
+    case RoomVisibility::Unknown:
+        break;
+    }
+    return "Share the code or the invite link";
+}
+
+std::vector<RosterRow> rosterRows(const std::vector<RosterEntry>& roster, int hostId, int myId) {
+    const bool matchRunning = std::ranges::any_of(roster, &RosterEntry::inMatch);
+    std::vector<RosterRow> rows;
+    for (const RosterEntry& player : roster) {
+        // The star is one character wide in the pixel font, so two spaces keep the names lined up.
+        rows.push_back({(player.id == hostId ? "\xE2\x98\x85 " : "  ") + player.name +
+                            (matchRunning && !player.inMatch ? " (next match)" : ""),
+                        player.id == myId});
+    }
+    return rows;
+}
 
 bool garbageMeterDanger(int pending) { return pending >= kGarbageDangerLines; }
 
@@ -1290,46 +1542,30 @@ UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel
     case DuelPhase::Lobby:
         command = drawLobby(duel, fonts, menu);
         break;
-    case DuelPhase::Waiting:
+    case DuelPhase::Waiting:  // the server has not answered the request yet
         beginMenu("##waiting");
-        if (duel.roomCode().empty()) {
-            // A quick match may join straight into a countdown without ever getting a code.
-            menuTitle(fonts, duel.quickMatching() ? "SEARCHING" : "CONNECTING");
-        } else {
-            menuTitle(fonts, "ROOM CODE");
-            ImGui::PushFont(fonts.hud, ImGui::GetFontSize() * 3.0f);
-            ImGui::TextUnformatted(duel.roomCode().c_str());
-            ImGui::PopFont();
-            ImGui::TextUnformatted(duel.quickMatching() ? "Looking for an opponent..."
-                                                        : "Waiting for an opponent to join...");
-            ImGui::TextUnformatted(duel.publicRoom() ? "Public room, listed in Browse rooms"
-                                                     : "Private room, share the code");
-            if (!menu.inviteLinkBase.empty()) {
-                static char link[256];  // InputText needs a mutable buffer even when read-only
-                std::snprintf(link, sizeof link, "%s%s", menu.inviteLinkBase.c_str(), duel.roomCode().c_str());
-                ImGui::SetNextItemWidth(menuButtonWidth());
-                // The one field left in the default font: a long URL in the pixel font is unreadable at this size.
-                ImGui::PushFont(fonts.ui, 0.0f);
-                ImGui::InputText("##link", link, sizeof link, ImGuiInputTextFlags_ReadOnly);
-                ImGui::PopFont();
-                if (menu.canCopyLink && menuButton("Copy link")) command = UiCommand::CopyInviteLink;
-            }
-        }
+        menuTitle(fonts, duel.quickMatching() ? "SEARCHING" : "CONNECTING");
         if (menuButton("Cancel")) command = UiCommand::LeaveDuel;
         ImGui::End();
         break;
+    case DuelPhase::Room:
+        command = drawRoom(duel, fonts, menu);
+        break;
     case DuelPhase::Countdown:
-        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
+        drawMatchBoards(duel, fonts, combo, callout, trails, menu);
         drawCountdown(duel.countdownMs(), fonts);
-        drawVersus(fonts, menu.playerName, duel.opponentName());
+        if (duel.mode() == DuelMode::Duel) drawVersus(fonts, menu.playerName, duel.opponentName());
         break;
     case DuelPhase::Playing:
-        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
-        if (showGoBanner(duel.matchClockMs())) drawGo(fonts);
+        drawMatchBoards(duel, fonts, combo, callout, trails, menu);
+        if (duel.mode() == DuelMode::Royale && duel.eliminated()) command = drawOutLeave();
+        // A royale's clock stays at 2:00, so its banner runs off the time played instead.
+        if (showGoBanner(duel.mode() == DuelMode::Duel ? duel.matchClockMs() : kMatchMs - duel.playedMs()))
+            drawGo(fonts);
         break;
     case DuelPhase::Result:
-        drawDuelBoards(duel, fonts, combo, callout, trails, menu);
-        command = drawDuelResult(duel, fonts);
+        drawMatchBoards(duel, fonts, combo, callout, trails, menu);
+        command = duel.mode() == DuelMode::Duel ? drawDuelResult(duel, fonts) : drawRoyaleResult(duel, fonts);
         break;
     }
     return command;

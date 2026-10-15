@@ -1,5 +1,7 @@
 # Design: Bomb garbage, KO matches and a Tetris Battle duel screen
 
+> **Partly superseded** by `2026-10-14-multiplayer-rooms-design.md`: the two-player room, starting on the second join and the rematch vote are replaced by rooms of up to 16 with host start. The KO duel stays for 2 players; 3–16 players play a battle royale with hole garbage instead of bombs.
+
 ## Context
 This extends the LAN duel in `docs/superpowers/specs/2026-10-13-lan-duel-design.md`. The goal is a duel that plays and looks like Tetris Battle / Notris Foes:
 

@@ -132,7 +132,15 @@ Game::Game(std::uint32_t seed, int startLevel, Board board, GameOptions options)
 
 void Game::receiveGarbage(int lines, int travelMs) {
     assert(lines >= 0 && travelMs >= 0);
-    if (lines > 0) incoming_.push_back({lines, travelMs});
+    if (lines <= 0) return;
+    int holeX = -1;
+    if (options_.garbage == GarbageStyle::Holes) {
+        do {
+            holeX = static_cast<int>(garbageRng_() % kBoardWidth);
+        } while (holeX == lastHoleX_);
+        lastHoleX_ = holeX;
+    }
+    incoming_.push_back({lines, travelMs, holeX});
 }
 
 int Game::pendingGarbage() const {
@@ -165,14 +173,21 @@ void Game::resetBoard() {
 
 bool Game::applyGarbage() {
     int rising = 0;
+    std::vector<int> holeColumns;
     while (!incoming_.empty() && incoming_.front().msLeft == 0 && rising < kMaxGarbagePerLock) {
         GarbageBatch& batch = incoming_.front();
         const int take = std::min(batch.lines, kMaxGarbagePerLock - rising);
         rising += take;
+        holeColumns.insert(holeColumns.end(), static_cast<std::size_t>(take), batch.holeX);
         batch.lines -= take;
         if (batch.lines == 0) incoming_.pop_front();
     }
     if (rising == 0) return true;
+    if (options_.garbage == GarbageStyle::Holes) {
+        if (!board_.pushGarbageHoles(holeColumns)) return false;
+        emit(GameEventType::GarbageRose);
+        return true;
+    }
     int aboveX = -1;
     for (int x = 0; x < kBoardWidth; ++x)
         if (board_.at(x, 0) == PieceType::Bomb) aboveX = x;
@@ -417,6 +432,13 @@ void Game::lockPiece(bool hardDropped) {
     spawn(bag_.next());
 }
 
+void Game::setLevelFloor(int floor) {
+    levelFloor_ = floor;
+    const int before = level_;
+    level_ = std::max(levelFor(startLevel_, lines_, options_.linesPerLevel), levelFloor_);
+    if (level_ > before) emit(GameEventType::LevelUp);
+}
+
 void Game::finishClear() {
     const int levelBefore = level_;
     const int cleared = static_cast<int>(clearingRows_.size());
@@ -434,7 +456,7 @@ void Game::finishClear() {
     stats_.cancelled += cancelled;
     score_ += awardScore(award_, combo_, level_);
     lines_ += cleared;
-    level_ = levelFor(startLevel_, lines_, options_.linesPerLevel);
+    level_ = std::max(levelFor(startLevel_, lines_, options_.linesPerLevel), levelFloor_);
     if (level_ > levelBefore) emit(GameEventType::LevelUp);
     for (int y : clearingRows_) {
         for (int x = 0; x < kBoardWidth; ++x) {

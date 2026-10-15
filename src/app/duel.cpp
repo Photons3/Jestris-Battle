@@ -1,14 +1,17 @@
 #include "app/duel.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cstdio>
 #include <string_view>
+#include <utility>
 #include <variant>
 
 namespace tetris {
 
 Game makeDuelGame(const StartMatch& start) {
-    return Game(start.seed, start.startLevel, Board{}, GameOptions{.allowPause = false});
+    const GarbageStyle garbage = start.players.size() >= 3 ? GarbageStyle::Holes : GarbageStyle::Bombs;
+    return Game(start.seed, start.startLevel, Board{}, GameOptions{.allowPause = false, .garbage = garbage});
 }
 
 namespace {
@@ -37,13 +40,35 @@ std::string formatted(const char* format, double value) {
 
 std::string comboText(int maxCombo) { return maxCombo > 0 ? std::to_string(maxCombo) : "-"; }
 
+bool royaleResult(const DuelSession& duel) {
+    return duel.phase() == DuelPhase::Result && duel.mode() == DuelMode::Royale;
+}
+
+const Snapshot kNoSnapshot{};
+const std::string kNoName;
+
 }  // namespace
 
 int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch) {
     return static_cast<int>(std::min<std::uint64_t>(elapsedMs, inMatch ? kMaxCatchUpMs : kMaxFrameMs));
 }
 
-bool DuelSession::frozen() const { return phase_ == DuelPhase::Playing && (koFlashMs_ > 0 || matchClockMs_ == 0); }
+const Snapshot& DuelSession::opponent() const {
+    return opponents_.empty() ? kNoSnapshot : opponents_.front().snapshot;
+}
+
+const std::string& DuelSession::myName() const {
+    const auto me = std::ranges::find(roster_, myId_, &RosterEntry::id);
+    return me != roster_.end() ? me->name : kNoName;
+}
+
+const std::string& DuelSession::opponentName() const {
+    return opponents_.empty() ? kNoName : opponents_.front().name;
+}
+
+bool DuelSession::frozen() const {
+    return phase_ == DuelPhase::Playing && mode_ == DuelMode::Duel && (koFlashMs_ > 0 || matchClockMs_ == 0);
+}
 
 std::string resultReasonText(const DuelSession& duel) {
     if (duel.phase() != DuelPhase::Result) return {};
@@ -54,6 +79,25 @@ std::string resultReasonText(const DuelSession& duel) {
     if (duel.kosMine() == duel.kosTheirs())
         text += std::string(kSeparator) + versus(duel.sentMine(), duel.sentTheirs()) + " sent";
     return text;
+}
+
+std::vector<Standing> royaleStandings(const DuelSession& duel) {
+    if (!royaleResult(duel)) return {};
+    std::vector<Standing> standings;
+    for (const OpponentView& opponent : duel.opponents())
+        standings.push_back({opponent.place, opponent.name, opponent.snapshot.stats.attack, false});
+    // Our name stays in the roster while we're in the room.
+    standings.push_back({duel.myPlace(), duel.myName().empty() ? std::string("You") : duel.myName(),
+                         duel.game() ? duel.game()->stats().attack : 0, true});
+    // An unplaced player (place 0) can't happen once OUT ... 1 arrives, but would sort last rather than first.
+    std::ranges::stable_sort(standings, {}, [](const Standing& s) { return s.place > 0 ? s.place : INT_MAX; });
+    return standings;
+}
+
+std::string royaleResultTitle(const DuelSession& duel) {
+    if (!royaleResult(duel)) return {};
+    if (duel.outcome() == DuelOutcome::Won) return "YOU WIN";
+    return "#" + std::to_string(duel.myPlace()) + " of " + std::to_string(duel.participants());
 }
 
 MatchRates ratesOf(const GameStats& stats, int playedMs) {
@@ -89,34 +133,34 @@ void DuelSession::openLobby() {
 }
 
 // Resets for a new room request, remembering whether it came from the lobby.
-void DuelSession::beginRequest(bool isPublic, bool quick) {
+void DuelSession::beginRequest(RoomVisibility visibility, bool quick) {
     const bool fromLobby = phase_ == DuelPhase::Lobby;
     reset();
     phase_ = DuelPhase::Waiting;
     fromLobby_ = fromLobby;
-    publicRoom_ = isPublic;
+    visibility_ = visibility;
     quick_ = quick;
 }
 
 void DuelSession::createRoom(int startLevel, bool isPublic) {
-    beginRequest(isPublic, false);
+    beginRequest(isPublic ? RoomVisibility::Public : RoomVisibility::Private, false);
     send(CreateRoom{clampStartLevel(startLevel), isPublic});
 }
 
-void DuelSession::joinRoom(const std::string& code) {
-    beginRequest(false, false);
+void DuelSession::joinRoom(const std::string& code, RoomVisibility visibility) {
+    beginRequest(visibility, false);
     send(JoinRoom{code});
 }
 
 void DuelSession::quickMatch(int startLevel) {
-    beginRequest(true, true);
+    beginRequest(RoomVisibility::Public, true);
     send(QuickMatch{clampStartLevel(startLevel)});
 }
 
-void DuelSession::requestRematch() {
-    if (phase_ != DuelPhase::Result || opponentGone_ || rematchRequested_) return;
-    rematchRequested_ = true;
-    send(Rematch{});
+void DuelSession::begin() {
+    if (phase_ != DuelPhase::Room && phase_ != DuelPhase::Result) return;
+    if (!isHost() || roster_.size() < 2) return;
+    send(Begin{});
 }
 
 void DuelSession::leave() { reset(); }
@@ -130,13 +174,21 @@ void DuelSession::onDisconnected() {
 void DuelSession::onMessage(std::string_view text) {
     const std::optional<Message> message = decode(text);
     if (!message || phase_ == DuelPhase::Idle) return;
-    if (const auto* room = std::get_if<RoomCreated>(&*message)) {
-        roomCode_ = room->code;
-    } else if (const auto* opp = std::get_if<OpponentName>(&*message)) {
-        if (phase_ == DuelPhase::Waiting) opponentName_ = opp->name;
+    if (const auto* room = std::get_if<RoomEntered>(&*message)) {
+        if (phase_ == DuelPhase::Waiting) {
+            roomCode_ = room->code;
+            myId_ = room->playerId;
+            phase_ = DuelPhase::Room;
+        }
+    } else if (const auto* roster = std::get_if<Roster>(&*message)) {
+        if (phase_ == DuelPhase::Room || inMatch() || phase_ == DuelPhase::Result) {
+            hostId_ = roster->hostId;
+            roster_ = roster->players;
+        }
     } else if (const auto* start = std::get_if<StartMatch>(&*message)) {
-        const bool rematch = phase_ == DuelPhase::Result && rematchRequested_ && !opponentGone_;
-        if (phase_ == DuelPhase::Waiting || rematch) startMatch(*start);
+        const bool betweenMatches = phase_ == DuelPhase::Room || phase_ == DuelPhase::Result;
+        const bool listsMe = std::ranges::find(start->players, myId_) != start->players.end();
+        if (betweenMatches && listsMe) startMatch(*start);
     } else if (const auto* error = std::get_if<ServerError>(&*message)) {
         if (phase_ == DuelPhase::Waiting) {
             const bool backToLobby = fromLobby_;
@@ -156,8 +208,9 @@ void DuelSession::onMessage(std::string_view text) {
             sentTheirs_ += attack->lines;
             events_.push_back(DuelEvent::Attacked);
         }
-    } else if (const auto* snapshot = std::get_if<Snapshot>(&*message)) {
-        opponent_ = *snapshot;
+    } else if (const auto* snapshot = std::get_if<PlayerSnapshot>(&*message)) {
+        for (OpponentView& opponent : opponents_)
+            if (opponent.id == snapshot->fromId) opponent.snapshot = snapshot->snapshot;
     } else if (const auto* kos = std::get_if<KoCounts>(&*message)) {
         if (inMatch()) {
             if (kos->mine > kosMine_) events_.push_back(DuelEvent::KoMine);
@@ -171,14 +224,24 @@ void DuelSession::onMessage(std::string_view text) {
             sentTheirs_ = over->theirSent;
             finish(outcomeOf(over->result));
         }
-    } else if (std::holds_alternative<OpponentLeft>(*message)) {
-        if (phase_ == DuelPhase::Waiting) {
-            reset();
-            error_ = "Opponent left";
-            return;
+    } else if (const auto* out = std::get_if<PlayerOut>(&*message)) {
+        // A late OUT on the result screen still places a player nobody has placed yet, so the standings never
+        // show #0, but it doesn't end the match again.
+        const bool late = phase_ == DuelPhase::Result;
+        if ((inMatch() || late) && mode_ == DuelMode::Royale) {
+            if (out->id == myId_ && (!late || myPlace_ == 0)) {
+                myPlace_ = out->place;
+                if (out->place == 1) eliminated_ = false;  // survived a simultaneous top-out: the winner isn't out
+            }
+            for (OpponentView& opponent : opponents_) {
+                if (opponent.id != out->id || (late && opponent.place != 0)) continue;
+                if (out->place > 1) opponent.alive = false;  // the winner's board stays lit
+                opponent.place = out->place;
+            }
+            if (out->place == 1 && !late) finish(out->id == myId_ ? DuelOutcome::Won : DuelOutcome::Lost);
         }
-        opponentGone_ = true;
-        if (phase_ != DuelPhase::Result) finish(DuelOutcome::OpponentLeft);
+    } else if (std::holds_alternative<OpponentLeft>(*message)) {
+        if (inMatch() && mode_ == DuelMode::Duel) finish(DuelOutcome::OpponentLeft);  // only duels send LEFT
     }
 }
 
@@ -196,11 +259,20 @@ void DuelSession::update(int ms) {
         return;
     }
     if (phase_ != DuelPhase::Playing) return;
-    matchClockMs_ = std::max(0, matchClockMs_ - ms);
-    koFlashMs_ = std::max(0, koFlashMs_ - ms);
-    // The app stops ticking the game at 0:00, so a clear still animating would never be sent.
-    if (matchClockMs_ == 0)
-        while (game_->state() == GameState::Clearing) game_->tick(1);
+    const bool royale = mode_ == DuelMode::Royale;
+    if (royale) {
+        if (eliminated_) return;  // out: the board stays as it died and nothing more goes out
+        playedMs_ += ms;
+        game_->setLevelFloor(startLevel_ + playedMs_ / kRoyaleLevelStepMs);
+    } else {
+        const int clockBefore = matchClockMs_;
+        matchClockMs_ = std::max(0, matchClockMs_ - ms);
+        playedMs_ += clockBefore - matchClockMs_;  // a duel's play stops at 0:00
+        koFlashMs_ = std::max(0, koFlashMs_ - ms);
+        // The app stops ticking the game at 0:00, so a clear still animating would never be sent.
+        if (matchClockMs_ == 0)
+            while (game_->state() == GameState::Clearing) game_->tick(1);
+    }
     if (const int lines = game_->takeOutgoingAttack(); lines > 0) {
         send(Attack{lines});
         sentMine_ += lines;
@@ -216,22 +288,38 @@ void DuelSession::update(int ms) {
             lastSent_ = snapshot;
         }
     }
-    if (toppedOut) {  // a KO: the server counts it, we start over on an empty board
+    if (toppedOut && royale) {  // eliminated: the server places us, the board stays on its game-over state
+        send(Dead{});
+        eliminated_ = true;
+    } else if (toppedOut) {  // a KO: the server counts it, we start over on an empty board
         send(Dead{});
         game_->resetBoard();
         koFlashMs_ = kKoFlashMs;
     }
 }
 
+// The other players in START are named from the roster as it is now, so an id reused later keeps the old name.
 void DuelSession::startMatch(const StartMatch& start) {
     game_.emplace(makeGame_(start));
     phase_ = DuelPhase::Countdown;
     outcome_ = DuelOutcome::None;
+    mode_ = start.players.size() == 2 ? DuelMode::Duel : DuelMode::Royale;
+    participants_ = static_cast<int>(start.players.size());
+    startLevel_ = start.startLevel;
     countdownMs_ = kCountdownMs;
     sinceSnapshotMs_ = 0;
-    opponent_ = Snapshot{};
     lastSent_.reset();
-    rematchRequested_ = false;
+    std::vector<int> ids = start.players;
+    std::ranges::sort(ids);
+    opponents_.clear();
+    for (int id : ids) {
+        if (id == myId_) continue;
+        const auto entry = std::ranges::find(roster_, id, &RosterEntry::id);
+        OpponentView opponent;
+        opponent.id = id;
+        opponent.name = entry != roster_.end() ? entry->name : "P" + std::to_string(id);
+        opponents_.push_back(std::move(opponent));
+    }
     resetMatchStats();
     events_.push_back(DuelEvent::CountdownTick);
 }
@@ -248,19 +336,22 @@ void DuelSession::reset() {
     phase_ = DuelPhase::Idle;
     outcome_ = DuelOutcome::None;
     game_.reset();
-    opponent_ = Snapshot{};
     lastSent_.reset();
     roomCode_.clear();
-    opponentName_.clear();
+    myId_ = 0;
+    hostId_ = 0;
+    roster_.clear();
+    mode_ = DuelMode::Duel;
+    opponents_.clear();
+    participants_ = 0;
+    startLevel_ = 1;
     rooms_.clear();
     fromLobby_ = false;
-    publicRoom_ = false;
+    visibility_ = RoomVisibility::Unknown;
     quick_ = false;
     error_.clear();
     countdownMs_ = 0;
     sinceSnapshotMs_ = 0;
-    rematchRequested_ = false;
-    opponentGone_ = false;
     resetMatchStats();
 }
 
@@ -271,7 +362,10 @@ void DuelSession::resetMatchStats() {
     sentMine_ = 0;
     sentTheirs_ = 0;
     matchClockMs_ = kMatchMs;
+    playedMs_ = 0;
     koFlashMs_ = 0;
+    eliminated_ = false;
+    myPlace_ = 0;
 }
 
 }  // namespace tetris

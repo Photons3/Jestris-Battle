@@ -1,5 +1,7 @@
 # Design: Room lobby, quick match and invite links
 
+> **Partly superseded** by `2026-10-14-multiplayer-rooms-design.md`: rooms hold up to 16 players and stay listed until full, `ROOMS` entries gain a player count, Quick match prefers a room with no match running, and a room is deleted only when its last player leaves.
+
 ## Context
 Today the only way into a duel is a private 4-letter code: one player creates a room and the other must be told the code (`server/hub.go`, `DuelSession::createRoom`/`joinRoom`). This spec adds ways to find a game without passing a code around: public rooms listed in a lobby, a one-button quick match, and invite links. Private code rooms keep working exactly as they do now.
 

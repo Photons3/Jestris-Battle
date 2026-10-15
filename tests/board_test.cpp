@@ -175,3 +175,20 @@ TEST_CASE("board: garbage rows count rows with garbage, not bombs or pieces") {
     board.set(3, 3, PieceType::Garbage);
     CHECK(board.garbageRows() == 2);
 }
+
+TEST_CASE("board: pushGarbageHoles adds gray rows with one hole each") {
+    Board board;
+    REQUIRE(board.pushGarbageHoles({3, 3, 7}));
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < kBoardWidth; ++x)
+            CHECK(board.at(x, y) == (x == (y < 2 ? 3 : 7) ? Cell{} : Cell{PieceType::Garbage}));
+    CHECK(board.fullRows().empty());
+}
+
+TEST_CASE("board: an overflowing pushGarbageHoles is refused and changes nothing") {
+    Board board;
+    board.set(0, kBoardHeight - 1, PieceType::I);
+    const Board before = board;
+    CHECK_FALSE(board.pushGarbageHoles({0}));
+    CHECK(board == before);
+}

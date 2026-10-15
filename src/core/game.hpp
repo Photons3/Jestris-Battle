@@ -101,9 +101,13 @@ struct GameStats {
     friend bool operator==(const GameStats&, const GameStats&) = default;
 };
 
+// How rising garbage rows look: a bomb in a random column, or an empty cell shared by all rows of one attack.
+enum class GarbageStyle { Bombs, Holes };
+
 struct GameOptions {
     bool allowPause = true;  // duels turn pausing off so one player can't freeze the match
     int linesPerLevel = kLinesPerLevel;  // Blitz levels up faster
+    GarbageStyle garbage = GarbageStyle::Bombs;
 };
 
 class Game {
@@ -141,6 +145,8 @@ public:
     int clearElapsedMs() const { return clearTimerMs_; }  // time into the clear animation, 0 to kClearDelayMs
     int score() const { return score_; }
     int level() const { return level_; }
+    // Raises the level to at least `floor` (royale gravity); the level never drops below what the lines earn.
+    void setLevelFloor(int floor);
     int lines() const { return lines_; }
     // Clearing locks in a row, minus one: -1 with no combo, 0 after the first clear, 1 after the second...
     int combo() const { return combo_; }
@@ -187,13 +193,16 @@ private:
     int clearTimerMs_ = 0;
     int startLevel_;
     int level_;
+    int levelFloor_ = 0;
     int lines_ = 0;
     int score_ = 0;
     struct GarbageBatch {
         int lines;
         int msLeft;  // 0: ready to rise
+        int holeX = -1;  // Holes style: the column left empty in every row of this attack
     };
     std::deque<GarbageBatch> incoming_;  // oldest first
+    int lastHoleX_ = -1;  // the previous batch's hole column
     int outgoingAttack_ = 0;
     int combo_ = -1;
     int backToBack_ = -1;

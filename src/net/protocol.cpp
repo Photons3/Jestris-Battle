@@ -101,13 +101,14 @@ bool parseHold(std::string_view text, Cell& hold, bool& locked) {
     return parsePiece(text[0], hold);
 }
 
-std::optional<Message> decodeSnapshot(const std::vector<std::string_view>& parts) {
-    const auto score = parseNumber(parts[1], 0, kMaxInt);
-    const auto lines = parseNumber(parts[2], 0, kMaxInt);
-    const auto pending = parseNumber(parts[3], 0, kMaxInt);
-    const auto ready = pending ? parseNumber(parts[4], 0, *pending) : std::nullopt;
-    const std::string_view next = parts[13];
-    const std::string_view cells = parts[14];
+// parts[first..first + 13] are the 14 Snapshot arguments.
+std::optional<Snapshot> decodeSnapshot(const std::vector<std::string_view>& parts, std::size_t first) {
+    const auto score = parseNumber(parts[first], 0, kMaxInt);
+    const auto lines = parseNumber(parts[first + 1], 0, kMaxInt);
+    const auto pending = parseNumber(parts[first + 2], 0, kMaxInt);
+    const auto ready = pending ? parseNumber(parts[first + 3], 0, *pending) : std::nullopt;
+    const std::string_view next = parts[first + 12];
+    const std::string_view cells = parts[first + 13];
     if (!score || !lines || !pending || !ready || static_cast<int>(next.size()) != kSnapshotNext ||
         static_cast<int>(cells.size()) != kSnapshotCells)
         return std::nullopt;
@@ -115,13 +116,13 @@ std::optional<Message> decodeSnapshot(const std::vector<std::string_view>& parts
     int* const stats[] = {&snapshot.stats.pieces,   &snapshot.stats.attack, &snapshot.stats.garbageCleared,
                           &snapshot.stats.cancelled, &snapshot.stats.tetrises, &snapshot.stats.tSpins,
                           &snapshot.stats.maxCombo};
-    int part = 5;  // the stats follow ready, in GameStats order
+    std::size_t part = first + 4;  // the stats follow ready, in GameStats order
     for (int* stat : stats) {
         const auto value = parseNumber(parts[part++], 0, kMaxInt);
         if (!value) return std::nullopt;
         *stat = *value;
     }
-    if (!parseHold(parts[12], snapshot.hold, snapshot.holdLocked)) return std::nullopt;
+    if (!parseHold(parts[first + 11], snapshot.hold, snapshot.holdLocked)) return std::nullopt;
     for (int i = 0; i < kSnapshotNext; ++i)
         if (!parsePiece(next[i], snapshot.next[i])) return std::nullopt;
     for (int i = 0; i < kSnapshotCells; ++i)
@@ -129,17 +130,38 @@ std::optional<Message> decodeSnapshot(const std::vector<std::string_view>& parts
     return snapshot;
 }
 
-// "CODE:lvl:host"; nullopt unless all three parts are valid.
+// "CODE:lvl:host:n"; nullopt unless all four parts are valid.
 std::optional<RoomInfo> decodeRoomInfo(std::string_view entry) {
     const std::size_t first = entry.find(':');
     if (first == std::string_view::npos) return std::nullopt;
     const std::size_t second = entry.find(':', first + 1);
     if (second == std::string_view::npos) return std::nullopt;
+    const std::size_t third = entry.find(':', second + 1);
+    if (third == std::string_view::npos) return std::nullopt;
     const std::string_view code = entry.substr(0, first);
     const auto level = parseNumber(entry.substr(first + 1, second - first - 1), kMinStartLevel, kMaxStartLevel);
-    const std::string_view host = entry.substr(second + 1);
-    if (!isRoomCode(code) || !level || !isValidName(host)) return std::nullopt;  // a third ':' fails isValidName
-    return RoomInfo{std::string(code), *level, std::string(host)};
+    const std::string_view host = entry.substr(second + 1, third - second - 1);
+    const auto players = parseNumber(entry.substr(third + 1), 1, kMaxRoomPlayers - 1);
+    if (!isRoomCode(code) || !level || !isValidName(host) || !players) return std::nullopt;
+    return RoomInfo{std::string(code), *level, std::string(host), *players};
+}
+
+// "id:name:0|1"; nullopt unless all three parts are valid.
+std::optional<RosterEntry> decodeRosterEntry(std::string_view entry) {
+    const std::size_t first = entry.find(':');
+    if (first == std::string_view::npos) return std::nullopt;
+    const std::size_t second = entry.find(':', first + 1);
+    if (second == std::string_view::npos) return std::nullopt;
+    const auto id = parseNumber(entry.substr(0, first), 1, kMaxRoomPlayers);
+    const std::string_view name = entry.substr(first + 1, second - first - 1);
+    const auto inMatch = parseNumber(entry.substr(second + 1), 0, 1);  // a third ':' fails the parse
+    if (!id || !isValidName(name) || !inMatch) return std::nullopt;
+    return RosterEntry{*id, std::string(name), *inMatch == 1};
+}
+
+bool hasDuplicate(std::vector<int> ids) {
+    std::sort(ids.begin(), ids.end());
+    return std::adjacent_find(ids.begin(), ids.end()) != ids.end();
 }
 
 }  // namespace
@@ -192,12 +214,16 @@ std::string encode(const Message& message) {
                 return "CREATE " + std::to_string(m.startLevel) + (m.isPublic ? " PUB" : "");
             } else if constexpr (std::is_same_v<T, JoinRoom>) {
                 return "JOIN " + m.code;
-            } else if constexpr (std::is_same_v<T, RoomCreated>) {
-                return "ROOM " + m.code;
+            } else if constexpr (std::is_same_v<T, RoomEntered>) {
+                return "ROOM " + m.code + " " + std::to_string(m.playerId);
             } else if constexpr (std::is_same_v<T, StartMatch>) {
-                return "START " + std::to_string(m.seed) + " " + std::to_string(m.startLevel);
+                std::string text = "START " + std::to_string(m.seed) + " " + std::to_string(m.startLevel);
+                for (int id : m.players) text += " " + std::to_string(id);
+                return text;
             } else if constexpr (std::is_same_v<T, Attack>) {
                 return "ATK " + std::to_string(m.lines);
+            } else if constexpr (std::is_same_v<T, PlayerSnapshot>) {
+                return "SNAP " + std::to_string(m.fromId) + " " + encode(m.snapshot).substr(5);  // after "SNAP "
             } else if constexpr (std::is_same_v<T, Snapshot>) {
                 std::string text = "SNAP " + std::to_string(m.score) + " " + std::to_string(m.lines) + " " +
                                    std::to_string(m.pending) + " " + std::to_string(m.ready) + " ";
@@ -212,8 +238,6 @@ std::string encode(const Message& message) {
                 return text;
             } else if constexpr (std::is_same_v<T, Dead>) {
                 return "DEAD";
-            } else if constexpr (std::is_same_v<T, Rematch>) {
-                return "REMATCH";
             } else if constexpr (std::is_same_v<T, OpponentLeft>) {
                 return "LEFT";
             } else if constexpr (std::is_same_v<T, ServerError>) {
@@ -222,8 +246,15 @@ std::string encode(const Message& message) {
                 return "KO " + std::to_string(m.mine) + " " + std::to_string(m.theirs);
             } else if constexpr (std::is_same_v<T, Hello>) {
                 return "HELLO " + m.name;
-            } else if constexpr (std::is_same_v<T, OpponentName>) {
-                return "OPP " + m.name;
+            } else if constexpr (std::is_same_v<T, Roster>) {
+                std::string text = "PLAYERS " + std::to_string(m.hostId);
+                for (const RosterEntry& p : m.players)
+                    text += " " + std::to_string(p.id) + ":" + p.name + ":" + (p.inMatch ? "1" : "0");
+                return text;
+            } else if constexpr (std::is_same_v<T, Begin>) {
+                return "BEGIN";
+            } else if constexpr (std::is_same_v<T, PlayerOut>) {
+                return "OUT " + std::to_string(m.id) + " " + std::to_string(m.place);
             } else if constexpr (std::is_same_v<T, ListRooms>) {
                 return "LIST";
             } else if constexpr (std::is_same_v<T, UnlistRooms>) {
@@ -233,7 +264,7 @@ std::string encode(const Message& message) {
             } else if constexpr (std::is_same_v<T, RoomList>) {
                 std::string text = "ROOMS";
                 for (const RoomInfo& room : m.rooms)
-                    text += " " + room.code + ":" + std::to_string(room.startLevel) + ":" + room.host;
+                    text += " " + room.code + ":" + std::to_string(room.startLevel) + ":" + room.host + ":" + std::to_string(room.players);
                 return text;
             } else {
                 static_assert(std::is_same_v<T, MatchOver>);
@@ -267,16 +298,44 @@ std::optional<Message> decode(std::string_view text) {
         return list;
     } else if (verb == "JOIN" && args == 1) {
         if (isRoomCode(parts[1])) return JoinRoom{std::string(parts[1])};
-    } else if (verb == "ROOM" && args == 1) {
-        if (isRoomCode(parts[1])) return RoomCreated{std::string(parts[1])};
-    } else if (verb == "START" && args == 2) {
+    } else if (verb == "ROOM" && args == 2) {
+        const auto id = parseNumber(parts[2], 1, kMaxRoomPlayers);
+        if (isRoomCode(parts[1]) && id) return RoomEntered{std::string(parts[1]), *id};
+    } else if (verb == "START" && args >= 4 && args <= static_cast<std::size_t>(2 + kMaxRoomPlayers)) {
         const auto seed = parseNumber<std::uint32_t>(parts[1], 0, std::numeric_limits<std::uint32_t>::max());
         const auto level = parseNumber(parts[2], kMinStartLevel, kMaxStartLevel);
-        if (seed && level) return StartMatch{*seed, *level};
+        if (!seed || !level) return std::nullopt;
+        StartMatch start{*seed, *level, {}};
+        for (std::size_t i = 3; i < parts.size(); ++i) {
+            const auto id = parseNumber(parts[i], 1, kMaxRoomPlayers);
+            if (!id) return std::nullopt;
+            start.players.push_back(*id);
+        }
+        if (!hasDuplicate(start.players)) return start;
+    } else if (verb == "PLAYERS" && args >= 2 && args <= static_cast<std::size_t>(1 + kMaxRoomPlayers)) {
+        const auto host = parseNumber(parts[1], 1, kMaxRoomPlayers);
+        if (!host) return std::nullopt;
+        Roster roster{*host, {}};
+        std::vector<int> ids;
+        for (std::size_t i = 2; i < parts.size(); ++i) {
+            const auto entry = decodeRosterEntry(parts[i]);
+            if (!entry) return std::nullopt;
+            roster.players.push_back(*entry);
+            ids.push_back(entry->id);
+        }
+        if (!hasDuplicate(ids) && std::find(ids.begin(), ids.end(), *host) != ids.end()) return roster;
+    } else if (verb == "OUT" && args == 2) {
+        const auto id = parseNumber(parts[1], 1, kMaxRoomPlayers);
+        const auto place = parseNumber(parts[2], 1, kMaxRoomPlayers);
+        if (id && place) return PlayerOut{*id, *place};
     } else if (verb == "ATK" && args == 1) {
         if (const auto lines = parseNumber(parts[1], 1, kBoardHeight)) return Attack{*lines};
     } else if (verb == "SNAP" && args == 14) {
-        return decodeSnapshot(parts);
+        if (const auto snapshot = decodeSnapshot(parts, 1)) return *snapshot;
+    } else if (verb == "SNAP" && args == 15) {
+        const auto id = parseNumber(parts[1], 1, kMaxRoomPlayers);
+        if (!id) return std::nullopt;
+        if (const auto snapshot = decodeSnapshot(parts, 2)) return PlayerSnapshot{*id, *snapshot};
     } else if (verb == "KO" && args == 2) {
         const auto mine = parseNumber(parts[1], 0, kKosToWin);
         const auto theirs = parseNumber(parts[2], 0, kKosToWin);
@@ -289,12 +348,10 @@ std::optional<Message> decode(std::string_view text) {
         if (result && reason && mySent && theirSent) return MatchOver{*result, *reason, *mySent, *theirSent};
     } else if (verb == "HELLO" && args == 1) {
         if (isValidName(parts[1])) return Hello{std::string(parts[1])};
-    } else if (verb == "OPP" && args == 1) {
-        if (isValidName(parts[1])) return OpponentName{std::string(parts[1])};
     } else if (args == 0) {
         if (verb == "DEAD") return Dead{};
-        if (verb == "REMATCH") return Rematch{};
         if (verb == "LEFT") return OpponentLeft{};
+        if (verb == "BEGIN") return Begin{};
         if (verb == "LIST") return ListRooms{};
         if (verb == "UNLIST") return UnlistRooms{};
     }

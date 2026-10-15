@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include <random>
 #include <vector>
@@ -1229,4 +1230,113 @@ TEST_CASE("game: stats survive resetBoard, even mid-clear") {
     CHECK(game.stats().pieces == 1);
     CHECK(game.stats().tetrises == 1);
     CHECK(game.stats().attack == 0);
+}
+
+namespace {
+
+int holeColumn(const Board& board, int y) {
+    int hole = -1;
+    int holes = 0;
+    for (int x = 0; x < kBoardWidth; ++x)
+        if (!board.at(x, y)) {
+            hole = x;
+            ++holes;
+        }
+    return holes == 1 ? hole : -1;
+}
+
+}  // namespace
+
+TEST_CASE("game: hole garbage from one attack shares a column and the next attack moves it") {
+    Game game(seedWithFirst(PieceType::T), 1, {}, GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
+    game.receiveGarbage(3, 0);
+    game.receiveGarbage(2, 0);
+    game.apply(Action::HardDrop);
+    const Board& board = game.board();
+    for (int y = 0; y < 5; ++y) CHECK(holeColumn(board, y) >= 0);
+    CHECK(holeColumn(board, 0) == holeColumn(board, 1));
+    CHECK(holeColumn(board, 0) == holeColumn(board, 2));
+    CHECK(holeColumn(board, 3) == holeColumn(board, 4));
+    CHECK(holeColumn(board, 2) != holeColumn(board, 3));
+    for (int y = 0; y < kBoardHeight; ++y)
+        for (int x = 0; x < kBoardWidth; ++x) CHECK(board.at(x, y) != Cell{PieceType::Bomb});
+}
+
+TEST_CASE("game: an attack split by the per-lock cap keeps its hole column") {
+    Game game(seedWithFirst(PieceType::T), 1, {}, GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
+    game.receiveGarbage(12, 0);
+    game.apply(Action::HardDrop);
+    game.apply(Action::HardDrop);
+    REQUIRE(game.pendingGarbage() == 0);
+    const int hole = holeColumn(game.board(), 0);
+    CHECK(hole >= 0);
+    for (int y = 0; y < 12; ++y) CHECK(holeColumn(game.board(), y) == hole);
+}
+
+TEST_CASE("game: filling a hole clears the row and counts as garbage cleared") {
+    Game game(seedWithFirstTwo(PieceType::T, PieceType::I), 1, {},
+              GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
+    game.receiveGarbage(1, 0);
+    for (int i = 0; i < 4; ++i) game.apply(Action::Right);  // the T locks over columns 7-9
+    game.apply(Action::HardDrop);
+    const int hole = holeColumn(game.board(), 0);
+    REQUIRE(hole >= 0);
+    REQUIRE(hole < 7);  // the hole is not under the T
+    game.apply(Action::RotateCW);  // upright I in column 5
+    for (int x = 5; x > hole; --x) game.apply(Action::Left);
+    for (int x = 5; x < hole; ++x) game.apply(Action::Right);
+    game.apply(Action::HardDrop);
+    game.tick(kClearDelayMs);
+    CHECK(game.lines() == 1);
+    CHECK(game.stats().garbageCleared == 1);
+}
+
+TEST_CASE("game: hole garbage that overflows is a top-out") {
+    Game game(seedWithFirst(PieceType::T), 1, boardWithWell(5, 0),
+              GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
+    game.receiveGarbage(kBoardHeight, 0);
+    for (int i = 0; i < 10 && game.state() != GameState::GameOver; ++i) game.apply(Action::HardDrop);
+    CHECK(game.state() == GameState::GameOver);
+}
+
+TEST_CASE("game: the level floor raises level and gravity") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setLevelFloor(5);
+    CHECK(game.level() == 5);
+    const int y = game.active().pos.y;
+    const int ms = static_cast<int>(std::ceil(gravityMsPerRow(5)));
+    game.tick(ms - 1);
+    CHECK(game.active().pos.y == y);
+    game.tick(1);
+    CHECK(game.active().pos.y == y - 1);
+}
+
+TEST_CASE("game: the level floor never lowers the level") {
+    Game game(seedWithFirst(PieceType::T), 8);
+    game.setLevelFloor(3);
+    CHECK(game.level() == 8);
+    CHECK(game.takeEvents().empty());
+}
+
+TEST_CASE("game: line-clear score uses the floored level") {
+    Board board;  // row 0 is full except the O's columns; one block above keeps it from a perfect clear
+    for (int x = 0; x < kBoardWidth; ++x)
+        if (x != 4 && x != 5) board.set(x, 0, PieceType::Z);
+    board.set(0, 5, PieceType::Z);
+    Game game(seedWithFirst(PieceType::O), 1, board);
+    game.setLevelFloor(4);
+    game.apply(Action::HardDrop);
+    REQUIRE(game.state() == GameState::Clearing);
+    const int before = game.score();
+    game.tick(kClearDelayMs);
+    CHECK(game.lines() == 1);
+    CHECK(game.score() - before == lineClearScore(1, 4));
+    CHECK(game.level() == 4);
+}
+
+TEST_CASE("game: raising the floor emits LevelUp once") {
+    Game game(seedWithFirst(PieceType::T), 1);
+    game.setLevelFloor(3);
+    game.setLevelFloor(3);
+    CHECK(game.takeEvents() == Events{kLevelUp});
 }

@@ -20,6 +20,7 @@ MatchOver verdictFor(int kosMine, int kosTheirs, int sentMine, int sentTheirs, M
 
 // An offline duel against the bot: plays the server's referee and the remote player, so a DuelSession can talk
 // to it like any other connection. Messages it sends are answered from receive(); the bot plays in update().
+// The human is player 1 and the room's host, the bot is player 2; the first match starts without a BEGIN.
 class LocalMatch : public Connection {
 public:
     LocalMatch(BotLevel level, std::uint32_t seed);
@@ -37,6 +38,7 @@ private:
     void step();
     void knockOut(bool humanScores);
     void finish(MatchReason reason);
+    void queueRoster(bool inMatch);  // PLAYERS: the human hosts, and both are or aren't in a match
     void queue(const Message& message) { outbox_.push_back(encode(message)); }
 
     BotLevel level_;
@@ -44,7 +46,8 @@ private:
     BotPlayer player_;
     std::optional<Game> bot_;
     int startLevel_ = 1;
-    bool named_ = false;  // OpponentName goes out before the first START only
+    std::string humanName_ = "You";  // from HELLO, for the roster
+    bool entered_ = false;  // ROOM and PLAYERS go out before the first START only
     bool over_ = false;
     int clockMs_ = 0;
     int koFlashMs_ = 0;
