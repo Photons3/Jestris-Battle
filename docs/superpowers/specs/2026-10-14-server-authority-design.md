@@ -232,7 +232,7 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
   1. `own = match->log()` entries with `t' > t`.
   2. `match = MatchGame::replay(setup, log, t)`.
   3. Re-apply `own` at their times while advancing to the previous local `t`.
-  4. Mark everything up to there as sent. The server already has `own`, or will, because those messages are in flight.
+  4. Mark everything already sent as sent. The server already has those entries, or will, because those messages are in flight. Entries logged since the last `IN` (such as the ack of a `GARB` that arrived just before the `RESYNC`) have not been sent: they stay queued for the next `IN`, and one stamped at or before `t` that the server's log lacks is applied at `t`.
   5. Log one line to the console with both hashes.
 
   The board snaps to the result. In the common honest cases, a hidden tab and a slow garbage acknowledgement, the replay gives the same board, so nothing changes on screen.

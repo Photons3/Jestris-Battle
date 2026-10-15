@@ -193,7 +193,7 @@
        - `ATK n` from `takeOutgoingAttack` (keep the `Sent` event and tally);
        - the `SNAP` on its interval;
        - `DEAD` once per rise of `match_->topOuts()`.
-    3. Push `KoMine` / KO flash from `topOuts()` rising in a duel; set `eliminated_` from `match_->eliminated()` in a royale.
+    3. Show the KO flash from `topOuts()` rising in a duel (`KoMine` keeps meaning "we scored a KO", from the server's `KO`); set `eliminated_` from `match_->eliminated()` in a royale.
   - Delete the frame-end top-out and `setLevelFloor` code from `update`; `MatchGame` owns both now.
   - **`GARB id n`** while `inMatch()`: if `match_->hasGarbage(id)`, ignore it; otherwise `acceptGarbage(id, n)`, the `Attacked` event, and `sentTheirs += n`.
   - **`ATK n`** (vs Bot only): `acceptGarbage(0, n)` plus the same event and tally. Ids of 0 are never checked by `hasGarbage`.
@@ -202,7 +202,7 @@
     2. `now = match_->t()`.
     3. `match_ = MatchGame::replay(setup, log, t)`.
     4. Re-apply `own` at their times while advancing to `now`.
-    5. Discard `takeUnsent()`.
+    5. Discard the corrected match's `takeUnsent()` for entries already sent. Entries logged since the last `IN` (taken from the live match before step 3, e.g. a `G` ack from a `GARB` in the same receive batch) must still go out in the next `IN`: those after `t` stay queued, and one stamped at or before `t` that the server's log lacks is applied at `t`.
     6. `std::fprintf(stderr, "resync t=%d hash %016llx -> %016llx\n", …)`.
   - **`LEFT` in a royale match:** `finish(DuelOutcome::OpponentLeft)`. `resultReasonText` returns `"Match ended"` for a royale `OpponentLeft`.
   - **`app.cpp step()`:** in a duel, use `match->input` and `match->softDrop` instead of `game->apply` and `setSoftDrop`, and call `duel.step(1)` per ms instead of `game->tick(1)`. Solo is unchanged. The SDF setting goes to `duel.setSoftDropFactor` whenever handling changes or a duel opens.
