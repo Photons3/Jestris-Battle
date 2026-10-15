@@ -25,6 +25,13 @@ inline constexpr int kMaxCatchUpMs = 130000;  // a match replays stalls up to th
 // loop, so a running match replays the gap: gravity keeps going and the opponent keeps getting snapshots.
 int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch);
 
+class DuelSession;
+// One frame of the app loop, after this frame's messages: the frame budget for `elapsedMs` of wall time, run through
+// `step` in pieces of at most kMaxFrameMs (at least one call, possibly of 0 ms). `duelShown`: the duel screen is up.
+// The frame that processed START runs no time, so wall time from before START (a hidden or throttled tab) can't put
+// the countdown ahead of the server's clock. A catch-up frame (more than one piece) sends its INs once, at the end.
+void runFrame(DuelSession& duel, bool duelShown, std::uint64_t elapsedMs, const std::function<void(int)>& step);
+
 // Lobby: connected, not in a room, watching the list of open public rooms. Waiting: a room was asked for, no
 // ROOM yet. Room: in a room between matches, or before the first.
 enum class DuelPhase { Idle, Lobby, Waiting, Room, Countdown, Playing, Result };
@@ -74,6 +81,10 @@ public:
     void step(int ms);
     // Call once per frame, after step(ms): runs the countdown and the clocks, and sends what the match logged.
     void update(int ms);
+    // True if START arrived since the last update() or takeStarted(), and resets: runFrame runs no time for it.
+    bool takeStarted() { return std::exchange(started_, false); }
+    // While held, update() sends no IN; releasing sends one for everything since (split only at kMaxInputEvents).
+    void holdInputs(bool hold);
 
     DuelPhase phase() const { return phase_; }
     bool inMatch() const { return phase_ == DuelPhase::Countdown || phase_ == DuelPhase::Playing; }
@@ -90,7 +101,8 @@ public:
     const Snapshot& opponent() const;         // the first opponent's board, or an empty Snapshot
     const std::string& opponentName() const;  // the first opponent's name, or "" before any match
     int participants() const { return participants_; }  // players in the last START, this one included
-    // Royale: this player topped out. The game stays in GameOver and nothing more is sent this match.
+    // Royale: this player topped out, as predicted locally. The game stays in GameOver and only IN goes out, until the
+    // server's OUT for this player; a RESYNC that undoes the top-out clears it.
     bool eliminated() const { return eliminated_; }
     int myPlace() const { return myPlace_; }  // royale: 0 until this player's OUT
     int countdownMs() const { return countdownMs_; }
@@ -150,6 +162,8 @@ private:
     int countdownMs_ = 0;
     int sinceSnapshotMs_ = 0;
     int lastInT_ = 0;      // the match t the last IN went out at
+    bool started_ = false;      // START arrived since the last takeStarted()
+    bool holdingInputs_ = false;
     int insSent_ = 0;      // INs sent this match; the server's RESYNC says how many of them it has consumed
     // The entries of each IN the server may not have consumed yet, by number (IN 1 is the match's first).
     std::deque<std::pair<int, std::vector<LogEntry>>> insInFlight_;

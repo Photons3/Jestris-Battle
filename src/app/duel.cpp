@@ -51,6 +51,19 @@ int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch) {
     return static_cast<int>(std::min<std::uint64_t>(elapsedMs, inMatch ? kMaxCatchUpMs : kMaxFrameMs));
 }
 
+void runFrame(DuelSession& duel, bool duelShown, std::uint64_t elapsedMs, const std::function<void(int)>& step) {
+    // A long gap is replayed in short steps, so the duel sends snapshots and freezes on KO or 0:00 as usual.
+    int left = duel.takeStarted() ? 0 : frameBudgetMs(elapsedMs, duelShown && duel.inMatch());
+    const bool catchUp = left > kMaxFrameMs;
+    if (catchUp) duel.holdInputs(true);
+    do {
+        const int ms = std::min(left, kMaxFrameMs);
+        step(ms);
+        left -= ms;
+    } while (left > 0);
+    if (catchUp) duel.holdInputs(false);
+}
+
 const Snapshot& DuelSession::opponent() const {
     return opponents_.empty() ? kNoSnapshot : opponents_.front().snapshot;
 }
@@ -278,6 +291,7 @@ void DuelSession::resync(const Resync& correction) {
     corrected.game().takeOutgoingAttack();
     corrected.game().takeEvents();
     match_ = std::move(corrected);
+    if (!match_->eliminated()) eliminated_ = false;  // the server's game survived: we play on
     topOutsSeen_ = std::min(topOutsSeen_, match_->topOuts());  // a KO only the corrected match has is still reported
     std::fprintf(stderr, "resync t=%d hash %016llx -> %016llx\n", correction.t,
                  static_cast<unsigned long long>(before), static_cast<unsigned long long>(match_->hash()));
@@ -288,6 +302,7 @@ void DuelSession::step(int ms) {
 }
 
 void DuelSession::update(int ms) {
+    started_ = false;  // this frame's time is being run
     if (phase_ == DuelPhase::Countdown) {
         const int before = countdownMs_;
         countdownMs_ -= ms;
@@ -303,14 +318,16 @@ void DuelSession::update(int ms) {
     if (phase_ != DuelPhase::Playing) return;
     const bool royale = mode_ == DuelMode::Royale;
     if (royale) {
-        if (eliminated_) return;  // out: the board stays as it died and nothing more goes out
-        playedMs_ += ms;
+        if (!eliminated_) playedMs_ += ms;
     } else {
         const int clockBefore = matchClockMs_;
         matchClockMs_ = std::max(0, matchClockMs_ - ms);
         playedMs_ += clockBefore - matchClockMs_;  // a duel's play stops at 0:00
     }
-    sendInputs();
+    // IN goes on after a predicted elimination: the server may disagree, and its RESYNC needs our INs. Its OUT for
+    // us is final.
+    if (!holdingInputs_ && myPlace_ == 0) sendInputs();
+    if (eliminated_) return;  // out: the board stays as it died and nothing but IN goes out
     // The old messages, which the server relays until it simulates every match itself.
     Game& game = match_->game();
     if (const int lines = game.takeOutgoingAttack(); lines > 0) {
@@ -333,6 +350,11 @@ void DuelSession::update(int ms) {
     for (int i = 0; i < newTopOuts; ++i) send(Dead{});  // the server counts each KO, or places us
     topOutsSeen_ = match_->topOuts();
     if (royale) eliminated_ = match_->eliminated();
+}
+
+void DuelSession::holdInputs(bool hold) {
+    holdingInputs_ = hold;
+    if (!hold && phase_ == DuelPhase::Playing && myPlace_ == 0) sendInputs();
 }
 
 // IN with the entries the match logged since the last one, or an empty one each kInputHeartbeatMs of match time.
@@ -358,6 +380,7 @@ void DuelSession::sendInputs() {
 // The other players in START are named from the roster as it is now, so an id reused later keeps the old name.
 void DuelSession::startMatch(const StartMatch& start) {
     match_.emplace(MatchSetup{start, softDropFactor_});
+    started_ = true;
     send(SoftDropSetting{softDropFactor_});
     phase_ = DuelPhase::Countdown;
     outcome_ = DuelOutcome::None;
@@ -397,6 +420,8 @@ void DuelSession::reset() {
     phase_ = DuelPhase::Idle;
     outcome_ = DuelOutcome::None;
     match_.reset();
+    started_ = false;
+    holdingInputs_ = false;
     lastSent_.reset();
     roomCode_.clear();
     myId_ = 0;

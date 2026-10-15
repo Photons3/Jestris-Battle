@@ -21,7 +21,7 @@ const (
 	minSdf               = 5  // kMinSdf
 	maxSdf               = 40 // kMaxSdf
 	runnerTick           = 100 * time.Millisecond
-	runnerQueuePerPlayer = 64 // IN and SDF messages waiting per participant; more are dropped
+	runnerQueuePerPlayer = 64  // IN and SDF messages waiting per participant; more are dropped
 	entryAllowanceBase   = 256 // rule 4: a player's accepted entries stay within tEnd/4 + this
 	resyncInterval       = 100 * time.Millisecond
 	resyncLimitWindow    = 10 * time.Second // -max-resyncs counts the RESYNCs sent within this

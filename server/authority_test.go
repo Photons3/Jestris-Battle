@@ -935,6 +935,76 @@ func TestHiddenTabIsNotKicked(t *testing.T) {
 	}
 }
 
+// A hidden tab as the real client runs it: one frame a second, each sending one IN for the whole second, with
+// the acks of the GARBs that reached it since its last frame stamped at that frame's start (the previous IN's
+// tEnd). Ann attacks every 300 ms. Bob's INs reach the server latency ms after his frame. At the default -lag
+// 1s Bob is never kicked; the test reports the would-resync marks and RESYNCs he collects.
+func TestHiddenTabAt1HzUnderGarbageIsNotKicked(t *testing.T) {
+	for _, latency := range []int{40, 150} {
+		t.Run(fmt.Sprintf("latency %dms", latency), func(t *testing.T) {
+			d := directMatchWith(t, enforce, "Ann", "Bob")
+			r := d.runner()
+			a, b := d.ps[0], d.ps[1]
+			d.h.receive(a, "SDF 20") // handle 0
+			d.h.receive(b, "SDF 20") // handle 1
+			r.drain(d.h)
+			f := d.sim()
+			type garb struct{ id, lines, arrives int }
+			var inbound []garb // GARBs on their way to Bob
+			var arrived []garb // GARBs Bob's client has, not acked yet
+			sendAt, sendText := -1, ""
+			lastEnd, resyncs, garbs := 0, 0, 0
+			for ms := 10; ms <= 60000; ms += 10 {
+				d.at(ms)
+				if ms%100 == 0 { // Ann: an honest 10 Hz stream
+					if ms%300 == 0 {
+						f.attacks[0] = append(f.attacks[0], 1)
+					}
+					d.h.receive(a, fmt.Sprintf("IN %d", ms))
+					r.drain(d.h)
+				}
+				if ms == sendAt {
+					d.h.receive(b, sendText)
+					r.drain(d.h)
+				}
+				if ms%100 == 0 {
+					r.tick(d.h, d.now)
+				}
+				queued(a)
+				for _, m := range queued(b) {
+					var g garb
+					if n, _ := fmt.Sscanf(m, "GARB %d %d", &g.id, &g.lines); n == 2 {
+						g.arrives = ms + latency
+						inbound = append(inbound, g)
+						garbs++
+					}
+					if strings.HasPrefix(m, "RESYNC ") {
+						resyncs++
+					}
+				}
+				for len(inbound) > 0 && inbound[0].arrives <= ms {
+					arrived = append(arrived, inbound[0])
+					inbound = inbound[1:]
+				}
+				if ms%1000 == 0 { // Bob's frame: the GARBs are logged at the frame's start, then a second is replayed
+					in := fmt.Sprintf("IN %d", ms)
+					for _, g := range arrived {
+						in += fmt.Sprintf(" %d:G%dx%d", lastEnd, g.id, g.lines)
+					}
+					arrived = nil
+					lastEnd = ms
+					sendAt, sendText = ms+latency, in
+				}
+				if b.kicked {
+					t.Fatalf("kicked at %d ms after %d RESYNCs", ms, resyncs)
+				}
+			}
+			ps := r.players[b]
+			t.Logf("latency %d ms: %d GARBs, %d RESYNCs in 60 s, would-resync marks %v", latency, garbs, resyncs, ps.wouldResync)
+		})
+	}
+}
+
 func TestAbuserIsKicked(t *testing.T) {
 	d := directMatchWith(t, enforce, "Ann", "Bob")
 	r := d.runner()
