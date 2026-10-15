@@ -213,7 +213,7 @@ func TestJoinSendsRoomAndRoster(t *testing.T) {
 func TestGameMessagesAreRelayed(t *testing.T) {
 	a, b := pair(t, newTestServer(t))
 	a.send("ATK 2")
-	b.expect("ATK 2")
+	b.expect("GARB 1 2")
 	b.send("SNAP 0 0 0 board")
 	a.expect("SNAP 2 0 0 0 board")
 }
@@ -224,14 +224,14 @@ func TestServerOnlyVerbsAreNotRelayed(t *testing.T) {
 		a.send(forged)
 	}
 	a.send("ATK 1")
-	b.expect("ATK 1")
+	b.expect("GARB 1 1")
 }
 
 func TestUnknownVerbsAreNotRelayed(t *testing.T) {
 	a, b := pair(t, newTestServer(t))
 	a.send("HELLO2 x")
 	a.send("ATK 1")
-	b.expect("ATK 1")
+	b.expect("GARB 1 1")
 	a.flush()
 }
 
@@ -320,7 +320,7 @@ func TestBeginDuringAMatchIsIgnored(t *testing.T) {
 	a.send("BEGIN")
 	a.flush()
 	a.send("ATK 1")
-	b.expect("ATK 1") // a second START would have reached b first
+	b.expect("GARB 1 1") // a second START would have reached b first
 	clock.mu.Lock()
 	defer clock.mu.Unlock()
 	if len(clock.timers) != 1 {
@@ -399,11 +399,11 @@ func TestAttacksAreCountedAndMalformedOnesDropped(t *testing.T) {
 		a.send(bad)
 	}
 	a.send("ATK 2")
-	b.expect("ATK 2")
+	b.expect("GARB 1 2")
 	a.send("ATK 3")
-	b.expect("ATK 3")
+	b.expect("GARB 2 3")
 	b.send("ATK 1")
-	a.expect("ATK 1")
+	a.expect("GARB 1 1")
 	clock.timer(0).fire()
 	a.expect("OVER WIN TIME 5 1")
 	b.expect("OVER LOSE TIME 1 5")
@@ -430,7 +430,7 @@ func TestTimeUpGoesToMoreKOsBeforeLinesSent(t *testing.T) {
 	srv, clock := newTestHub(t)
 	a, b := pair(t, srv)
 	a.send("ATK 5")
-	b.expect("ATK 5")
+	b.expect("GARB 1 5")
 	a.send("DEAD")
 	a.expect("KO 0 1")
 	b.expect("KO 1 0")
@@ -449,9 +449,9 @@ func TestTimeUpWithTiedKOsGoesToLinesSent(t *testing.T) {
 	a.expect("KO 1 1")
 	b.expect("KO 1 1")
 	a.send("ATK 3")
-	b.expect("ATK 3")
+	b.expect("GARB 1 3")
 	b.send("ATK 1")
-	a.expect("ATK 1")
+	a.expect("GARB 1 1")
 	clock.timer(0).fire()
 	a.expect("OVER WIN TIME 3 1")
 	b.expect("OVER LOSE TIME 1 3")
@@ -461,9 +461,9 @@ func TestTimeUpWithEverythingTiedIsADraw(t *testing.T) {
 	srv, clock := newTestHub(t)
 	a, b := pair(t, srv)
 	a.send("ATK 2")
-	b.expect("ATK 2")
+	b.expect("GARB 1 2")
 	b.send("ATK 2")
-	a.expect("ATK 2")
+	a.expect("GARB 1 2")
 	clock.timer(0).fire()
 	a.expect("OVER DRAW TIME 2 2")
 	b.expect("OVER DRAW TIME 2 2")
@@ -561,7 +561,7 @@ func TestHelloInsideARoomIsIgnored(t *testing.T) {
 	a, b := pair(t, srv)
 	a.send("HELLO Zed") // dropped: a is in a room
 	a.send("ATK 1")
-	b.expect("ATK 1") // a's HELLO was handled before b leaves; each connection is read in order
+	b.expect("GARB 1 1") // a's HELLO was handled before b leaves; each connection is read in order
 	b.conn.Close(websocket.StatusNormalClosure, "")
 	a.expect("LEFT")
 	a.expect("PLAYERS 1 1:Ann:0")
@@ -680,7 +680,7 @@ func TestLobbyVerbsInsideARoomAreNotRelayed(t *testing.T) {
 	a.send("UNLIST")
 	a.send("ROOMS AAAA:1:Sam:1")
 	a.send("ATK 1")
-	b.expect("ATK 1")
+	b.expect("GARB 1 1")
 }
 
 func TestQuickOpensAPublicRoomWhenNoneIsOpen(t *testing.T) {
@@ -820,12 +820,12 @@ func TestRoyaleAttackGoesToAPickedLivingOpponent(t *testing.T) {
 	c := royale(t, srv, "Ann", "Bob", "Cat")
 	a, b, cat := c[0], c[1], c[2]
 	a.send("ATK 2")
-	cat.expect("ATK 2")
+	cat.expect("GARB 1 2")
 	b.flush() // the ATK went to Cat alone
 	b.send("DEAD")
 	expectAll("OUT 2 3", a, b, cat)
 	a.send("ATK 1")
-	cat.expect("ATK 1")
+	cat.expect("GARB 2 1")
 	mu.Lock()
 	defer mu.Unlock()
 	if !slices.Equal(seen, []int{2, 1}) {
@@ -897,7 +897,7 @@ func TestLateJoinerGetsNoMatchTraffic(t *testing.T) {
 	c[0].send("SNAP 0 0 0 board")
 	expectAll("SNAP 1 0 0 0 board", c[1], c[2])
 	c[0].send("ATK 1")
-	c[2].expect("ATK 1") // the last living opponent is Cat, not Dan
+	c[2].expect("GARB 1 1") // the last living opponent is Cat, not Dan
 	c[1].send("DEAD")
 	expectAll("OUT 2 3", c...)
 	d.flush() // Dan got nothing since PLAYERS

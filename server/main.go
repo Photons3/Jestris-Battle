@@ -21,7 +21,16 @@ func main() {
 	cert := flag.String("cert", "", "TLS certificate file (PEM, full chain); serves HTTPS/WSS when set with -key")
 	key := flag.String("key", "", "TLS private key file (PEM)")
 	origins := flag.String("origins", "", "comma-separated extra page hosts allowed to open /ws, for proxies that rewrite Host")
+	authMode := flag.String("authority", "log", "log: simulate every match and log disagreements; enforce: the simulation decides")
+	lead := flag.Duration("lead", defaultLead, "how far a player's game may run ahead of the server's match clock")
+	lag := flag.Duration("lag", defaultLag, "how far behind the server's match clock a player's game is forced forward")
+	garbageWindow := flag.Duration("garbage-window", defaultGarbageWindow, "time a player has to accept sent garbage")
+	maxResyncs := flag.Int("max-resyncs", defaultMaxResyncs, "RESYNCs per 10 s before a player is disconnected (enforce only)")
 	flag.Parse()
+
+	if *authMode != "log" && *authMode != "enforce" {
+		log.Fatal("-authority must be log or enforce")
+	}
 
 	if (*cert == "") != (*key == "") {
 		log.Fatal("-cert and -key must be given together")
@@ -48,6 +57,12 @@ func main() {
 	mux.Handle("/", web)
 	hub := NewHub()
 	hub.matchLength = *match
+	if s, err := newSharedSim(); err != nil { // compiles the game core now rather than at the first BEGIN
+		log.Printf("game core unavailable, matches run unsimulated: %v", err)
+	} else {
+		s.Close()
+	}
+	hub.auth = authority{mode: *authMode, lead: *lead, lag: *lag, garbageWindow: *garbageWindow, maxResyncs: *maxResyncs}
 	for _, o := range strings.Split(*origins, ",") {
 		if o = strings.TrimSpace(o); o != "" {
 			hub.originPatterns = append(hub.originPatterns, o)

@@ -39,7 +39,8 @@ const (
 
 // Hub gathers browsers into rooms of up to maxRoomPlayers, starts a match when the host sends BEGIN, relays
 // game messages between the match's participants and referees each match: a duel for 2, a royale for 3 or
-// more. It handles HELLO, CREATE, JOIN, LIST, UNLIST, QUICK, BEGIN, ATK, DEAD and SNAP itself; anything
+// more. It handles HELLO, CREATE, JOIN, LIST, UNLIST, QUICK, BEGIN, ATK, DEAD and SNAP itself, and hands a
+// participant's IN and SDF to the match's runner (authority.go), which re-simulates every game; anything
 // else inside a room, including the verbs only the server sends (ROOM, PLAYERS, START, KO, OVER, OUT, LEFT,
 // ERR, ROOMS), is dropped. Lobby watchers get the full ROOMS list whenever a listed room appears,
 // disappears, or changes its player count or host.
@@ -58,6 +59,11 @@ type Hub struct {
 	afterFunc   func(d time.Duration, f func()) stopper
 	matchLength time.Duration
 	matchGrace  time.Duration // covers clients starting their clocks a one-way latency after the server
+	auth        authority
+	newSim      func() (gameSim, error) // the game core for one match's runner
+	now         func() time.Time
+	// manualRunners leaves each runner without its goroutine, for tests that drain and tick it themselves.
+	manualRunners bool
 	// originPatterns are extra page hosts allowed to open /ws (e.g. "game.example.com"), for a
 	// reverse proxy that does not pass the Host header through. The page's own host is always allowed.
 	originPatterns []string
@@ -106,6 +112,7 @@ type match struct {
 	kos     map[*player]int
 	sent    map[*player]int // lines sent: the total of each participant's accepted ATK n
 	alive   map[*player]bool
+	runner  *matchRunner // nil without a simulation, and once the match has ended
 }
 
 // outgoing is a message for the queue of player to.
@@ -125,6 +132,9 @@ func NewHub() *Hub {
 		afterFunc:   func(d time.Duration, f func()) stopper { return time.AfterFunc(d, f) },
 		matchLength: defaultMatchLength,
 		matchGrace:  defaultMatchGrace,
+		auth:        defaultAuthority(),
+		newSim:      newSharedSim,
+		now:         time.Now,
 	}
 }
 
@@ -253,9 +263,21 @@ func (h *Hub) route(p *player, text string) []outgoing {
 		if text != "DEAD" {
 			return nil
 		}
+		if m := p.room.match; m != nil && m.runner != nil && m.alive[p] {
+			m.runner.push(runnerMsg{from: p, kind: msgClaimedDead})
+		}
 		return p.room.knockOut(p)
 	case "SNAP":
 		return p.room.relaySnapshot(p, arg)
+	case "IN", "SDF":
+		if m := p.room.match; m != nil && m.runner != nil && m.has(p) {
+			kind := msgIN
+			if verb == "SDF" {
+				kind = msgSDF
+			}
+			m.runner.push(runnerMsg{from: p, kind: kind, text: text})
+		}
+		return nil
 	}
 	return nil // lobby verbs, server-only verbs (never relay a forged one) and unknown verbs
 }
@@ -421,6 +443,9 @@ func (h *Hub) leave(p *player) {
 	var out []outgoing
 	delete(h.watchers, p)
 	if r := p.room; r != nil {
+		if m := r.match; m != nil && m.runner != nil && m.has(p) {
+			m.runner.push(runnerMsg{from: p, kind: msgLeft})
+		}
 		r.players = slices.DeleteFunc(r.players, func(q *player) bool { return q == p })
 		p.room = nil
 		if m := r.match; m != nil && !m.royale && m.has(p) {
@@ -476,14 +501,16 @@ func (h *Hub) begin(p *player) []outgoing {
 		sent:    map[*player]int{},
 		alive:   map[*player]bool{},
 	}
+	seed := h.newSeed()
 	var b strings.Builder
-	fmt.Fprintf(&b, "START %d %d", h.newSeed(), r.level)
+	fmt.Fprintf(&b, "START %d %d", seed, r.level)
 	for _, q := range m.players {
 		m.alive[q] = true
 		fmt.Fprintf(&b, " %d", q.id)
 	}
 	r.match = m
 	r.matchID++
+	m.runner = h.newRunner(r, m, seed)
 	if !m.royale {
 		id := r.matchID
 		r.timer = h.afterFunc(countdown+h.matchLength+h.matchGrace, func() { h.timeUp(r, id) })
@@ -539,8 +566,12 @@ func (r *room) broadcast(text string) []outgoing {
 	return out
 }
 
-// endMatch returns the room to between matches.
+// endMatch returns the room to between matches and stops the match's runner without waiting for it.
 func (r *room) endMatch() {
+	if m := r.match; m != nil && m.runner != nil {
+		close(m.runner.stop)
+		m.runner = nil
+	}
 	r.match = nil
 	if r.timer != nil {
 		r.timer.Stop()
@@ -568,21 +599,41 @@ func (r *room) duelist(p *player) bool {
 	return r.match != nil && !r.match.royale && r.match.has(p)
 }
 
-// attack counts a valid ATK from a living participant toward its lines sent and relays it in canonical form:
-// in a duel to the opponent, in a royale to a living opponent that pickTarget chooses.
+// attack counts a valid ATK from a living participant toward its lines sent and routes it: in a duel to the
+// opponent, in a royale to a living opponent that pickTarget chooses. With a runner the target gets
+// GARB <id> <n> from it; without one, ATK n in canonical form.
 func (h *Hub) attack(p *player, arg string) []outgoing {
+	n, ok := h.validateAttack(p, arg)
+	if !ok {
+		return nil
+	}
+	to := h.routeGarbage(p, n)
+	if r := p.room.match.runner; r != nil {
+		r.push(runnerMsg{from: p, kind: msgClaimedAttack, to: to, lines: n})
+		return nil
+	}
+	return []outgoing{{to, fmt.Sprintf("ATK %d", n)}}
+}
+
+// validateAttack parses ATK's argument; ok only for 1 to maxAttack lines from a living participant.
+func (h *Hub) validateAttack(p *player, arg string) (n int, ok bool) {
 	m := p.room.match
 	n, err := strconv.Atoi(arg)
 	if m == nil || !m.alive[p] || err != nil || n < 1 || n > maxAttack {
-		return nil
+		return 0, false
 	}
+	return n, true
+}
+
+// routeGarbage counts n lines sent by living participant p and picks who receives them.
+func (h *Hub) routeGarbage(p *player, n int) *player {
+	m := p.room.match
 	m.sent[p] += n
-	msg := fmt.Sprintf("ATK %d", n)
 	if !m.royale {
-		return []outgoing{{m.opponent(p), msg}}
+		return m.opponent(p)
 	}
 	living := slices.DeleteFunc(slices.Clone(m.players), func(q *player) bool { return q == p || !m.alive[q] })
-	return []outgoing{{living[h.pickTarget(len(living))], msg}}
+	return living[h.pickTarget(len(living))]
 }
 
 // knockOut handles DEAD: a KO in a duel, an elimination in a royale.
