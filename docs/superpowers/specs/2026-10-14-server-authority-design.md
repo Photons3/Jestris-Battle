@@ -60,7 +60,7 @@ RESYNC <t> <log>             <-----      only when the server rejected or forced
 All times `t` are integer milliseconds of match time, counted from the end of the countdown. This is the clock `MatchGame::advance` moves forward one millisecond at a time.
 
 ### Client → server
-- `SDF <n>`: the player's soft-drop factor (`0` = instant, otherwise 1–40). Sent once between `START` and the first `IN`. If it's missing, the server assumes `kDefaultSoftDropFactor`. Any other value is a bad message.
+- `SDF <n>`: the player's soft-drop factor (`0` = instant, otherwise `kMinSdf`–`kMaxSdf`, 5–40). Sent once between `START` and the first `IN`. If it's missing, the server assumes `kDefaultSoftDropFactor`. Any other value is a bad message.
 - `IN <tEnd> [<t>:<code> ...]`: the client's game has reached `tEnd`, and these events happened at these times.
   - Events are in order, with `t` never decreasing. Each `t` must be ≥ the previous message's `tEnd` and ≤ this message's `tEnd`.
   - `tEnd` never decreases.
@@ -68,7 +68,7 @@ All times `t` are integer milliseconds of match time, counted from the end of th
   - **Codes:**
     - `L R CW CCW HD H LW RW`: the `Action`s Left, Right, RotateCW, RotateCCW, HardDrop, Hold, LeftWall, RightWall. `Pause` is never sent.
     - `S+` / `S-`: soft drop pressed / released.
-    - `G<id>`: garbage batch `id` accepted.
+    - `G<id>x<lines>`: garbage batch `id` of `lines` lines accepted. The client's `lines` value is ignored; the server uses the amount it sent. The count is on the wire so that the same token can appear in a `RESYNC`, where the client needs it to replay.
   - **When it's sent:** at the end of every frame that produced events, and otherwise every 100 ms as a heartbeat.
 
 ### Server → client
@@ -84,7 +84,7 @@ All times `t` are integer milliseconds of match time, counted from the end of th
   - In parallel, the server simulates every player and logs each disagreement.
   - It never sends `RESYNC`.
   - Garbage still goes to whoever the old routing picks, in the amount the sender claimed, but it is sent as `GARB <id> <lines>` rather than `ATK`. That way the receiver's acceptance time is logged, and the server's simulation receives the same batches the client did.
-  - The server compares each claimed `ATK` and `DEAD` against what its own simulation produced.
+  - When the match ends, the server compares each player's claimed totals (lines sent through `ATK`, top-outs through `DEAD`) with its simulation's totals. It logs one summary line per player, plus the first `would-resync:<rule>` of each rule as it happens. Comparing totals at the end avoids a race: an `ATK` handled under the hub lock can arrive before the matching `IN` has been simulated.
   - The web client is served by this same server (`server/web.go`), so the client and server always ship together. "Release 1" and "Release 2" below are server deploys, not separate client rollouts.
 - **`enforce`:**
   - The server ignores `ATK`, `DEAD` and `SNAP` from clients.
@@ -107,8 +107,11 @@ The server notes `wall0` = the time it sent `START` + `countdown`. A player's al
    - If the server's `t` for that player passes `T0 + window` without it, the server applies the batch at `T0 + window` itself.
    - A `G<id>` stamped too early, or for an unknown or already-applied id, is dropped.
 4. **Message shape.** A bad `IN` (it doesn't parse, has more than 64 events, a decreasing `t`, or an event outside `[previous tEnd, tEnd]`) is dropped whole.
-5. **When a correction is sent.** In `enforce` mode, any rejected message or event, or any forced advance or forced garbage, sends that player one `RESYNC`. The server sends at most one `RESYNC` per player per 100 ms, and a single `RESYNC` covers everything that happened in that interval.
-6. **Abuse limit** (`-max-resyncs`, default 10 per 10 s). A player over the limit is disconnected through the existing `leave()` path, so a malicious client can't burn server CPU with endless resyncs.
+5. **When a correction is sent.** In `enforce` mode, a rejected message or event, or forced garbage, marks the player as needing a `RESYNC`. A forced advance on its own does not: the client replays the same no-input stall, so the boards still agree.
+   - A pending `RESYNC` goes out on the first 100 ms tick after that player's next `IN`, so a hidden tab that sends nothing receives nothing until it wakes.
+   - At most one `RESYNC` per player per 100 ms. A single `RESYNC` covers everything that happened in that interval.
+   - A `GARB` whose id the client already has in its log, because it arrived in a `RESYNC`, is ignored by the client.
+6. **Abuse limit** (`-max-resyncs`, default 10 per 10 s, `enforce` only). A player over the limit is disconnected through the existing `leave()` path, so a malicious client can't burn server CPU with endless resyncs.
 
 The server alone decides what goes in the canonical log. Accepted client events are added as they are, and forced events are added at the time the server applied them.
 
@@ -171,6 +174,7 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
   char* sim_buffer(int bytes)                              // scratch memory the host writes into and reads from
   ```
 - **`sim_hash`:** FNV-1a over the board cells, active piece, hold, the next 5, pending garbage batches (lines, msLeft, holeX), score, lines, level, combo, back-to-back, and the drop, lock and clear timers. It's used for logs and tests only, never sent on the wire.
+- **Native builds:** `tetris_core` and `match_game.cpp` compile with `-ffp-contract=off` on every target. Clang on arm64 (Apple Silicon) otherwise fuses a multiply and an add into one instruction, which rounds differently, so the native fixtures would not match the WASM build.
 - **Why it matches the browser:** WASM floating-point arithmetic is fully specified and the format has no fused multiply-add, so the gravity timer (`double`) computes the same in the browser and on the server. Both are built from the same source with the same emscripten version.
 - **Packaging:**
   - `scripts/build.sh` and the Dockerfile build the module before `go test` and `go build`, in an emscripten stage, and copy it to `server/sim/jestris_sim.wasm`.
@@ -224,6 +228,12 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
   5. Log one line to the console with both hashes.
 
   The board snaps to the result. In the common honest cases, a hidden tab and a slow garbage acknowledgement, the replay gives the same board, so nothing changes on screen.
+
+### The offline bot
+`LocalMatch` (vs Bot) is unchanged. It ignores `IN` and `SDF`, and it keeps sending `ATK`, which the client treats as a garbage batch with id 0. Those batches are logged locally and never reach a server. Release 2's cleanup must keep `ATK` working for `LocalMatch`, or move the bot to `GARB`.
+
+### `LEFT` in a royale
+A simulation failure ends a royale with `LEFT` too. Today the client ignores `LEFT` outside a duel. It now ends a royale with `DuelOutcome::OpponentLeft`, and `resultReasonText` shows `Match ended` for a royale.
 
 ## 7. Rollout
 1. **Release 1:** clients send `IN` + `SDF` alongside the old messages and understand `GARB` and `RESYNC`. The server runs `-authority=log`.
