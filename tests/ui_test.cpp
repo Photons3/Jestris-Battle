@@ -5,8 +5,11 @@
 #include <string>
 #include <vector>
 
+#include "app/font_data.hpp"
 #include "app/render.hpp"
 #include "imgui.h"
+#include "imgui_internal.h"
+#include "test_helpers.hpp"
 
 using namespace tetris;
 
@@ -177,24 +180,91 @@ TEST_CASE("ui: the start screen draws the Name field and keeps the saved name") 
     ImGui::DestroyContext();
 }
 
-TEST_CASE("ui: the lobby draws its room list") {
+namespace {
+
+// A headless ImGui context with a real font: the boards draw HUD text through it.
+ImFont* beginUiContext() {
     ImGui::CreateContext();
     configureImGuiIo(ImGui::GetIO());
+    ImFont* font = ImGui::GetIO().Fonts->AddFontDefault();
     ImGui::GetIO().Fonts->Build();
+    return font;
+}
+
+// One headless frame of the duel screens.
+UiCommand duelFrame(const DuelSession& duel, ImFont* font, StartMenu& menu) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(800.0f, 900.0f);
     io.DeltaTime = 1.0f / 60.0f;
+    ImGui::NewFrame();
+    const UiCommand command = drawDuel(duel, Fonts{font, font}, ComboLabel{}, ClearCallout{}, AttackTrails{}, menu);
+    ImGui::EndFrame();
+    return command;
+}
+
+// Two quiet frames, then the button `label` in the menu window `window` is activated as if pressed: what the
+// screen returns for it. A missing or disabled button returns None.
+UiCommand pressButton(const DuelSession& duel, ImFont* font, const char* window, const char* label) {
+    StartMenu menu;
+    CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+    CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+    ImGuiWindow* menuWindow = ImGui::FindWindowByName(window);
+    REQUIRE(menuWindow != nullptr);
+    ImGui::ActivateItemByID(menuWindow->GetID(label));
+    UiCommand command = duelFrame(duel, font, menu);
+    if (command == UiCommand::None) command = duelFrame(duel, font, menu);
+    return command;
+}
+
+}  // namespace
+
+TEST_CASE("ui: the lobby draws room player counts") {
+    ImFont* font = beginUiContext();
     DuelSession duel([](const std::string&) {});
     duel.openLobby();
-    duel.onMessage("ROOMS ABCD:3:Sam:1 WXYZ:5:Kai:1");
+    duel.onMessage("ROOMS ABCD:3:Sam:5 WXYZ:5:Kai:15");
     StartMenu menu;
-    for (int frame = 0; frame < 2; ++frame) {
-        ImGui::NewFrame();
-        CHECK(drawDuel(duel, Fonts{}, ComboLabel{}, ClearCallout{}, AttackTrails{}, menu) == UiCommand::None);
-        ImGui::EndFrame();
-    }
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
     CHECK(menu.pickedRoom.empty());
     ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the room screen draws the roster and the host's Start") {
+    ImFont* font = beginUiContext();
+    DuelSession duel([](const std::string&) {});
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Sam:0 2:Kai:0 3:Ann:0");
+    REQUIRE(duel.phase() == DuelPhase::Room);
+    REQUIRE(duel.isHost());
+    CHECK(pressButton(duel, font, "##room", "Start") == UiCommand::BeginMatch);
+    CHECK(pressButton(duel, font, "##room", "Leave") == UiCommand::LeaveDuel);
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the room screen draws for a non-host and a lone host") {
+    {
+        ImFont* font = beginUiContext();
+        DuelSession duel([](const std::string&) {});
+        duel.joinRoom("ABCD");
+        duel.onMessage("ROOM ABCD 3");
+        duel.onMessage("PLAYERS 1 1:Sam:1 2:Kai:1 3:Me:0");  // joined while a match runs
+        REQUIRE(duel.phase() == DuelPhase::Room);
+        CHECK(pressButton(duel, font, "##room", "Start") == UiCommand::None);  // only the host has one
+        CHECK(pressButton(duel, font, "##room", "Leave") == UiCommand::LeaveDuel);
+        ImGui::DestroyContext();
+    }
+    {
+        ImFont* font = beginUiContext();
+        DuelSession duel([](const std::string&) {});
+        duel.createRoom(1);
+        duel.onMessage("ROOM ABCD 1");
+        duel.onMessage("PLAYERS 1 1:Me:0");
+        REQUIRE(duel.isHost());
+        CHECK(pressButton(duel, font, "##room", "Start") == UiCommand::None);  // disabled while alone
+        CHECK(pressButton(duel, font, "##room", "Leave") == UiCommand::LeaveDuel);
+        ImGui::DestroyContext();
+    }
 }
 
 TEST_CASE("ui: each countdown digit pops in, then settles") {
@@ -316,26 +386,82 @@ TEST_CASE("ui: solo clocks and scores read naturally") {
     CHECK(formatScore(1234567) == "1,234,567");
 }
 
-TEST_CASE("ui: the duel result draws the stats table") {
-    ImGui::CreateContext();
-    configureImGuiIo(ImGui::GetIO());
-    ImFont* font = ImGui::GetIO().Fonts->AddFontDefault();  // the boards draw HUD text, so they need a real font
-    ImGui::GetIO().Fonts->Build();
-    ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(800.0f, 900.0f);
-    io.DeltaTime = 1.0f / 60.0f;
+TEST_CASE("ui: the duel result draws the room controls") {
+    ImFont* font = beginUiContext();
+    DuelSession host([](const std::string&) {});
+    host.createRoom(1);
+    host.onMessage("ROOM ABCD 1");
+    host.onMessage("PLAYERS 1 1:Me:0 2:Foe:0");
+    host.onMessage("START 7 1 1 2");
+    host.update(kCountdownMs + 1000);
+    host.onMessage("OVER WIN KO 3 1");
+    host.onMessage("PLAYERS 1 1:Me:0 2:Foe:0 3:New:0");  // joined mid-match
+    REQUIRE(host.phase() == DuelPhase::Result);
+    CHECK(pressButton(host, font, "##result", "Start next match") == UiCommand::BeginMatch);
+    CHECK(pressButton(host, font, "##result", "Leave") == UiCommand::LeaveDuel);
+    ImGui::DestroyContext();
+
+    font = beginUiContext();
+    DuelSession guest([](const std::string&) {});
+    guest.joinRoom("ABCD");
+    guest.onMessage("ROOM ABCD 2");
+    guest.onMessage("PLAYERS 1 1:Foe:0 2:Me:0");
+    guest.onMessage("START 7 1 1 2");
+    guest.update(kCountdownMs + 1000);
+    guest.onMessage("OVER LOSE KO 1 3");
+    REQUIRE(guest.phase() == DuelPhase::Result);
+    CHECK(pressButton(guest, font, "##result", "Start next match") == UiCommand::None);  // waits for the host
+    CHECK(pressButton(guest, font, "##result", "Leave") == UiCommand::LeaveDuel);
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the royale grid picks the shape with the largest cells") {
+    CHECK(royaleGrid(2, 900.0f, 900.0f).cols == 2);   CHECK(royaleGrid(2, 900.0f, 900.0f).rows == 1);
+    CHECK(royaleGrid(8, 900.0f, 900.0f).cols == 4);   CHECK(royaleGrid(8, 900.0f, 900.0f).rows == 2);
+    CHECK(royaleGrid(15, 900.0f, 900.0f).cols == 5);  CHECK(royaleGrid(15, 900.0f, 900.0f).rows == 3);
+    CHECK(royaleGrid(1, 900.0f, 900.0f).cols == 1);
+}
+
+TEST_CASE("ui: a royale mini board is never larger than 0.75 of your own cell") {
+    CHECK(royaleMiniCell(16.0f, 15.0f) == 11.0f);   // 844x390 with 2 opponents: capped, whole pixels
+    CHECK(royaleMiniCell(47.0f, 44.0f) == 33.0f);   // 2560x1080 with 2 opponents
+    CHECK(royaleMiniCell(10.6f, 30.0f) == 10.0f);   // the grid's own cell when that is smaller
+    CHECK(royaleMiniCell(18.0f, 24.0f) == 18.0f);   // exactly the cap
+}
+
+TEST_CASE("ui: royale boards draw while playing, eliminated, and in the result") {
+    ImFont* font = beginUiContext();
     DuelSession duel([](const std::string&) {});
     duel.createRoom(1);
-    duel.onMessage("START 7 1 1 2");
-    duel.update(kCountdownMs + 1000);
-    duel.onMessage("OVER WIN KO 3 1");
-    REQUIRE(duel.phase() == DuelPhase::Result);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Bo:0 3:Cy:0 4:Di:0");
+    duel.onMessage("START 7 1 1 2 3 4");
+    duel.update(kCountdownMs);
+    REQUIRE(duel.phase() == DuelPhase::Playing);
+    REQUIRE(duel.mode() == DuelMode::Royale);
+    Snapshot bo{};
+    bo.cells[0] = PieceType::Garbage;
+    bo.cells[1] = PieceType::T;
+    bo.pending = 3;
+    bo.ready = 1;
+    duel.onMessage(encode(PlayerSnapshot{2, bo}));
+    duel.onMessage("OUT 3 4");  // a dimmed board with its place
     StartMenu menu;
-    for (int frame = 0; frame < 2; ++frame) {
-        ImGui::NewFrame();
-        CHECK(drawDuel(duel, Fonts{font, font}, ComboLabel{}, ClearCallout{}, AttackTrails{}, menu) == UiCommand::None);
-        ImGui::EndFrame();
-    }
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+
+    topOutWithGarbage(*duel.game());
+    duel.update(0);
+    REQUIRE(duel.eliminated());
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);  // "OUT"
+    duel.onMessage("OUT 1 3");
+    REQUIRE(duel.myPlace() == 3);
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);  // "OUT · #3"
+
+    duel.onMessage("OUT 2 2");
+    duel.onMessage("OUT 4 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+    CHECK(pressButton(duel, font, "##result", "Start next match") == UiCommand::BeginMatch);
     ImGui::DestroyContext();
 }
 
@@ -355,5 +481,97 @@ TEST_CASE("ui: the garbage meter draws travelling lines above ready ones") {
     CHECK(dl->VtxBuffer.Size - before == mixed);  // nothing pending draws nothing
     CHECK(mixed > 0);
     ImGui::EndFrame();
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the pixel font has the room screens' \u2026, \u2605 and \u00b7") {
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    configureImGuiIo(io);
+    // Like both of the app's renderer backends: glyphs outside Latin-1 are baked on first use, not up front.
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+    ImFont* hud = io.Fonts->AddFontFromMemoryCompressedTTF(PressStart2P_compressed_data,
+                                                           static_cast<int>(PressStart2P_compressed_size), 16.0f);
+    io.DisplaySize = ImVec2(800.0f, 900.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    ImGui::NewFrame();  // glyphs are baked on demand inside a frame
+    ImFontBaked* baked = hud->GetFontBaked(16.0f);
+    for (ImWchar c : {ImWchar(0x2026), ImWchar(0x2605), ImWchar(0x00B7)}) {
+        CAPTURE(static_cast<int>(c));
+        CHECK(hud->IsGlyphInFont(c));
+        const ImFontGlyph* glyph = baked->FindGlyphNoFallback(c);
+        REQUIRE(glyph != nullptr);
+        CHECK(glyph->Visible);  // drawn, not a blank
+    }
+    ImGui::EndFrame();
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: the room screen names the visibility, or neither when it is unknown") {
+    CHECK(std::string(roomVisibilityText(RoomVisibility::Public)) == "Public room, listed in Browse rooms");
+    CHECK(std::string(roomVisibilityText(RoomVisibility::Private)) == "Private room, share the code");
+    CHECK(std::string(roomVisibilityText(RoomVisibility::Unknown)) == "Share the code or the invite link");
+
+    ImFont* font = beginUiContext();
+    DuelSession duel([](const std::string&) {});
+    duel.joinRoom("ABCD");  // an invite link or a typed code
+    duel.onMessage("ROOM ABCD 2");
+    duel.onMessage("PLAYERS 1 1:Sam:0 2:Me:0");
+    REQUIRE(duel.visibility() == RoomVisibility::Unknown);
+    StartMenu menu;
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: roster rows star the host, mark us, and show who waits for the next match") {
+    const std::vector<RosterEntry> running{{1, "Sam", true}, {2, "Me", true}, {3, "New", false}};
+    const std::vector<RosterRow> rows = rosterRows(running, 1, 2);
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[0].text == "\xE2\x98\x85 Sam");
+    CHECK_FALSE(rows[0].me);
+    CHECK(rows[1].text == "  Me");
+    CHECK(rows[1].me);
+    CHECK(rows[2].text == "  New (next match)");
+    CHECK_FALSE(rows[2].me);
+    const std::vector<RosterEntry> between{{1, "Sam", false}, {2, "Me", false}, {3, "New", false}};
+    CHECK(rosterRows(between, 3, 2)[2].text == "\xE2\x98\x85 New");  // no match running: nobody waits
+}
+
+TEST_CASE("ui: both results draw the roster, mid-match joiners included") {
+    ImFont* font = beginUiContext();
+    DuelSession duel([](const std::string&) {});
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Bo:0 3:Cy:0");
+    duel.onMessage("START 7 1 1 2 3");
+    duel.update(kCountdownMs);
+    duel.onMessage("PLAYERS 1 1:Me:1 2:Bo:1 3:Cy:1 4:New:0");  // joined mid-match
+    duel.onMessage("OUT 2 3");
+    duel.onMessage("OUT 3 2");
+    duel.onMessage("OUT 1 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    StartMenu menu;
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Bo:0 3:Cy:0 4:New:0");
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+    CHECK(pressButton(duel, font, "##result", "Start next match") == UiCommand::BeginMatch);
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: an eliminated royale player can leave from the OUT overlay") {
+    ImFont* font = beginUiContext();
+    DuelSession duel([](const std::string&) {});
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("PLAYERS 1 1:Me:0 2:Bo:0 3:Cy:0");
+    duel.onMessage("START 7 1 1 2 3");
+    duel.update(kCountdownMs);
+    StartMenu menu;
+    for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
+    CHECK(ImGui::FindWindowByName("##out") == nullptr);  // only once we're out
+    topOutWithGarbage(*duel.game());
+    duel.update(0);
+    REQUIRE(duel.eliminated());
+    CHECK(pressButton(duel, font, "##out", "Leave") == UiCommand::LeaveDuel);
     ImGui::DestroyContext();
 }

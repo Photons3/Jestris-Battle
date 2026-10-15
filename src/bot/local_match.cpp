@@ -27,12 +27,14 @@ void LocalMatch::send(const std::string& text) {
     std::visit(
         [this](const auto& m) {
             using T = std::decay_t<decltype(m)>;
-            if constexpr (std::is_same_v<T, CreateRoom>) {
+            if constexpr (std::is_same_v<T, Hello>) {
+                humanName_ = m.name;
+            } else if constexpr (std::is_same_v<T, CreateRoom>) {
                 startLevel_ = m.startLevel;
-                if (!named_) {
+                if (!entered_) {
                     queue(RoomEntered{"BOTS", 1});
-                    queue(OpponentName{botName(level_)});
-                    named_ = true;
+                    queueRoster(true);
+                    entered_ = true;
                 }
                 start();
             } else if constexpr (std::is_same_v<T, Attack>) {
@@ -41,8 +43,10 @@ void LocalMatch::send(const std::string& text) {
                 sentHuman_ += m.lines;
             } else if constexpr (std::is_same_v<T, Dead>) {
                 if (playing()) knockOut(false);
-            } else if constexpr (std::is_same_v<T, Rematch>) {
-                if (over_) start();
+            } else if constexpr (std::is_same_v<T, Begin>) {
+                if (!over_) return;
+                start();
+                queueRoster(true);  // the server's order: START, then PLAYERS with the in-match flags
             }
         },
         *message);
@@ -111,7 +115,12 @@ void LocalMatch::knockOut(bool humanScores) {
 
 void LocalMatch::finish(MatchReason reason) {
     queue(verdictFor(kosHuman_, kosBot_, sentHuman_, sentBot_, reason));
+    queueRoster(false);  // like the server's PLAYERS after OVER: back between matches
     over_ = true;
+}
+
+void LocalMatch::queueRoster(bool inMatch) {
+    queue(Roster{1, {{1, humanName_, inMatch}, {2, botName(level_), inMatch}}});
 }
 
 }  // namespace tetris

@@ -2,6 +2,8 @@
 
 > **Partly superseded:** garbage gaps, "first top-out loses" and relaying `DEAD` are replaced by bomb garbage, KO matches and the server referee in `2026-10-13-bomb-battle-design.md`.
 
+> **Partly superseded** by `2026-10-14-multiplayer-rooms-design.md`: the two-seat room, starting on the second join, `REMATCH` and `OPP` are replaced by rooms of up to 16 players with host start, and 3 or more players play a battle royale.
+
 ## Context
 The single-player Tetris in `docs/superpowers/specs/2026-10-13-tetris-design.md` (C++20, SDL3, Dear ImGui, pure `tetris_core`) is extended so that friends on the same LAN can play 1v1 duels with garbage attacks. One person runs a small Go server on their Mac and everyone else opens `http://<host-ip>:8080` in a browser. The game is compiled to WebAssembly, so there is nothing to install on the other devices. The native desktop build stays single-player and unchanged.
 

@@ -912,3 +912,131 @@ func TestServerOnlyVerbsFromClientsAreDropped(t *testing.T) {
 	expectAll("SNAP 1 probe", c[1], c[2])
 	c[0].flush()
 }
+
+// testPlayer is a player with an outbound queue but no connection or writer, so a test drives the hub
+// directly and reads what was queued.
+func testPlayer(name string) *player {
+	p := newPlayer(nil)
+	p.name = name
+	return p
+}
+
+// queued takes everything waiting in p's queue, oldest first.
+func queued(p *player) []string {
+	var got []string
+	for {
+		select {
+		case text := <-p.queue:
+			got = append(got, text)
+		default:
+			return got
+		}
+	}
+}
+
+// directRoyale puts Ann, Bob, Cat and Dan in room AAAA and begins a royale, emptying their queues.
+func directRoyale(t *testing.T) (*Hub, []*player) {
+	t.Helper()
+	h := NewHub()
+	h.newCode = func() string { return "AAAA" }
+	seed := uint32(100)
+	h.newSeed = func() uint32 { seed++; return seed }
+	h.pickTarget = func(int) int { return 0 }
+	ps := []*player{testPlayer("Ann"), testPlayer("Bob"), testPlayer("Cat"), testPlayer("Dan")}
+	h.receive(ps[0], "CREATE 1")
+	for _, p := range ps[1:] {
+		h.receive(p, "JOIN AAAA")
+	}
+	h.receive(ps[0], "BEGIN")
+	for _, p := range ps {
+		if got := queued(p); len(got) == 0 || got[len(got)-1] != "PLAYERS 1 1:Ann:1 2:Bob:1 3:Cat:1 4:Dan:1" {
+			t.Fatalf("setup queued %q", got)
+		}
+	}
+	return h, ps
+}
+
+// Each recipient gets messages in the order the hub produced them, even when nobody reads in between: two
+// eliminations, the win, and a fast BEGIN after the royale ends.
+func TestQueuesKeepProductionOrder(t *testing.T) {
+	h, ps := directRoyale(t)
+	h.receive(ps[1], "DEAD")
+	h.receive(ps[3], "DEAD")
+	h.receive(ps[2], "DEAD")
+	h.receive(ps[0], "BEGIN")
+	want := []string{
+		"OUT 2 4", "OUT 4 3", "OUT 3 2", "OUT 1 1",
+		"PLAYERS 1 1:Ann:0 2:Bob:0 3:Cat:0 4:Dan:0",
+		"START 102 1 1 2 3 4",
+		"PLAYERS 1 1:Ann:1 2:Bob:1 3:Cat:1 4:Dan:1",
+	}
+	for _, p := range ps {
+		if got := queued(p); !slices.Equal(got, want) {
+			t.Errorf("%s got %q, want %q", p.name, got, want)
+		}
+	}
+}
+
+// Concurrent DEADs from several read loops still reach every recipient with places counting down to 1.
+func TestConcurrentDeadsArriveInPlaceOrder(t *testing.T) {
+	h, ps := directRoyale(t)
+	var wg sync.WaitGroup
+	for _, p := range ps {
+		wg.Add(1)
+		go func() { defer wg.Done(); h.receive(p, "DEAD") }()
+	}
+	wg.Wait()
+	for _, p := range ps {
+		got := queued(p)
+		if len(got) != 5 {
+			t.Fatalf("%s got %q, want four OUTs, then PLAYERS", p.name, got)
+		}
+		for i, text := range got[:4] {
+			if !strings.HasPrefix(text, "OUT ") || !strings.HasSuffix(text, " "+strconv.Itoa(4-i)) {
+				t.Errorf("%s got %q, want places 4, 3, 2, 1 in order", p.name, got)
+			}
+		}
+	}
+}
+
+// The same over real connections: a 16-player royale where everyone dies at once.
+func TestConcurrentDeadsArriveInPlaceOrderOverTheWire(t *testing.T) {
+	names := make([]string, maxRoomPlayers)
+	for i := range names {
+		names[i] = fmt.Sprintf("P%d", i+1)
+	}
+	c := royale(t, newTestServer(t), names...)
+	for _, cl := range c {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = cl.conn.Write(ctx, websocket.MessageText, []byte("DEAD"))
+		}()
+	}
+	for _, cl := range c {
+		for place := maxRoomPlayers; place >= 1; place-- {
+			got := cl.next()
+			if !strings.HasPrefix(got, "OUT ") || !strings.HasSuffix(got, " "+strconv.Itoa(place)) {
+				t.Fatalf("got %q, want OUT <id> %d", got, place)
+			}
+		}
+	}
+}
+
+// A player whose queue is full is cut off rather than blocking the hub; its read loop then leaves as usual.
+func TestFullQueueKicksThePlayerWithoutBlocking(t *testing.T) {
+	h := NewHub()
+	p := testPlayer("Ann")
+	for range sendQueueLength + 1 {
+		h.receive(p, "LIST")
+	}
+	select {
+	case <-p.kick:
+	default:
+		t.Fatal("a full queue did not kick the player")
+	}
+	h.receive(p, "LIST") // kicking twice must not panic
+	if got := len(queued(p)); got != sendQueueLength {
+		t.Errorf("queued %d, want %d", got, sendQueueLength)
+	}
+}

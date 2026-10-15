@@ -73,7 +73,7 @@ void applyCommand(App& app, UiCommand command) {
         app.duel.quickMatch(app.menu.startLevel);
         break;
     case UiCommand::JoinListedRoom:
-        app.duel.joinRoom(app.menu.pickedRoom);
+        app.duel.joinRoom(app.menu.pickedRoom, RoomVisibility::Public);  // it was in the public list
         break;
     case UiCommand::SavePublic:
         app.saveSettings();
@@ -91,8 +91,8 @@ void applyCommand(App& app, UiCommand command) {
         app.openDuel();
         app.duel.joinRoom(app.menu.joinCode);
         break;
-    case UiCommand::Rematch:
-        app.duel.requestRematch();
+    case UiCommand::BeginMatch:
+        app.duel.begin();
         break;
     case UiCommand::LeaveDuel:
         app.closeDuel();
@@ -168,9 +168,10 @@ void playEvents(App& app) {
                 app.lastClearRow = middleRow(game->clearingRows());
             if (const auto sound = soundFor(event, inDuel); sound && !app.hidden) app.audio.play(*sound);
         }
+    const bool trails = app.duel.mode() == DuelMode::Duel;  // a royale's grid has no single target to fly to
     for (DuelEvent event : app.duel.takeEvents()) {
-        if (event == DuelEvent::Sent) app.trails.launch(true, app.lastClearRow);
-        if (event == DuelEvent::Attacked) app.trails.launch(false, stackTopRow(app.duel.opponent()));
+        if (trails && event == DuelEvent::Sent) app.trails.launch(true, app.lastClearRow);
+        if (trails && event == DuelEvent::Attacked) app.trails.launch(false, stackTopRow(app.duel.opponent()));
         if (const auto sound = soundFor(event); sound && !app.hidden) app.audio.play(*sound);
     }
 }
@@ -290,6 +291,7 @@ void App::openDuel() {
 void App::openBotDuel() {
     if (connection) closeDuel();
     connection = std::make_unique<LocalMatch>(menu.botLevel, static_cast<std::uint32_t>(SDL_GetTicksNS()));
+    connection->send(encode(Hello{menu.playerName}));  // the roster shows our name, not "You"
     menu.error.clear();
     screen = Screen::Duel;
     duel.createRoom(menu.startLevel);

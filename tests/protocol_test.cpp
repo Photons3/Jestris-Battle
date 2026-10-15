@@ -34,7 +34,6 @@ TEST_CASE("protocol: every message survives an encode/decode round trip") {
                                         unlockedHold,
                                         Snapshot{},
                                         Dead{},
-                                        Rematch{},
                                         OpponentLeft{},
                                         ServerError{"room is full"},
                                         KoCounts{1, 0},
@@ -42,7 +41,6 @@ TEST_CASE("protocol: every message survives an encode/decode round trip") {
                                         MatchOver{MatchResult::Win, MatchReason::KOs, 12, 7},
                                         MatchOver{MatchResult::Draw, MatchReason::Time, 0, 0},
                                         Hello{"Sam"},
-                                        OpponentName{"x_y-z.9"},
                                         CreateRoom{3, true},
                                         ListRooms{},
                                         UnlistRooms{},
@@ -225,11 +223,11 @@ TEST_CASE("protocol: name rules") {
     }
 }
 
-TEST_CASE("protocol: HELLO and OPP on the wire") {
+TEST_CASE("protocol: HELLO on the wire, and the removed OPP and REMATCH decode to nothing") {
     CHECK(encode(Hello{"Sam"}) == "HELLO Sam");
-    CHECK(encode(OpponentName{"Kai"}) == "OPP Kai");
-    for (std::string_view text : {"HELLO", "HELLO ", "HELLO a b", "HELLO a:b", "HELLO abcdefghijklm", "OPP",
-                                  "OPP ", "OPP a b", "OPP a=b"}) {
+    CHECK(decode("HELLO x_y-z.9") == Message{Hello{"x_y-z.9"}});
+    for (std::string_view text : {"HELLO", "HELLO ", "HELLO a b", "HELLO a:b", "HELLO abcdefghijklm", "OPP Kai",
+                                  "OPP", "REMATCH"}) {
         CAPTURE(text);
         CHECK_FALSE(decode(text).has_value());
     }

@@ -238,8 +238,6 @@ std::string encode(const Message& message) {
                 return text;
             } else if constexpr (std::is_same_v<T, Dead>) {
                 return "DEAD";
-            } else if constexpr (std::is_same_v<T, Rematch>) {
-                return "REMATCH";
             } else if constexpr (std::is_same_v<T, OpponentLeft>) {
                 return "LEFT";
             } else if constexpr (std::is_same_v<T, ServerError>) {
@@ -248,8 +246,6 @@ std::string encode(const Message& message) {
                 return "KO " + std::to_string(m.mine) + " " + std::to_string(m.theirs);
             } else if constexpr (std::is_same_v<T, Hello>) {
                 return "HELLO " + m.name;
-            } else if constexpr (std::is_same_v<T, OpponentName>) {
-                return "OPP " + m.name;
             } else if constexpr (std::is_same_v<T, Roster>) {
                 std::string text = "PLAYERS " + std::to_string(m.hostId);
                 for (const RosterEntry& p : m.players)
@@ -352,11 +348,8 @@ std::optional<Message> decode(std::string_view text) {
         if (result && reason && mySent && theirSent) return MatchOver{*result, *reason, *mySent, *theirSent};
     } else if (verb == "HELLO" && args == 1) {
         if (isValidName(parts[1])) return Hello{std::string(parts[1])};
-    } else if (verb == "OPP" && args == 1) {
-        if (isValidName(parts[1])) return OpponentName{std::string(parts[1])};
     } else if (args == 0) {
         if (verb == "DEAD") return Dead{};
-        if (verb == "REMATCH") return Rematch{};
         if (verb == "LEFT") return OpponentLeft{};
         if (verb == "BEGIN") return Begin{};
         if (verb == "LIST") return ListRooms{};

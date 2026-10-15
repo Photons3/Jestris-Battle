@@ -21,7 +21,7 @@ struct ImGuiStyle;
 namespace tetris {
 
 enum class Screen { Start, Playing, Duel, Controls };
-enum class UiCommand { None, PlaySolo, PlayBot, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, Rematch, LeaveDuel, ToggleSound, ToggleMusic, ChangeVolume, SaveVolume, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
+enum class UiCommand { None, PlaySolo, PlayBot, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, BeginMatch, LeaveDuel, ToggleSound, ToggleMusic, ChangeVolume, SaveVolume, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
 
 struct StartMenu {
     int startLevel = 1;
@@ -126,6 +126,33 @@ inline constexpr float kTravellingGarbageAlpha = 0.4f;  // meter cells for garba
 // its ready cells blink every 250 ms.
 void drawGarbageMeter(ImDrawList* dl, float x, float bottom, float cell, int pending, int ready);
 
+// A royale's opponents as a grid of mini boards.
+struct GridShape {
+    int cols = 1;
+    int rows = 1;
+    float cell = 0.0f;  // mini-board cell size in points
+};
+// Mini boards are kMiniCols x kMiniRows cells (well 10 + meter 1 + gap 1, by visible 20 + name 1 + gap 1).
+inline constexpr int kMiniCols = 12;
+inline constexpr int kMiniRows = 22;
+// The cols x rows grid for `boards` mini boards in a width x height area with the largest cell;
+// ties go to fewer columns.
+GridShape royaleGrid(int boards, float width, float height);
+inline constexpr float kMiniCellCap = 0.75f;  // a mini board's cell, at most, as a fraction of your own
+// The mini boards' cell in whole pixels: the grid's cell, capped so they stay smaller than your own well.
+float royaleMiniCell(float gridCell, float ownCell);
+
+// The room screen's line under the code: listed, private, or a neutral hint when this player can't know.
+const char* roomVisibilityText(RoomVisibility visibility);
+
+// One roster line on the room and result screens: a star on the host, " (next match)" on a player who isn't in
+// the running match, and `me` for our own row, drawn in our plate color.
+struct RosterRow {
+    std::string text;
+    bool me = false;
+};
+std::vector<RosterRow> rosterRows(const std::vector<RosterEntry>& roster, int hostId, int myId);
+
 // IO settings for the app: no imgui.ini, and keyboard navigation so menus work without a mouse.
 void configureImGuiIo(ImGuiIO& io);
 // Square corners, beveled frames, the plate and gold colors, and Press Start 2P at a readable base size. Call
@@ -151,8 +178,9 @@ void drawSoloStatus(const SoloSession& solo, const Fonts& fonts);
 UiCommand drawSoloOverlay(const SoloSession& solo, bool newBest, const Fonts& fonts, StartMenu& menu);
 // A small MUTED label in the top-right corner, over every screen.
 void drawMutedBadge(const Fonts& fonts);
-// Lobby, waiting room, countdown, both boards and the result menu, depending on the session phase. `menu`
-// supplies our name, and the lobby writes the clicked room to it.
+// Lobby, connecting, the room screen with its roster, countdown, both boards and the result menu, depending on
+// the session phase. Room and Result end with the host's Start, or the wait for it, and Leave. `menu` supplies our
+// name, and the lobby writes the clicked room to it.
 UiCommand drawDuel(const DuelSession& duel, const Fonts& fonts, const ComboLabel& combo, const ClearCallout& callout,
                    const AttackTrails& trails, StartMenu& menu);
 
