@@ -6,7 +6,6 @@
 #include <emscripten/html5.h>
 #endif
 
-#include <algorithm>
 #include <cstdio>
 
 #include "app/app.hpp"
@@ -110,13 +109,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     const Uint64 now = SDL_GetTicks();
     syncVisibility(host);
     pumpNetwork(host.app);
-    // A long gap is replayed in short steps, so the duel sends snapshots and freezes on KO or 0:00 as usual.
-    int left = frameBudgetMs(now - host.last, host.app.screen == Screen::Duel && host.app.duel.inMatch());
-    do {
-        const int ms = std::min(left, kMaxFrameMs);
-        step(host.app, ms);
-        left -= ms;
-    } while (left > 0);
+    runFrame(host.app.duel, host.app.screen == Screen::Duel, now - host.last, [&host](int ms) { step(host.app, ms); });
     host.last = now;
     if (host.app.hidden) {
 #ifndef __EMSCRIPTEN__

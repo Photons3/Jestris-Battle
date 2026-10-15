@@ -12,8 +12,6 @@ inline constexpr int kMinDasMs = 0;
 inline constexpr int kMaxDasMs = 500;
 inline constexpr int kMinArrMs = 0;
 inline constexpr int kMaxArrMs = 100;
-inline constexpr int kMinSdf = 5;
-inline constexpr int kMaxSdf = 40;
 
 // How held keys behave; the player sets these on the Controls screen.
 struct Handling {

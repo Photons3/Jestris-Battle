@@ -15,6 +15,12 @@ echo "==> Building the web game"
 emcmake cmake -S "$ROOT" -B "$ROOT/build-web" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$ROOT/build-web" -j"$(nproc)"
 
+echo "==> Building the server's replay module"
+emcmake cmake -S "$ROOT" -B "$ROOT/build-sim" -DCMAKE_BUILD_TYPE=Release -DTETRIS_SIM_ONLY=ON
+cmake --build "$ROOT/build-sim" --target jestris_sim -j"$(nproc)"
+mkdir -p "$ROOT/server/sim"
+cp "$ROOT/build-sim/jestris_sim.wasm" "$ROOT/server/sim/"
+
 echo "==> Testing and building the server"
 cd "$ROOT/server"
 if [ ! -f go.mod ]; then

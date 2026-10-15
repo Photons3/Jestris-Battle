@@ -19,6 +19,19 @@ inline constexpr int kKosToWin = 3;  // the first player to this many KOs wins t
 inline constexpr int kMaxNameLength = 12;  // maxNameLength in server/hub.go
 inline constexpr int kMaxListedRooms = 20;  // maxListedRooms in server/hub.go
 inline constexpr int kMaxRoomPlayers = 16;  // maxRoomPlayers in server/hub.go
+inline constexpr int kMaxInputEvents = 64;  // maxInputEvents in server/hub.go
+
+// One entry of a player's match log (see net/match_game.hpp): an input, a soft-drop change or an accepted garbage
+// batch, stamped with the match time t in ms.
+enum class LogCode : std::uint8_t { Left, Right, RotateCW, RotateCCW, HardDrop, Hold, LeftWall, RightWall,
+                                    SoftOn, SoftOff, Garbage };
+struct LogEntry {
+    int t = 0;
+    LogCode code = LogCode::Left;
+    int garbageId = 0;     // Garbage only
+    int garbageLines = 0;  // Garbage only
+    friend bool operator==(const LogEntry&, const LogEntry&) = default;
+};
 
 // Four letters A-Z.
 bool isRoomCode(std::string_view text);
@@ -147,9 +160,32 @@ struct MatchOver {  // the server's verdict, from the receiver's point of view
     friend bool operator==(const MatchOver&, const MatchOver&) = default;
 };
 
+struct InputBatch {  // IN <tEnd> <t>:<token>...: the log entries since the last batch, valid up to tEnd
+    int tEnd = 0;
+    std::vector<LogEntry> entries;  // at most kMaxInputEvents, t never decreasing and at most tEnd
+    friend bool operator==(const InputBatch&, const InputBatch&) = default;
+};
+struct SoftDropSetting {  // SDF <factor>: the sender's soft-drop factor, 0 (instant) or kMinSdf to kMaxSdf
+    int factor = kDefaultSoftDropFactor;
+    friend bool operator==(const SoftDropSetting&, const SoftDropSetting&) = default;
+};
+struct GarbageIn {  // GARB <id> <lines>: from the server, garbage to queue for the receiver
+    int id = 0;
+    int lines = 0;
+    friend bool operator==(const GarbageIn&, const GarbageIn&) = default;
+};
+// RESYNC <t> <n> <t>:<token>...: from the server, the receiver's authoritative log up to t, after it consumed the
+// receiver's first n INs of the match (handled, rejected or dropped)
+struct Resync {
+    int t = 0;
+    int consumedIns = 0;
+    std::vector<LogEntry> entries;  // no size cap, t never decreasing
+    friend bool operator==(const Resync&, const Resync&) = default;
+};
+
 using Message = std::variant<CreateRoom, JoinRoom, RoomEntered, StartMatch, Attack, Snapshot, Dead, OpponentLeft,
                              ServerError, KoCounts, MatchOver, Hello, ListRooms, UnlistRooms, QuickMatch, RoomList,
-                             PlayerSnapshot, Roster, Begin, PlayerOut>;
+                             PlayerSnapshot, Roster, Begin, PlayerOut, InputBatch, SoftDropSetting, GarbageIn, Resync>;
 
 std::string encode(const Message& message);
 // nullopt for anything malformed or unknown.

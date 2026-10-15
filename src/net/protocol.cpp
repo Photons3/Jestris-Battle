@@ -19,6 +19,10 @@ constexpr int kMaxInt = std::numeric_limits<int>::max();
 constexpr std::array<std::string_view, 3> kResultTokens{"WIN", "LOSE", "DRAW"};  // index matches MatchResult
 constexpr std::array<std::string_view, 2> kReasonTokens{"KO", "TIME"};          // index matches MatchReason
 
+// The wire token of each LogCode, in enum order; Garbage is "G<id>x<lines>" and not listed.
+constexpr std::array<std::string_view, 10> kLogTokens{"L", "R", "CW", "CCW", "HD", "H", "LW", "RW", "S+", "S-"};
+constexpr int kMaxGarbageLines = 40;
+
 template <typename E, std::size_t N>
 std::optional<E> parseToken(std::string_view text, const std::array<std::string_view, N>& tokens) {
     for (std::size_t i = 0; i < N; ++i)
@@ -159,6 +163,53 @@ std::optional<RosterEntry> decodeRosterEntry(std::string_view entry) {
     return RosterEntry{*id, std::string(name), *inMatch == 1};
 }
 
+std::string encodeEntries(const std::vector<LogEntry>& entries) {
+    std::string text;
+    for (const LogEntry& e : entries) {
+        text += " " + std::to_string(e.t) + ":";
+        if (e.code == LogCode::Garbage)
+            text += "G" + std::to_string(e.garbageId) + "x" + std::to_string(e.garbageLines);
+        else
+            text += kLogTokens[static_cast<std::size_t>(e.code)];
+    }
+    return text;
+}
+
+// "<t>:<token>"; nullopt unless both parts are valid.
+std::optional<LogEntry> decodeLogEntry(std::string_view entry) {
+    const std::size_t colon = entry.find(':');
+    if (colon == std::string_view::npos) return std::nullopt;
+    const auto t = parseNumber(entry.substr(0, colon), 0, kMaxInt);
+    if (!t) return std::nullopt;
+    const std::string_view token = entry.substr(colon + 1);
+    if (token.starts_with('G')) {
+        const std::size_t x = token.find('x');
+        if (x == std::string_view::npos) return std::nullopt;
+        const auto id = parseNumber(token.substr(1, x - 1), 1, kMaxInt);
+        const auto lines = parseNumber(token.substr(x + 1), 1, kMaxGarbageLines);
+        if (!id || !lines) return std::nullopt;
+        return LogEntry{*t, LogCode::Garbage, *id, *lines};
+    }
+    const auto code = parseToken<LogCode>(token, kLogTokens);
+    if (!code) return std::nullopt;
+    return LogEntry{*t, *code};
+}
+
+// parts[first..] are log entries; at most maxEntries, t never decreasing and at most tMax.
+std::optional<std::vector<LogEntry>> decodeEntries(const std::vector<std::string_view>& parts, std::size_t first,
+                                                   std::size_t maxEntries, int tMax) {
+    if (parts.size() - first > maxEntries) return std::nullopt;
+    std::vector<LogEntry> entries;
+    int last = 0;
+    for (std::size_t i = first; i < parts.size(); ++i) {
+        const auto entry = decodeLogEntry(parts[i]);
+        if (!entry || entry->t < last || entry->t > tMax) return std::nullopt;
+        last = entry->t;
+        entries.push_back(*entry);
+    }
+    return entries;
+}
+
 bool hasDuplicate(std::vector<int> ids) {
     std::sort(ids.begin(), ids.end());
     return std::adjacent_find(ids.begin(), ids.end()) != ids.end();
@@ -255,6 +306,14 @@ std::string encode(const Message& message) {
                 return "BEGIN";
             } else if constexpr (std::is_same_v<T, PlayerOut>) {
                 return "OUT " + std::to_string(m.id) + " " + std::to_string(m.place);
+            } else if constexpr (std::is_same_v<T, InputBatch>) {
+                return "IN " + std::to_string(m.tEnd) + encodeEntries(m.entries);
+            } else if constexpr (std::is_same_v<T, SoftDropSetting>) {
+                return "SDF " + std::to_string(m.factor);
+            } else if constexpr (std::is_same_v<T, GarbageIn>) {
+                return "GARB " + std::to_string(m.id) + " " + std::to_string(m.lines);
+            } else if constexpr (std::is_same_v<T, Resync>) {
+                return "RESYNC " + std::to_string(m.t) + " " + std::to_string(m.consumedIns) + encodeEntries(m.entries);
             } else if constexpr (std::is_same_v<T, ListRooms>) {
                 return "LIST";
             } else if constexpr (std::is_same_v<T, UnlistRooms>) {
@@ -346,6 +405,23 @@ std::optional<Message> decode(std::string_view text) {
         const auto mySent = parseNumber(parts[3], 0, kMaxInt);
         const auto theirSent = parseNumber(parts[4], 0, kMaxInt);
         if (result && reason && mySent && theirSent) return MatchOver{*result, *reason, *mySent, *theirSent};
+    } else if (verb == "IN" && args >= 1) {
+        const auto tEnd = parseNumber(parts[1], 0, kMaxInt);
+        if (!tEnd) return std::nullopt;
+        if (auto entries = decodeEntries(parts, 2, kMaxInputEvents, *tEnd)) return InputBatch{*tEnd, std::move(*entries)};
+    } else if (verb == "RESYNC" && args >= 2) {
+        const auto t = parseNumber(parts[1], 0, kMaxInt);
+        const auto consumed = parseNumber(parts[2], 0, kMaxInt);
+        if (!t || !consumed) return std::nullopt;
+        if (auto entries = decodeEntries(parts, 3, parts.size(), kMaxInt))
+            return Resync{*t, *consumed, std::move(*entries)};
+    } else if (verb == "SDF" && args == 1) {
+        const auto factor = parseNumber(parts[1], 0, kMaxSdf);
+        if (factor && (*factor == kSoftDropInstant || *factor >= kMinSdf)) return SoftDropSetting{*factor};
+    } else if (verb == "GARB" && args == 2) {
+        const auto id = parseNumber(parts[1], 1, kMaxInt);
+        const auto lines = parseNumber(parts[2], 1, kMaxGarbageLines);
+        if (id && lines) return GarbageIn{*id, *lines};
     } else if (verb == "HELLO" && args == 1) {
         if (isValidName(parts[1])) return Hello{std::string(parts[1])};
     } else if (args == 0) {

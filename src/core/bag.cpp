@@ -23,7 +23,8 @@ std::vector<PieceType> Bag::peek(int n) const {
 void Bag::refill() {
     std::array<PieceType, kPieceTypeCount> bag{PieceType::I, PieceType::O, PieceType::T, PieceType::S,
                                                PieceType::Z, PieceType::J, PieceType::L};
-    std::shuffle(bag.begin(), bag.end(), rng_);
+    // Explicit Fisher-Yates: std::shuffle is implementation-defined and would break native vs WASM replay.
+    for (int i = kPieceTypeCount - 1; i > 0; --i) std::swap(bag[i], bag[rng_() % (i + 1)]);
     queue_.insert(queue_.end(), bag.begin(), bag.end());
 }
 

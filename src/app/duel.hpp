@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <string>
@@ -9,21 +10,27 @@
 #include <vector>
 
 #include "core/game.hpp"
+#include "net/match_game.hpp"
 #include "net/protocol.hpp"
 
 namespace tetris {
 
 inline constexpr int kCountdownMs = 3000;  // must match countdown in server/hub.go
 inline constexpr int kSnapshotIntervalMs = 100;
-inline constexpr int kMatchMs = 120000;  // display clock; the server's -match default is the same 2 minutes
-inline constexpr int kKoFlashMs = 1000;
+inline constexpr int kInputHeartbeatMs = 100;  // an IN goes out at least this often in match time, events or not
 inline constexpr int kMaxFrameMs = 100;  // longer stalls are dropped, not replayed, outside a match
 inline constexpr int kMaxCatchUpMs = 130000;  // a match replays stalls up to this long: the clock plus slack
-inline constexpr int kRoyaleLevelStepMs = 30000;  // a royale's gravity floor rises one level per this much play
 
 // How much of `elapsedMs` of wall time to simulate this frame. A browser stops or throttles a hidden tab's
 // loop, so a running match replays the gap: gravity keeps going and the opponent keeps getting snapshots.
 int frameBudgetMs(std::uint64_t elapsedMs, bool inMatch);
+
+class DuelSession;
+// One frame of the app loop, after this frame's messages: the frame budget for `elapsedMs` of wall time, run through
+// `step` in pieces of at most kMaxFrameMs (at least one call, possibly of 0 ms). `duelShown`: the duel screen is up.
+// The frame that processed START runs no time, so wall time from before START (a hidden or throttled tab) can't put
+// the countdown ahead of the server's clock. A catch-up frame (more than one piece) sends its INs once, at the end.
+void runFrame(DuelSession& duel, bool duelShown, std::uint64_t elapsedMs, const std::function<void(int)>& step);
 
 // Lobby: connected, not in a room, watching the list of open public rooms. Waiting: a room was asked for, no
 // ROOM yet. Room: in a room between matches, or before the first.
@@ -47,20 +54,18 @@ struct OpponentView {
     int place = 0;  // 0 until OUT
 };
 
-// The local game for a match: same seed (so the same pieces) as the opponents, and no pausing. A royale (3 or
-// more players) gets hole garbage instead of bombs.
-Game makeDuelGame(const StartMatch& start);
-
-// One player's side of a room and its matches. Reacts to server messages, owns the local Game while a match
-// runs, and reports attacks, snapshots and top-outs through `send`. The server referees KOs and the result.
-// Knows nothing about sockets or SDL.
+// One player's side of a room and its matches. Reacts to server messages, owns the local MatchGame while a match
+// runs, streams its log as IN and reports attacks, snapshots and top-outs through `send`. The server referees KOs
+// and the result. Knows nothing about sockets or SDL.
 class DuelSession {
 public:
     using Send = std::function<void(const std::string&)>;
-    using MakeGame = std::function<Game(const StartMatch&)>;
 
-    explicit DuelSession(Send send, MakeGame makeGame = makeDuelGame)
-        : send_(std::move(send)), makeGame_(std::move(makeGame)) {}
+    explicit DuelSession(Send send, int softDropFactor = kDefaultSoftDropFactor)
+        : send_(std::move(send)), softDropFactor_(softDropFactor) {}
+
+    // The soft-drop factor for the next match: it is fixed at START and sent there as SDF.
+    void setSoftDropFactor(int factor) { softDropFactor_ = factor; }
 
     void openLobby();  // Idle -> Lobby; the server then pushes the room list
     void createRoom(int startLevel, bool isPublic = false);
@@ -71,8 +76,15 @@ public:
     void leave();  // back to Idle; the caller closes the connection
     void onMessage(std::string_view text);
     void onDisconnected();
-    // Call once per frame, after the local game has been advanced by `ms`.
+    // Advances the match `ms` steps of 1 ms while Playing, frozen or not; a no-op otherwise. Inputs go to match()
+    // between steps.
+    void step(int ms);
+    // Call once per frame, after step(ms): runs the countdown and the clocks, and sends what the match logged.
     void update(int ms);
+    // True if START arrived since the last update() or takeStarted(), and resets: runFrame runs no time for it.
+    bool takeStarted() { return std::exchange(started_, false); }
+    // While held, update() sends no IN; releasing sends one for everything since (split only at kMaxInputEvents).
+    void holdInputs(bool hold);
 
     DuelPhase phase() const { return phase_; }
     bool inMatch() const { return phase_ == DuelPhase::Countdown || phase_ == DuelPhase::Playing; }
@@ -89,7 +101,8 @@ public:
     const Snapshot& opponent() const;         // the first opponent's board, or an empty Snapshot
     const std::string& opponentName() const;  // the first opponent's name, or "" before any match
     int participants() const { return participants_; }  // players in the last START, this one included
-    // Royale: this player topped out. The game stays in GameOver and nothing more is sent this match.
+    // Royale: this player topped out, as predicted locally. The game stays in GameOver and only IN goes out, until the
+    // server's OUT for this player; a RESYNC that undoes the top-out clears it.
     bool eliminated() const { return eliminated_; }
     int myPlace() const { return myPlace_; }  // royale: 0 until this player's OUT
     int countdownMs() const { return countdownMs_; }
@@ -106,28 +119,33 @@ public:
     // Time spent Playing this match: 0 in the countdown, and fixed once a duel's clock stops, this player is
     // eliminated from a royale, or the match ends.
     int playedMs() const { return playedMs_; }
-    int koFlashMs() const { return koFlashMs_; }        // > 0 while "KO!" shows after our top-out
-    // While true the local game must not tick or take input: in a duel, during the KO flash or once the clock hits
-    // 0. Never in a royale, which has no clock.
+    int koFlashMs() const { return match_ ? match_->koFlashMs() : 0; }  // > 0 while "KO!" shows after our top-out
+    // While true the local game takes no input: in a duel, during the KO flash or once the clock hits 0; in a
+    // royale, once eliminated.
     bool frozen() const;
     // Events since the last call, oldest first; empties the list.
     std::vector<DuelEvent> takeEvents() { return std::exchange(events_, {}); }
-    Game* game() { return game_ ? &*game_ : nullptr; }
-    const Game* game() const { return game_ ? &*game_ : nullptr; }
+    MatchGame* match() { return match_ ? &*match_ : nullptr; }  // null outside a match
+    const MatchGame* match() const { return match_ ? &*match_ : nullptr; }
+    Game* game() { return match_ ? &match_->game() : nullptr; }
+    const Game* game() const { return match_ ? &match_->game() : nullptr; }
 
 private:
     void beginRequest(RoomVisibility visibility, bool quick);
     void send(const Message& message) { send_(encode(message)); }
     void startMatch(const StartMatch& start);
+    void acceptGarbage(int id, int lines);
+    void resync(const Resync& correction);
+    void sendInputs();
     void finish(DuelOutcome outcome);
     void reset();
     void resetMatchStats();
 
     Send send_;
-    MakeGame makeGame_;
+    int softDropFactor_ = kDefaultSoftDropFactor;
     DuelPhase phase_ = DuelPhase::Idle;
     DuelOutcome outcome_ = DuelOutcome::None;
-    std::optional<Game> game_;
+    std::optional<MatchGame> match_;
     std::optional<Snapshot> lastSent_;
     std::string roomCode_;
     int myId_ = 0;
@@ -136,7 +154,6 @@ private:
     DuelMode mode_ = DuelMode::Duel;
     std::vector<OpponentView> opponents_;
     int participants_ = 0;
-    int startLevel_ = 1;  // of the current match, for the royale level floor
     std::vector<RoomInfo> rooms_;
     bool fromLobby_ = false;  // Waiting was entered from Lobby, so a refusal goes back there
     RoomVisibility visibility_ = RoomVisibility::Unknown;
@@ -144,6 +161,13 @@ private:
     std::string error_;
     int countdownMs_ = 0;
     int sinceSnapshotMs_ = 0;
+    int lastInT_ = 0;      // the match t the last IN went out at
+    bool started_ = false;      // START arrived since the last takeStarted()
+    bool holdingInputs_ = false;
+    int insSent_ = 0;      // INs sent this match; the server's RESYNC says how many of them it has consumed
+    // The entries of each IN the server may not have consumed yet, by number (IN 1 is the match's first).
+    std::deque<std::pair<int, std::vector<LogEntry>>> insInFlight_;
+    int topOutsSeen_ = 0;  // match_->topOuts() as of the last DEAD sent
     DuelReason reason_ = DuelReason::KOs;
     int kosMine_ = 0;
     int kosTheirs_ = 0;
@@ -151,7 +175,6 @@ private:
     int sentTheirs_ = 0;
     int matchClockMs_ = 0;
     int playedMs_ = 0;
-    int koFlashMs_ = 0;
     bool eliminated_ = false;
     int myPlace_ = 0;
     std::vector<DuelEvent> events_;

@@ -79,3 +79,6 @@ build-*/
 
 # Server binary from go build in server/
 server/tetris-server
+
+# Server replay module, built by scripts/build.sh
+server/sim/jestris_sim.wasm

@@ -54,6 +54,8 @@ inline constexpr int kClearDelayMs = 300;
 inline constexpr int kGarbageTravelMs = 333;  // incoming garbage waits this long before it can rise
 inline constexpr int kMaxGarbagePerLock = 8;  // most lines that rise after one lock
 inline constexpr int kDefaultSoftDropFactor = 20;  // soft drop falls this many times faster than gravity
+inline constexpr int kMinSdf = 5;   // a soft-drop factor is kSoftDropInstant (0), or kMinSdf to kMaxSdf
+inline constexpr int kMaxSdf = 40;
 inline constexpr int kSoftDropInstant = 0;         // a soft-drop factor that drops straight to the floor
 inline constexpr int kGravityLevelCap = 20;
 inline constexpr int kLinesPerLevel = 10;
@@ -155,6 +157,8 @@ public:
     int backToBack() const { return backToBack_; }
     GameState state() const { return state_; }
     const GameStats& stats() const { return stats_; }
+    // FNV-1a 64 over the whole simulation state, for replay checks. Integers enter as 4 little-endian bytes.
+    std::uint64_t stateHash() const;
 
 private:
     void step();

@@ -1,5 +1,7 @@
 # Design: Rooms for up to 16 players, host start and battle royale
 
+> **Partly superseded** by `2026-10-14-server-authority-design.md`: with `-authority enforce` the server ignores client `ATK`, `DEAD` and `SNAP`; it re-simulates each match from the clients' inputs, and attacks, KOs and snapshots come from that simulation.
+
 ## Context
 Today a room has exactly two seats and the match starts the moment the second player joins (`server/hub.go`, `DuelSession`). This spec extends the LAN duel (`2026-10-13-lan-duel-design.md`), the KO duel (`2026-10-13-bomb-battle-design.md`), player names (`2026-10-13-player-names-design.md`) and the room lobby (`2026-10-13-room-lobby-design.md`) so that:
 

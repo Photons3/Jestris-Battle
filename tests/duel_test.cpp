@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <variant>
@@ -29,6 +32,45 @@ void startMatch(DuelSession& duel, Wire& wire) {
     duel.update(kCountdownMs);
     REQUIRE(duel.phase() == DuelPhase::Playing);
     wire.sent.clear();
+}
+
+// startMatch, then swaps in a game that deals an I first over a 4-row well in column 5.
+void startWithWell(DuelSession& duel, Wire& wire) {
+    startMatch(duel, wire);
+    duel.match()->game() = Game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
+}
+
+// dropUprightI through the match, so the inputs are logged.
+void dropUprightI(MatchGame& match) {
+    match.input(Action::RotateCW);
+    match.input(Action::HardDrop);
+}
+
+// topOutWithGarbage through the match: the game is in GameOver afterwards, and the match handles it at the next
+// step.
+void topOutWithGarbage(DuelSession& duel) {
+    MatchGame& match = *duel.match();
+    match.acceptGarbage(0, kBoardHeight - 1);
+    duel.step(kGarbageTravelMs);
+    for (int i = 0; i < 10 && match.game().state() != GameState::GameOver; ++i) {
+        match.game().takeEvents();
+        match.input(Action::HardDrop);
+    }
+}
+
+bool isIn(const std::string& text) { return text.starts_with("IN "); }
+
+// What was sent apart from the IN stream.
+std::vector<std::string> withoutIn(const std::vector<std::string>& sent) {
+    std::vector<std::string> rest;
+    std::ranges::copy_if(sent, std::back_inserter(rest), [](const std::string& text) { return !isIn(text); });
+    return rest;
+}
+
+std::vector<std::string> insOf(const std::vector<std::string>& sent) {
+    std::vector<std::string> ins;
+    std::ranges::copy_if(sent, std::back_inserter(ins), isIn);
+    return ins;
 }
 
 }  // namespace
@@ -110,14 +152,12 @@ TEST_CASE("duel: incoming attacks queue garbage on the local game") {
 
 TEST_CASE("duel: line clears are sent as attacks") {
     Wire wire;
-    DuelSession duel(wire.sender(), [](const StartMatch& start) {
-        return Game(seedWithFirst(PieceType::I), start.startLevel, boardWithWell(4, 5));
-    });
-    startMatch(duel, wire);
-    dropUprightI(*duel.game());
-    duel.game()->tick(kClearDelayMs);
+    DuelSession duel(wire.sender());
+    startWithWell(duel, wire);
+    dropUprightI(*duel.match());
+    duel.step(kClearDelayMs);
     duel.update(0);
-    CHECK(wire.sent == std::vector<std::string>{"ATK 4"});
+    CHECK(withoutIn(wire.sent) == std::vector<std::string>{"ATK 4"});
     CHECK(duel.sentMine() == 4);
     const std::vector<DuelEvent> events = duel.takeEvents();
     CHECK(std::count(events.begin(), events.end(), DuelEvent::Sent) == 1);
@@ -125,33 +165,33 @@ TEST_CASE("duel: line clears are sent as attacks") {
 
 TEST_CASE("duel: a clear cancels queued garbage first and sends only what is left") {
     Wire wire;
-    DuelSession duel(wire.sender(), [](const StartMatch& start) {
-        return Game(seedWithFirst(PieceType::I), start.startLevel, boardWithWell(4, 5));
-    });
-    startMatch(duel, wire);
+    DuelSession duel(wire.sender());
+    startWithWell(duel, wire);
     duel.onMessage("ATK 3");
     REQUIRE(duel.game()->pendingGarbage() == 3);
-    dropUprightI(*duel.game());  // a tetris: 4 lines against the 3 queued
-    duel.game()->tick(kClearDelayMs);
+    dropUprightI(*duel.match());  // a tetris: 4 lines against the 3 queued
+    duel.step(kClearDelayMs);
     duel.update(0);
     CHECK(duel.game()->pendingGarbage() == 0);
-    CHECK(wire.sent == std::vector<std::string>{"ATK 1"});
+    CHECK(withoutIn(wire.sent) == std::vector<std::string>{"ATK 1"});
     CHECK(duel.sentMine() == 1);
     CHECK(countFilled(duel.game()->board()) == 1);  // just the well's extra block: no garbage rose
 }
 
 TEST_CASE("duel: a clear still animating at 0:00 is settled and sent") {
     Wire wire;
-    DuelSession duel(wire.sender(), [](const StartMatch& start) {
-        return Game(seedWithFirst(PieceType::I), start.startLevel, boardWithWell(4, 5));
-    });
+    DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    dropUprightI(*duel.game());
+    duel.step(kMatchMs - 1);
+    REQUIRE_FALSE(duel.match()->frozen());
+    duel.match()->game() = Game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));  // the well, at 0:00.001
+    dropUprightI(*duel.match());
     REQUIRE(duel.game()->state() == GameState::Clearing);
-    duel.update(kMatchMs);  // the app does not tick the game once the clock is at 0:00
+    duel.step(1);  // the last step of the clock: the game is not ticked after it
+    duel.update(kMatchMs);
     CHECK(duel.frozen());
-    CHECK(wire.sent.size() >= 1);
-    CHECK(wire.sent[0] == "ATK 4");
+    CHECK(withoutIn(wire.sent).size() >= 1);
+    CHECK(withoutIn(wire.sent)[0] == "ATK 4");
     CHECK(duel.sentMine() == 4);
 }
 
@@ -159,11 +199,13 @@ TEST_CASE("duel: topping out sends a final snapshot and DEAD, resets the board a
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    topOutWithGarbage(*duel.game());
+    topOutWithGarbage(duel);
+    duel.step(1);
     duel.update(0);
-    REQUIRE(wire.sent.size() == 2);
-    CHECK(wire.sent[0].starts_with("SNAP "));
-    CHECK(wire.sent[1] == "DEAD");
+    const std::vector<std::string> sent = withoutIn(wire.sent);
+    REQUIRE(sent.size() == 2);
+    CHECK(sent[0].starts_with("SNAP "));
+    CHECK(sent[1] == "DEAD");
     CHECK(duel.phase() == DuelPhase::Playing);
     CHECK(duel.game()->state() == GameState::Playing);
     CHECK(countFilled(duel.game()->board()) == 0);
@@ -321,12 +363,15 @@ TEST_CASE("duel: the KO flash freezes the game for 1000 ms while the clock keeps
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     CHECK_FALSE(duel.frozen());
-    topOutWithGarbage(*duel.game());
+    topOutWithGarbage(duel);
+    duel.step(1);
     duel.update(0);
     CHECK(duel.frozen());
+    duel.step(kKoFlashMs - 1);
     duel.update(kKoFlashMs - 1);
     CHECK(duel.frozen());
     CHECK(duel.matchClockMs() == kMatchMs - (kKoFlashMs - 1));
+    duel.step(1);
     duel.update(1);
     CHECK_FALSE(duel.frozen());
     CHECK(duel.koFlashMs() == 0);
@@ -336,7 +381,8 @@ TEST_CASE("duel: garbage arriving during the KO flash is queued on the fresh boa
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    topOutWithGarbage(*duel.game());
+    topOutWithGarbage(duel);
+    duel.step(1);
     duel.update(0);
     REQUIRE(duel.frozen());
     duel.onMessage("ATK 3");
@@ -511,7 +557,9 @@ TEST_CASE("duel events: our top-out survives the KO board reset") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    topOutWithGarbage(*duel.game());
+    topOutWithGarbage(duel);
+    duel.step(1);  // the KO: the match resets the board
+    REQUIRE(duel.match()->topOuts() == 1);
     duel.update(0);
     const std::vector<GameEvent> events = duel.game()->takeEvents();  // the last lock may also raise garbage
     REQUIRE_FALSE(events.empty());
@@ -986,30 +1034,70 @@ TEST_CASE("royale: a duel START still uses bomb garbage") {
 
 TEST_CASE("royale: a top-out sends the final SNAP and DEAD once and keeps the board") {
     Wire wire;
-    DuelSession duel(wire.sender(), [](const StartMatch& start) {
-        return Game(start.seed, start.startLevel, Board{},
-                    GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
-    });
+    DuelSession duel(wire.sender());
     startRoyale(duel, wire);
-    topOutWithGarbage(*duel.game());
+    topOutWithGarbage(duel);
     REQUIRE(duel.game()->state() == GameState::GameOver);
     const int filled = countFilled(duel.game()->board());
+    duel.step(1);
     duel.update(0);
+    duel.step(kSnapshotIntervalMs);
     duel.update(kSnapshotIntervalMs);
-    REQUIRE(wire.sent.size() == 2);
-    CHECK(wire.sent[0].starts_with("SNAP "));
-    CHECK(wire.sent[1] == "DEAD");
+    const std::vector<std::string> sent = withoutIn(wire.sent);
+    REQUIRE(sent.size() == 2);
+    CHECK(sent[0].starts_with("SNAP "));
+    CHECK(sent[1] == "DEAD");
     CHECK(duel.eliminated());
     CHECK(duel.game()->state() == GameState::GameOver);
     CHECK(countFilled(duel.game()->board()) == filled);
     CHECK(duel.phase() == DuelPhase::Playing);
-    CHECK_FALSE(duel.frozen());
+    CHECK(duel.frozen());  // the match takes no more input
     CHECK(duel.koFlashMs() == 0);
     const int played = duel.playedMs();
-    duel.onMessage("ATK 3");  // still reaches the game, but nothing more goes out
+    const std::size_t sentBefore = wire.sent.size();
+    duel.onMessage("ATK 3");  // still reaches the game, but nothing more goes out besides IN, until our OUT
+    duel.step(kSnapshotIntervalMs * 5);
     duel.update(kSnapshotIntervalMs * 5);
-    CHECK(wire.sent.size() == 2);
+    CHECK(withoutIn({wire.sent.begin() + static_cast<std::ptrdiff_t>(sentBefore), wire.sent.end()}).empty());
     CHECK(duel.playedMs() == played);  // our play time stops at elimination, for PPS and APM
+}
+
+TEST_CASE("royale: after a predicted elimination IN keeps going until the server's OUT") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    topOutWithGarbage(duel);
+    duel.step(1);
+    duel.update(1);
+    REQUIRE(duel.eliminated());
+    wire.sent.clear();
+    duel.step(kInputHeartbeatMs);
+    duel.update(kInputHeartbeatMs);
+    CHECK(insOf(wire.sent).size() == 1);  // the server may disagree, and its RESYNC needs our IN
+    CHECK(withoutIn(wire.sent).empty());
+    duel.onMessage("OUT 1 4");
+    wire.sent.clear();
+    duel.step(kInputHeartbeatMs * 5);
+    duel.update(kInputHeartbeatMs * 5);
+    CHECK(wire.sent.empty());
+}
+
+TEST_CASE("royale: a RESYNC that undoes our elimination puts us back in play") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    topOutWithGarbage(duel);
+    duel.step(1);
+    duel.update(1);  // IN 1 carries the garbage and the drops
+    REQUIRE(duel.eliminated());
+    duel.onMessage(encode(Resync{duel.match()->t(), 1, {}}));  // the server rejected all of it
+    CHECK_FALSE(duel.match()->eliminated());
+    CHECK_FALSE(duel.eliminated());
+    CHECK_FALSE(duel.frozen());
+    const int played = duel.playedMs();
+    duel.step(100);
+    duel.update(100);
+    CHECK(duel.playedMs() == played + 100);
 }
 
 TEST_CASE("royale: OUT marks an opponent out with its place") {
@@ -1045,12 +1133,10 @@ TEST_CASE("royale: OUT with place 1 for me is a win") {
 
 TEST_CASE("royale: someone else's OUT 1 is a loss with my place") {
     Wire wire;
-    DuelSession duel(wire.sender(), [](const StartMatch& start) {
-        return Game(start.seed, start.startLevel, Board{},
-                    GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
-    });
+    DuelSession duel(wire.sender());
     startRoyale(duel, wire);
-    topOutWithGarbage(*duel.game());
+    topOutWithGarbage(duel);
+    duel.step(1);
     duel.update(0);
     REQUIRE(duel.eliminated());
     duel.onMessage("OUT 1 3");
@@ -1065,11 +1151,15 @@ TEST_CASE("royale: someone else's OUT 1 is a loss with my place") {
 }
 
 TEST_CASE("royale: no clock freeze and the level floor rises every 30 s") {
-    // The session never ticks the game itself, so these idle frames cannot top it out.
     SUBCASE("past the duel's 2:00 the game is not frozen") {
         Wire wire;
         DuelSession duel(wire.sender());
         startRoyale(duel, wire);
+        // Idle gravity would top the game out well before 2:00, so the board is cleared every 10 s.
+        for (int played = 0; played < kMatchMs + 1000; played += 10000) {
+            duel.game()->resetBoard();
+            duel.step(std::min(10000, kMatchMs + 1000 - played));
+        }
         duel.update(kMatchMs + 1000);
         REQUIRE(duel.game()->state() != GameState::GameOver);
         CHECK_FALSE(duel.eliminated());
@@ -1081,8 +1171,10 @@ TEST_CASE("royale: no clock freeze and the level floor rises every 30 s") {
         Wire wire;
         DuelSession duel(wire.sender());
         startRoyale(duel, wire);
+        duel.step(kRoyaleLevelStepMs - 1);
         duel.update(kRoyaleLevelStepMs - 1);
         CHECK(duel.game()->level() == 1);
+        duel.step(1);
         duel.update(1);
         CHECK(duel.game()->level() == 2);
     }
@@ -1090,6 +1182,7 @@ TEST_CASE("royale: no clock freeze and the level floor rises every 30 s") {
         Wire wire;
         DuelSession duel(wire.sender());
         startMatch(duel, wire);
+        duel.step(kRoyaleLevelStepMs * 2);
         duel.update(kRoyaleLevelStepMs * 2);
         CHECK(duel.game()->level() == 1);
     }
@@ -1133,13 +1226,14 @@ TEST_CASE("royale: OUT outside a match is ignored") {
     CHECK(duel.opponents()[2].place == 1);
 }
 
-TEST_CASE("royale: LEFT is ignored in a royale") {
+TEST_CASE("royale: LEFT ends a royale as Match ended") {
     Wire wire;
     DuelSession duel(wire.sender());
     startRoyale(duel, wire);
-    duel.onMessage("LEFT");
-    CHECK(duel.phase() == DuelPhase::Playing);
-    CHECK(duel.outcome() == DuelOutcome::None);
+    duel.onMessage("LEFT");  // the server's simulation failed
+    CHECK(duel.phase() == DuelPhase::Result);
+    CHECK(duel.outcome() == DuelOutcome::OpponentLeft);
+    CHECK(resultReasonText(duel) == "Match ended");
 }
 
 TEST_CASE("royale: standings list places in order with attack") {
@@ -1230,14 +1324,12 @@ TEST_CASE("royale: the winner's board stays alive and is placed #1") {
 
 TEST_CASE("royale: surviving a simultaneous top-out wins and is no longer eliminated") {
     Wire wire;
-    DuelSession duel(wire.sender(), [](const StartMatch& start) {
-        return Game(start.seed, start.startLevel, Board{},
-                    GameOptions{.allowPause = false, .garbage = GarbageStyle::Holes});
-    });
+    DuelSession duel(wire.sender());
     startRoyale(duel, wire);
     duel.onMessage("OUT 2 4");
     duel.onMessage("OUT 3 3");
-    topOutWithGarbage(*duel.game());
+    topOutWithGarbage(duel);
+    duel.step(1);
     duel.update(0);
     REQUIRE(duel.eliminated());
     duel.onMessage("OUT 4 2");  // Di's DEAD reached the server first
@@ -1314,4 +1406,287 @@ TEST_CASE("duel: myName is our room name from the roster") {
     CHECK(duel.myName().empty());
     duel.onMessage("PLAYERS 1 1:Sam:0 2:Sam2:0");
     CHECK(duel.myName() == "Sam2");
+}
+
+TEST_CASE("duel: START sends SDF with the session's factor") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.setSoftDropFactor(0);
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("START 7 1 1 2");
+    CHECK(std::ranges::count(wire.sent, std::string("SDF 0")) == 1);
+    REQUIRE(duel.match() != nullptr);
+    CHECK(duel.match()->setup().softDropFactor == 0);
+}
+
+TEST_CASE("duel: inputs go out as IN before ATK") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startWithWell(duel, wire);
+    dropUprightI(*duel.match());
+    duel.step(kClearDelayMs);  // the attack goes out when the clear finishes
+    duel.update(1);
+    const auto in = std::ranges::find_if(wire.sent, isIn);
+    const auto atk = std::ranges::find(wire.sent, std::string("ATK 4"));
+    REQUIRE(in != wire.sent.end());
+    REQUIRE(atk != wire.sent.end());
+    CHECK(in < atk);
+    CHECK(in->ends_with(":HD"));
+}
+
+TEST_CASE("duel: an idle player sends an IN heartbeat every 100 ms") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.step(kInputHeartbeatMs - 1);
+    duel.update(kInputHeartbeatMs - 1);
+    CHECK(insOf(wire.sent).empty());
+    duel.step(1);
+    duel.update(1);
+    CHECK(insOf(wire.sent) == std::vector<std::string>{"IN 100"});
+}
+
+TEST_CASE("duel: an IN carries at most kMaxInputEvents entries, split by time") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    for (int i = 0; i < kMaxInputEvents + 6; ++i) {
+        duel.match()->softDrop(i % 2 == 0);
+        duel.step(1);
+    }
+    duel.update(kMaxInputEvents + 6);
+    const std::vector<std::string> ins = insOf(wire.sent);
+    REQUIRE(ins.size() == 2);
+    int previousEnd = 0;
+    std::size_t entries = 0;
+    for (const std::string& text : ins) {
+        const auto message = decode(text);
+        REQUIRE(message.has_value());
+        const InputBatch& batch = std::get<InputBatch>(*message);
+        CHECK(batch.entries.size() <= kMaxInputEvents);
+        for (const LogEntry& entry : batch.entries) CHECK(entry.t >= previousEnd);
+        previousEnd = batch.tEnd;
+        entries += batch.entries.size();
+    }
+    CHECK(entries == kMaxInputEvents + 6);
+    CHECK(previousEnd == kMaxInputEvents + 6);
+}
+
+TEST_CASE("duel: the frame that processes START runs no time") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    duel.createRoom(1);
+    duel.onMessage("ROOM ABCD 1");
+    duel.onMessage("START 7 1 1 2");
+    auto step = [&duel](int ms) {
+        duel.step(ms);
+        duel.update(ms);
+    };
+    runFrame(duel, true, 60000, step);  // the tab was hidden or throttled when START arrived
+    CHECK(duel.phase() == DuelPhase::Countdown);
+    CHECK(duel.countdownMs() == kCountdownMs);
+    runFrame(duel, true, 16, step);
+    CHECK(duel.countdownMs() == kCountdownMs - 16);
+    runFrame(duel, true, 5000, step);  // a stall after START is the match's own time
+    CHECK(duel.phase() == DuelPhase::Playing);
+}
+
+TEST_CASE("duel: a catch-up frame sends one IN for the whole stall") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    auto step = [&duel](int ms) {
+        duel.match()->softDrop(duel.match()->t() % 200 == 100);
+        duel.step(ms);
+        duel.update(ms);
+    };
+    runFrame(duel, true, 1000, step);  // 10 steps of 100 ms
+    CHECK(insOf(wire.sent) ==
+          std::vector<std::string>{"IN 1000 100:S+ 200:S- 300:S+ 400:S- 500:S+ 600:S- 700:S+ 800:S- 900:S+"});
+    wire.sent.clear();
+    runFrame(duel, true, 3000, [&duel](int ms) {
+        duel.step(ms);
+        duel.update(ms);
+    });
+    CHECK(insOf(wire.sent) == std::vector<std::string>{"IN 4000"});  // an idle catch-up: one heartbeat
+}
+
+TEST_CASE("duel: a catch-up frame splits its IN only at kMaxInputEvents entries") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    runFrame(duel, true, 10000, [&duel](int ms) {  // 100 steps, an event in each
+        duel.match()->input(Action::Left);
+        duel.step(ms);
+        duel.update(ms);
+    });
+    const std::vector<std::string> ins = insOf(wire.sent);
+    REQUIRE(ins.size() == 2);
+    const InputBatch first = std::get<InputBatch>(*decode(ins[0]));
+    const InputBatch last = std::get<InputBatch>(*decode(ins[1]));
+    CHECK(first.entries.size() == kMaxInputEvents);
+    CHECK(first.tEnd == first.entries.back().t);
+    CHECK(last.entries.size() == 100 - kMaxInputEvents);
+    CHECK(last.tEnd == 10000);
+}
+
+TEST_CASE("duel: GARB is accepted once, logged as G<id>x<lines>") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.takeEvents();
+    duel.onMessage("GARB 1 3");
+    duel.onMessage("GARB 1 3");
+    CHECK(duel.game()->pendingGarbage() == 3);
+    CHECK(duel.sentTheirs() == 3);
+    CHECK(duel.takeEvents() == std::vector<DuelEvent>{DuelEvent::Attacked});
+    duel.step(1);
+    duel.update(1);
+    const std::vector<std::string> ins = insOf(wire.sent);
+    REQUIRE(ins.size() == 1);
+    CHECK(ins[0] == "IN 1 0:G1x3");
+}
+
+TEST_CASE("duel: RESYNC keeps the events of INs the server has not consumed and ignores a GARB it already has") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.step(50);
+    duel.match()->input(Action::HardDrop);
+    duel.step(50);
+    duel.update(100);  // IN 1: the hard drop
+    duel.step(50);
+    duel.match()->input(Action::Left);
+    duel.step(50);
+    REQUIRE(duel.match()->t() == 200);
+    duel.update(100);  // IN 2: the left, still on its way
+    REQUIRE(insOf(wire.sent) == std::vector<std::string>{"IN 100 50:HD", "IN 200 150:L"});
+    duel.onMessage("RESYNC 100 1 50:HD 80:G1x2");
+    REQUIRE(duel.match() != nullptr);
+    CHECK(duel.match()->t() == 200);
+    CHECK(duel.match()->log() == std::vector<LogEntry>{{50, LogCode::HardDrop},
+                                                       {80, LogCode::Garbage, 1, 2},
+                                                       {150, LogCode::Left}});
+    CHECK(duel.match()->takeUnsent().empty());  // the server has our own events, or they are on the way
+    const int pending = duel.game()->pendingGarbage();
+    duel.onMessage("GARB 1 2");
+    CHECK(duel.game()->pendingGarbage() == pending);
+}
+
+// The reviewer's case: a key pressed at a frame's start is stamped with the last IN's tEnd, which is often the t the
+// server's RESYNC carries.
+TEST_CASE("duel: RESYNC keeps an in-flight event stamped exactly its t") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.step(200);
+    duel.update(200);  // IN 1
+    duel.match()->input(Action::HardDrop);
+    duel.step(16);
+    duel.update(16);  // IN 2, in flight
+    REQUIRE(insOf(wire.sent) == std::vector<std::string>{"IN 200", "IN 216 200:HD"});
+    const std::uint64_t live = duel.match()->hash();
+    duel.onMessage("RESYNC 200 1");
+    CHECK(duel.match()->log() == std::vector<LogEntry>{{200, LogCode::HardDrop}});
+    CHECK(duel.match()->hash() == live);
+    CHECK(duel.match()->takeUnsent().empty());
+}
+
+TEST_CASE("duel: RESYNC applies an in-flight event stamped before its t at that t") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.step(200);
+    duel.update(200);  // IN 1
+    duel.match()->input(Action::HardDrop);
+    duel.step(200);
+    duel.update(200);  // IN 2 (200:HD) is in flight, and the server forced the game on to 300
+    duel.onMessage("RESYNC 300 1");
+    CHECK(duel.match()->log() == std::vector<LogEntry>{{300, LogCode::HardDrop}});
+    CHECK(duel.match()->t() == 400);
+    CHECK(duel.match()->takeUnsent().empty());  // IN 2 still carries it, at 200
+}
+
+TEST_CASE("duel: RESYNC drops the events of a rejected IN and keeps later ones in flight") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.step(100);
+    duel.update(100);  // IN 1
+    duel.step(50);
+    duel.match()->input(Action::HardDrop);
+    duel.step(50);
+    duel.update(100);  // IN 2: rejected by the server
+    duel.match()->input(Action::Left);
+    duel.step(100);
+    duel.update(100);  // IN 3: in flight
+    REQUIRE(insOf(wire.sent) == std::vector<std::string>{"IN 100", "IN 200 150:HD", "IN 300 200:L"});
+    duel.onMessage("RESYNC 100 2");
+    CHECK(duel.match()->log() == std::vector<LogEntry>{{200, LogCode::Left}});
+    CHECK(duel.match()->t() == 300);
+    MatchGame expected = MatchGame::replay(duel.match()->setup(), {{200, LogCode::Left}}, 300);
+    CHECK(duel.match()->hash() == expected.hash());
+    CHECK(duel.match()->takeUnsent().empty());
+}
+
+TEST_CASE("duel: IN numbering starts again at each START") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.match()->input(Action::HardDrop);
+    duel.step(100);
+    duel.update(100);  // IN 1 of the first match, never consumed
+    duel.onMessage("OVER WIN KO 3 0");
+    duel.onMessage("START 8 1 1 2");
+    duel.update(kCountdownMs);
+    REQUIRE(duel.phase() == DuelPhase::Playing);
+    duel.step(100);
+    duel.update(100);  // IN 1 of this match: no entries
+    duel.onMessage("RESYNC 100 0");
+    CHECK(duel.match()->log().empty());
+}
+
+TEST_CASE("duel: RESYNC to the same log leaves the board unchanged") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.onMessage("GARB 1 2");
+    duel.step(50);
+    duel.match()->input(Action::HardDrop);
+    duel.step(50);
+    duel.update(100);  // IN 1
+    duel.step(50);
+    duel.match()->input(Action::Left);
+    duel.match()->softDrop(true);
+    duel.step(50);
+    duel.update(100);  // IN 2, in flight
+    const std::uint64_t before = duel.match()->hash();
+    Resync resync{100, 1, {}};
+    for (const LogEntry& entry : duel.match()->log())
+        if (entry.t <= resync.t) resync.entries.push_back(entry);
+    duel.onMessage(encode(resync));
+    CHECK(duel.match()->hash() == before);
+    CHECK(duel.match()->t() == 200);
+}
+
+TEST_CASE("duel: a GARB just before a RESYNC is still acknowledged once") {
+    for (const int resyncT : {100, 200}) {  // before the ack's t, and at it
+        CAPTURE(resyncT);
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startMatch(duel, wire);
+        duel.step(200);
+        duel.update(200);
+        wire.sent.clear();
+        duel.onMessage("GARB 1 2");  // logged at t = 200, not sent yet
+        duel.onMessage(encode(Resync{resyncT, 1, {}}));  // IN 1 (IN 200) consumed
+        CHECK(duel.game()->pendingGarbage() == 2);
+        CHECK(duel.match()->hasGarbage(1));
+        duel.step(1);
+        duel.update(1);
+        CHECK(insOf(wire.sent) == std::vector<std::string>{"IN 201 200:G1x2"});
+        duel.onMessage("GARB 1 2");
+        CHECK(duel.game()->pendingGarbage() == 2);
+    }
 }

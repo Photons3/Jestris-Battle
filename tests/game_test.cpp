@@ -1098,7 +1098,7 @@ TEST_CASE("game events: every kind of top-out is reported once") {
         CHECK(game.takeEvents() == Events{kHardDropped, kToppedOut});
     }
     SUBCASE("garbage overflow") {
-        Game game(seedWithFirst(PieceType::T), 1);
+        Game game(seedWithFirstTwo(PieceType::T, PieceType::Z), 1);
         topOutWithGarbage(game);
         game.tick(1000);
         CHECK(game.takeEvents() == Events{kHardDropped, kToppedOut});
@@ -1106,7 +1106,7 @@ TEST_CASE("game events: every kind of top-out is reported once") {
 }
 
 TEST_CASE("game events: resetting the board keeps events not yet taken") {
-    Game game(seedWithFirst(PieceType::T), 1);
+    Game game(seedWithFirstTwo(PieceType::T, PieceType::Z), 1);
     topOutWithGarbage(game);
     game.resetBoard();
     CHECK(game.takeEvents() == Events{kHardDropped, kToppedOut});
@@ -1339,4 +1339,29 @@ TEST_CASE("game: raising the floor emits LevelUp once") {
     game.setLevelFloor(3);
     game.setLevelFloor(3);
     CHECK(game.takeEvents() == Events{kLevelUp});
+}
+
+TEST_CASE("game: equal seeds and inputs give equal state hashes") {
+    Game a(42, 1);
+    Game b(42, 1);
+    for (Game* g : {&a, &b}) {
+        g->apply(Action::Left);
+        g->apply(Action::RotateCW);
+        g->apply(Action::HardDrop);
+        g->tick(500);
+    }
+    CHECK(a.stateHash() == b.stateHash());
+}
+
+TEST_CASE("game: the state hash changes with a move, a tick and garbage") {
+    Game g(42, 1);
+    std::uint64_t prev = g.stateHash();
+    g.apply(Action::Left);
+    CHECK(g.stateHash() != prev);
+    prev = g.stateHash();
+    g.tick(1);
+    CHECK(g.stateHash() != prev);
+    prev = g.stateHash();
+    g.receiveGarbage(1);
+    CHECK(g.stateHash() != prev);
 }
