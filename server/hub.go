@@ -35,12 +35,14 @@ const (
 	maxRoomPlayers     = 16       // kMaxRoomPlayers in src/net/protocol.hpp
 	defaultMaxRooms    = 500
 	sendQueueLength    = 1024 // per player; a full 16-player room relays about 150 SNAPs a second to each
+	maxInputEvents     = 64   // kMaxInputEvents in src/net/protocol.hpp
 )
 
 // Hub gathers browsers into rooms of up to maxRoomPlayers, starts a match when the host sends BEGIN, relays
 // game messages between the match's participants and referees each match: a duel for 2, a royale for 3 or
-// more. It handles HELLO, CREATE, JOIN, LIST, UNLIST, QUICK, BEGIN, ATK, DEAD and SNAP itself, and hands a
-// participant's IN and SDF to the match's runner (authority.go), which re-simulates every game; anything
+// more. It handles HELLO, CREATE, JOIN, LIST, UNLIST, QUICK, BEGIN, ATK, DEAD and SNAP itself (with
+// -authority enforce it drops ATK, DEAD and SNAP), and hands a participant's IN and SDF to the match's runner
+// (authority.go), which re-simulates every game and, in enforce mode, decides attacks and top-outs; anything
 // else inside a room, including the verbs only the server sends (ROOM, PLAYERS, START, KO, OVER, OUT, LEFT,
 // ERR, ROOMS), is dropped. Lobby watchers get the full ROOMS list whenever a listed room appears,
 // disappears, or changes its player count or host.
@@ -248,6 +250,9 @@ func (h *Hub) route(p *player, text string) []outgoing {
 			return h.quick(p, arg)
 		}
 		return nil // a lobby or idle connection: match verbs and anything unknown mean nothing here
+	}
+	if h.auth.mode == "enforce" && (verb == "ATK" || verb == "DEAD" || verb == "SNAP") {
+		return nil // the simulation decides attacks, top-outs and snapshots
 	}
 	switch verb {
 	case "CREATE", "JOIN", "QUICK":
@@ -479,11 +484,16 @@ func enqueue(out []outgoing) {
 		select {
 		case o.to.queue <- o.text:
 		default:
-			if !o.to.kicked {
-				o.to.kicked = true
-				close(o.to.kick)
-			}
+			o.to.disconnect()
 		}
+	}
+}
+
+// disconnect kicks p once: its writer closes the connection and its read loop leaves. The caller holds the lock.
+func (p *player) disconnect() {
+	if !p.kicked {
+		p.kicked = true
+		close(p.kick)
 	}
 }
 
@@ -637,7 +647,11 @@ func (h *Hub) routeGarbage(p *player, n int) *player {
 }
 
 // knockOut handles DEAD: a KO in a duel, an elimination in a royale.
-func (r *room) knockOut(p *player) []outgoing {
+func (r *room) knockOut(p *player) []outgoing { return r.topOut(p) }
+
+// topOut scores participant p's top-out: a KO in a duel; in a royale an elimination of p if it is still
+// alive, with PLAYERS to the room when that ends the match.
+func (r *room) topOut(p *player) []outgoing {
 	if m := r.match; m != nil && m.royale && m.alive[p] {
 		out := r.eliminate(p)
 		if r.match == nil {

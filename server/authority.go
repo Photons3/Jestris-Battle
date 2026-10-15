@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	maxInputEvents       = 64 // kMaxInputEvents in src/net/protocol.hpp
 	defaultSdf           = 20 // kDefaultSoftDropFactor
 	minSdf               = 5  // kMinSdf
 	maxSdf               = 40 // kMaxSdf
 	runnerTick           = 100 * time.Millisecond
 	runnerQueuePerPlayer = 64
 	resyncInterval       = 100 * time.Millisecond
+	resyncLimitWindow    = 10 * time.Second // -max-resyncs counts the RESYNCs sent within this
 	defaultLead          = 250 * time.Millisecond
 	defaultLag           = time.Second
 	defaultGarbageWindow = 750 * time.Millisecond
@@ -113,7 +113,7 @@ type playerSim struct {
 	canonical      []string // accepted and forced entries, as t:token
 	needResync     bool
 	sawINSinceMark bool
-	resyncTimes    []time.Time
+	resyncTimes    []time.Time // RESYNCs sent within the last resyncLimitWindow
 	simAttack      int
 	simTopOuts     int
 	claimedSent    int
@@ -132,8 +132,10 @@ const (
 	effAttack                    // the simulation of from sent lines
 	effTopOut                    // the simulation of from topped out
 	effEliminated
-	effSnap   // SNAP <from's id> text
-	effResync // text to from
+	effSnap     // SNAP <from's id> text
+	effResync   // text to from
+	effKick     // from is over -max-resyncs
+	effSimError // the simulation failed: the match ends for everyone with LEFT
 )
 
 // runnerEffect is an output the runner applies under Hub.mu.
@@ -248,7 +250,7 @@ func (r *matchRunner) handle(msg runnerMsg) {
 	ps := r.players[msg.from]
 	switch msg.kind {
 	case msgIN:
-		if !ps.left {
+		if !ps.left && !(ps.eliminated && r.auth.mode == "enforce") { // an enforced elimination is final
 			r.handleIN(ps, msg.text)
 		}
 	case msgSDF:
@@ -301,14 +303,21 @@ func (r *matchRunner) tick(h *Hub, now time.Time) {
 			}
 			r.effects = append(r.effects, runnerEffect{kind: effResync, from: q, text: text})
 			ps.needResync, ps.sawINSinceMark = false, false
-			ps.resyncTimes = append(ps.resyncTimes, now)
+			ps.resyncTimes = append(slices.DeleteFunc(ps.resyncTimes, func(at time.Time) bool {
+				return now.Sub(at) >= resyncLimitWindow
+			}), now)
+			if len(ps.resyncTimes) > r.auth.maxResyncs {
+				r.effects = append(r.effects, runnerEffect{kind: effKick, from: q})
+			}
 		}
 	}
 	r.apply(h)
 }
 
-// apply sends the effects in one locked section, unless the match has ended or been replaced since. Log mode
-// only compares the simulation's attacks and top-outs; it sends the GARBs of the claimed attacks.
+// apply sends the effects in one locked section, unless the match has ended or been replaced since; an effect
+// that ends the match drops the rest. Log mode only compares the simulation's attacks and top-outs; it sends
+// the GARBs of the claimed attacks. Enforce mode routes the simulation's attacks as GARBs and scores its
+// top-outs.
 func (r *matchRunner) apply(h *Hub) {
 	if len(r.effects) == 0 {
 		return
@@ -317,12 +326,36 @@ func (r *matchRunner) apply(h *Hub) {
 	r.effects = nil
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if r.room.match != r.match || r.room.matchID != r.id {
-		return
-	}
 	var out []outgoing
 	for _, e := range effects {
+		if r.room.match != r.match || r.room.matchID != r.id {
+			break
+		}
+		enforce := r.auth.mode == "enforce"
 		switch e.kind {
+		case effAttack:
+			if enforce && e.from.room == r.room && r.match.alive[e.from] {
+				to := h.routeGarbage(e.from, e.lines)
+				target := r.players[to]
+				id := target.nextGarbageID
+				target.nextGarbageID++
+				target.pending[id] = garbageWindow{lines: e.lines, t0: target.t}
+				if to.room == r.room {
+					out = append(out, outgoing{to, fmt.Sprintf("GARB %d %d", id, e.lines)})
+				}
+			}
+		case effTopOut:
+			if enforce {
+				out = append(out, r.room.topOut(e.from)...)
+			}
+		case effKick:
+			if e.from.room == r.room {
+				e.from.disconnect()
+			}
+		case effSimError:
+			out = append(out, r.match.tellConnected(r.room, "LEFT")...)
+			r.room.endMatch()
+			out = append(out, r.room.broadcast(r.room.rosterMessage())...)
 		case effGarbage:
 			if e.to.room == r.room {
 				out = append(out, outgoing{e.to, fmt.Sprintf("GARB %d %d", e.id, e.lines)})
@@ -368,12 +401,19 @@ func (r *matchRunner) mark(ps *playerSim, rule string) {
 	}
 }
 
-// fail logs the first simulation error of the match and stops simulating it.
+// fail logs the first simulation error of the match and stops simulating it. In enforce mode it also ends
+// the match: the server never falls back to trusting clients.
 func (r *matchRunner) fail(ps *playerSim, err error) {
-	if !r.failed {
-		r.failed = true
-		log.Printf("authority room=%s seed=%d player=%d err=%v", r.room.code, r.seed, ps.id, err)
+	if r.failed {
+		return
 	}
+	r.failed = true
+	if r.auth.mode != "enforce" {
+		log.Printf("authority room=%s seed=%d player=%d err=%v", r.room.code, r.seed, ps.id, err)
+		return
+	}
+	log.Printf("sim error room=%s seed=%d player=%d: %v", r.room.code, r.seed, ps.id, err)
+	r.effects = append(r.effects, runnerEffect{kind: effSimError, from: ps.p})
 }
 
 // ensureGame creates ps's game with soft-drop factor sdf unless it exists; false once the simulation failed.

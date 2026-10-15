@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -8,19 +10,26 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"tetris-server/sim"
 )
 
 // fakeSim is a scripted gameSim: it records every call that changes a game and returns the attacks and
 // top-outs a test sets per handle.
 type fakeSim struct {
-	calls   []string
-	handles int
-	attacks map[int][]int // queued TakeAttack results, oldest first
-	topOuts map[int]int
-	closed  bool
+	calls      []string
+	handles    int
+	attacks    map[int][]int // queued TakeAttack results, oldest first
+	topOuts    map[int]int
+	eliminated map[int]bool
+	snaps      map[int]string // Snapshot results; "snap" when unset
+	advanceErr error          // returned by every Advance once set
+	closed     bool
 }
 
-func newFakeSim() *fakeSim { return &fakeSim{attacks: map[int][]int{}, topOuts: map[int]int{}} }
+func newFakeSim() *fakeSim {
+	return &fakeSim{attacks: map[int][]int{}, topOuts: map[int]int{}, eliminated: map[int]bool{}, snaps: map[int]string{}}
+}
 
 func (f *fakeSim) record(format string, a ...any) {
 	f.calls = append(f.calls, fmt.Sprintf(format, a...))
@@ -36,13 +45,22 @@ func (f *fakeSim) AcceptGarbage(h, id, lines int) error {
 	f.record("AcceptGarbage(%d,%d,%d)", h, id, lines)
 	return nil
 }
-func (f *fakeSim) Advance(h, ms int) error        { f.record("Advance(%d,%d)", h, ms); return nil }
+func (f *fakeSim) Advance(h, ms int) error {
+	f.record("Advance(%d,%d)", h, ms)
+	return f.advanceErr
+}
 func (f *fakeSim) T(h int) (int, error)           { return 0, nil }
 func (f *fakeSim) TopOuts(h int) (int, error)     { return f.topOuts[h], nil }
-func (f *fakeSim) Eliminated(h int) (bool, error) { return false, nil }
+func (f *fakeSim) Eliminated(h int) (bool, error) { return f.eliminated[h], nil }
 func (f *fakeSim) Hash(h int) (uint64, error)     { return 0, nil }
-func (f *fakeSim) Snapshot(h int) (string, error) { return "snap", nil }
 func (f *fakeSim) Close() error                   { f.closed = true; return nil }
+
+func (f *fakeSim) Snapshot(h int) (string, error) {
+	if s, ok := f.snaps[h]; ok {
+		return s, nil
+	}
+	return "snap", nil
+}
 
 func (f *fakeSim) TakeAttack(h int) (int, error) {
 	if len(f.attacks[h]) == 0 {
@@ -537,6 +555,333 @@ func TestINWithTheRealSimulation(t *testing.T) {
 	}
 	if got, err := r.sim.T(ps.h); err != nil || got != 1600 {
 		t.Errorf("sim t = %d, %v; want 1600", got, err)
+	}
+	r.finish()
+}
+
+// enforce configures a direct hub for -authority enforce.
+func enforce(h *Hub) { h.auth.mode = "enforce" }
+
+// withPrefix keeps the messages that start with prefix.
+func withPrefix(msgs []string, prefix string) []string {
+	return slices.DeleteFunc(msgs, func(m string) bool { return !strings.HasPrefix(m, prefix) })
+}
+
+func TestEnforceIgnoresForgedAttackAndDead(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	d.h.receive(d.ps[0], "ATK 40")
+	d.h.receive(d.ps[1], "DEAD")
+	d.h.receive(d.ps[1], "SNAP 0 0 0 board")
+	r.drain(d.h)
+	d.expectQueues(t, nil, nil)
+	m := d.h.rooms["AAAA"].match
+	if m == nil || m.sent[d.ps[0]] != 0 || m.kos[d.ps[0]] != 0 || len(r.in) != 0 {
+		t.Errorf("a forged message changed the match: %+v", m)
+	}
+
+	d = directMatchWith(t, enforce, "Ann", "Bob", "Cat")
+	d.h.receive(d.ps[0], "ATK 40")
+	d.h.receive(d.ps[1], "DEAD")
+	d.runner().drain(d.h)
+	d.expectQueues(t, nil, nil, nil)
+}
+
+func TestEnforceRoutesSimAttackAsGarb(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	d.at(1000)
+	d.sim().attacks[0] = []int{4}
+	d.h.receive(d.ps[0], "IN 100") // Ann's game is handle 0
+	r.drain(d.h)
+	d.expectQueues(t, nil, []string{"GARB 1 4"})
+	if got := d.h.rooms["AAAA"].match.sent[d.ps[0]]; got != 4 {
+		t.Errorf("sent = %d, want 4", got)
+	}
+	if w, ok := r.players[d.ps[1]].pending[1]; !ok || w.lines != 4 {
+		t.Errorf("Bob's pending %v", r.players[d.ps[1]].pending)
+	}
+
+	d = directMatchWith(t, func(h *Hub) {
+		enforce(h)
+		h.pickTarget = func(n int) int { return n - 1 }
+	}, "Ann", "Bob", "Cat")
+	d.at(1000)
+	d.sim().attacks[0] = []int{4}
+	d.h.receive(d.ps[0], "IN 100")
+	d.runner().drain(d.h)
+	d.expectQueues(t, nil, nil, []string{"GARB 1 4"})
+}
+
+func TestEnforceSimTopOutScoresKOAndEliminates(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	f := d.sim()
+	d.at(1000)
+	f.attacks[0] = []int{2}
+	f.topOuts[0] = 1
+	d.h.receive(d.ps[0], "IN 100")
+	r.drain(d.h)
+	d.expectQueues(t, []string{"KO 0 1"}, []string{"GARB 1 2", "KO 1 0"})
+	f.topOuts[0] = 3 // two more at once: the second wins the duel
+	d.h.receive(d.ps[0], "IN 200")
+	r.drain(d.h)
+	d.expectQueues(t,
+		[]string{"KO 0 2", "KO 0 3", "OVER LOSE KO 2 0", "PLAYERS 1 1:Ann:0 2:Bob:0"},
+		[]string{"KO 2 0", "KO 3 0", "OVER WIN KO 0 2", "PLAYERS 1 1:Ann:0 2:Bob:0"})
+
+	d = directMatchWith(t, enforce, "Ann", "Bob", "Cat")
+	r = d.runner()
+	f = d.sim()
+	d.at(1000)
+	for _, p := range d.ps {
+		d.h.receive(p, "SDF 20") // handles 0, 1, 2 in order
+	}
+	f.topOuts[1], f.eliminated[1] = 1, true
+	d.h.receive(d.ps[1], "IN 100")
+	r.drain(d.h)
+	d.expectQueues(t, []string{"OUT 2 3"}, []string{"OUT 2 3"}, []string{"OUT 2 3"})
+	if !r.players[d.ps[1]].eliminated {
+		t.Error("Bob's game is not marked eliminated")
+	}
+	steps := f.steps(1)
+	d.h.receive(d.ps[1], "IN 300 200:L")
+	d.at(5000)
+	r.drain(d.h)
+	r.tick(d.h, d.now)
+	if got := f.steps(1); !slices.Equal(got, steps) {
+		t.Errorf("Bob's game moved after his elimination: %q", got[len(steps):])
+	}
+	for _, p := range d.ps {
+		queued(p) // the tick's SNAPs
+	}
+	f.topOuts[2], f.eliminated[2] = 1, true
+	d.h.receive(d.ps[2], "IN 100")
+	r.drain(d.h)
+	end := []string{"OUT 3 2", "OUT 1 1", "PLAYERS 1 1:Ann:0 2:Bob:0 3:Cat:0"}
+	d.expectQueues(t, end, end, end)
+	if d.h.rooms["AAAA"].match != nil {
+		t.Error("the royale did not end")
+	}
+}
+
+func TestEnforceSnapshotsFromSimOnlyWhenChanged(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	d.h.receive(d.ps[0], "SDF 20") // handle 0
+	d.h.receive(d.ps[1], "SDF 20") // handle 1
+	r.drain(d.h)
+	d.at(100)
+	r.tick(d.h, d.now)
+	d.at(200)
+	r.tick(d.h, d.now)
+	d.expectQueues(t, []string{"SNAP 2 snap"}, []string{"SNAP 1 snap"})
+	d.sim().snaps[0] = "changed"
+	d.at(300)
+	r.tick(d.h, d.now)
+	d.expectQueues(t, nil, []string{"SNAP 1 changed"})
+}
+
+func TestResyncWaitsForNextINAndRateLimits(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	a := d.ps[0]
+	// resyncs takes Ann's queue and keeps the RESYNCs; the ticks also send SNAPs.
+	resyncs := func() []string { return withPrefix(queued(a), "RESYNC") }
+	d.at(1000)
+	d.h.receive(a, "IN 500 100:L")
+	d.h.receive(a, "SDF 10") // too late: a mark
+	r.drain(d.h)
+	r.tick(d.h, d.now)
+	if got := resyncs(); len(got) != 0 {
+		t.Errorf("RESYNC before the next IN: %q", got)
+	}
+	d.at(1050)
+	d.h.receive(a, "IN 600 550:R")
+	r.drain(d.h)
+	d.at(1100)
+	r.tick(d.h, d.now)
+	if got, want := resyncs(), []string{"RESYNC 600 100:L 550:R"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	d.at(1150)
+	d.h.receive(a, "IN x") // two marks, each with its IN, within 100 ms
+	d.h.receive(a, "IN y")
+	r.drain(d.h)
+	r.tick(d.h, d.now) // 50 ms after the last RESYNC: not yet
+	if got := resyncs(); len(got) != 0 {
+		t.Errorf("RESYNC within 100 ms: %q", got)
+	}
+	d.at(1200)
+	r.tick(d.h, d.now)
+	d.at(1250)
+	r.tick(d.h, d.now)
+	if got, want := resyncs(), []string{"RESYNC 600 100:L 550:R"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	queued(d.ps[1])
+}
+
+func TestHiddenTabIsNotKicked(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	a, b := d.ps[0], d.ps[1]
+	d.h.receive(a, "SDF 20") // handle 0
+	d.h.receive(b, "SDF 20") // handle 1
+	r.drain(d.h)
+	f := d.sim()
+	for range 300 {
+		f.attacks[0] = append(f.attacks[0], 1)
+	}
+	var bob []string
+	for ms := 100; ms <= 30000; ms += 100 {
+		d.at(ms)
+		d.h.receive(a, fmt.Sprintf("IN %d", ms))
+		r.drain(d.h)
+		r.tick(d.h, d.now)
+		queued(a)
+		bob = append(bob, queued(b)...)
+	}
+	if got := withPrefix(slices.Clone(bob), "RESYNC"); len(got) != 0 {
+		t.Fatalf("a hidden tab got %d RESYNCs", len(got))
+	}
+	if got := withPrefix(slices.Clone(bob), "GARB"); len(got) != 300 {
+		t.Fatalf("%d GARBs, want 300", len(got))
+	}
+	d.h.receive(b, "IN 30000 100:G1x1 200:G2x1 300:G3x1")
+	r.drain(d.h)
+	bob = nil
+	for ms := 30100; ms <= 32000; ms += 100 {
+		d.at(ms)
+		r.tick(d.h, d.now)
+		bob = append(bob, queued(b)...)
+	}
+	if got := withPrefix(bob, "RESYNC"); len(got) < 1 || len(got) > 2 {
+		t.Errorf("%d RESYNCs after waking, want 1 or 2", len(got))
+	}
+	if b.kicked {
+		t.Error("the hidden tab was kicked")
+	}
+}
+
+func TestAbuserIsKicked(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	a := d.ps[0]
+	var resyncs int
+	for i := range 11 {
+		if a.kicked {
+			t.Fatalf("kicked after %d bad INs", i)
+		}
+		d.at(1000 + 150*i)
+		d.h.receive(a, "IN x")
+		r.drain(d.h)
+		r.tick(d.h, d.now)
+		resyncs += len(withPrefix(queued(a), "RESYNC"))
+	}
+	if resyncs != 11 || !a.kicked {
+		t.Errorf("%d RESYNCs, kicked=%v; want 11 and a kick", resyncs, a.kicked)
+	}
+	select {
+	case <-a.kick:
+	default:
+		t.Error("the kick channel is open")
+	}
+	if d.ps[1].kicked {
+		t.Error("the opponent was kicked")
+	}
+}
+
+func TestSimErrorEndsMatch(t *testing.T) {
+	logs := captureLog(t)
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	d.sim().advanceErr = errors.New("boom")
+	d.at(1000)
+	d.h.receive(d.ps[0], "IN 100 50:L")
+	r.drain(d.h)
+	end := []string{"LEFT", "PLAYERS 1 1:Ann:0 2:Bob:0"}
+	d.expectQueues(t, end, end)
+	if d.h.rooms["AAAA"].match != nil || !d.clock.timer(0).isStopped() {
+		t.Error("the match did not end")
+	}
+	if !strings.Contains(logs.String(), "sim error room=AAAA seed=101 player=1: boom") {
+		t.Errorf("log %q lacks the sim error", logs.String())
+	}
+	d.h.receive(d.ps[0], "ATK 4") // no fallback to the client's word
+	d.expectQueues(t, nil, nil)
+
+	d = directMatchWith(t, enforce, "Ann", "Bob", "Cat")
+	d.sim().advanceErr = errors.New("boom")
+	d.at(3000)
+	d.runner().tick(d.h, d.now)
+	end = []string{"LEFT", "PLAYERS 1 1:Ann:0 2:Bob:0 3:Cat:0"}
+	d.expectQueues(t, end, end, end)
+}
+
+func TestLeaverIsNotEliminatedTwice(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob", "Cat")
+	r := d.runner()
+	for _, p := range d.ps {
+		d.h.receive(p, "SDF 20") // handles 0, 1, 2 in order
+	}
+	r.drain(d.h)
+	f := d.sim()
+	f.topOuts[2], f.eliminated[2] = 1, true // what Cat's game would do if it were left running
+	d.h.leave(d.ps[2])
+	want := []string{"OUT 3 3", "PLAYERS 1 1:Ann:1 2:Bob:1"}
+	d.expectQueues(t, want, want, nil)
+	var outs []string
+	for ms := 100; ms <= 5000; ms += 100 {
+		d.at(ms)
+		r.drain(d.h)
+		r.tick(d.h, d.now)
+		for _, p := range d.ps {
+			outs = append(outs, withPrefix(queued(p), "OUT")...)
+		}
+	}
+	if len(outs) != 0 {
+		t.Errorf("after leaving: %q", outs)
+	}
+	if got := f.steps(2); len(got) != 0 {
+		t.Errorf("the leaver's game was advanced: %q", got)
+	}
+}
+
+// The production simulation decides a duel KO from IN alone: Ann stacks hard drops until she tops out.
+func TestRealSimDuelKO(t *testing.T) {
+	e, err := sim.NewEngine(context.Background())
+	if err != nil {
+		t.Skipf("no game core: %v", err)
+	}
+	e.Close(context.Background())
+	d := directMatchWith(t, func(h *Hub) {
+		enforce(h)
+		h.newSim = newSharedSim
+	}, "Ann", "Bob")
+	r := d.runner()
+	a, b := d.ps[0], d.ps[1]
+	d.h.receive(a, "SDF 20")
+	var annKO, bobKO []string
+	t0 := 20
+	for batch := 0; batch < 50 && len(annKO) == 0; batch++ {
+		var in strings.Builder
+		for range 10 {
+			fmt.Fprintf(&in, " %d:HD", t0)
+			t0 += 20
+		}
+		d.at(t0)
+		d.h.receive(a, fmt.Sprintf("IN %d%s", t0, in.String()))
+		r.drain(d.h)
+		annKO = append(annKO, withPrefix(queued(a), "KO")...)
+		bobKO = append(bobKO, withPrefix(queued(b), "KO")...)
+	}
+	if r.failed {
+		t.Fatal("the simulation failed")
+	}
+	if len(annKO) == 0 || annKO[0] != "KO 0 1" || len(bobKO) == 0 || bobKO[0] != "KO 1 0" {
+		t.Errorf("Ann got %q, Bob got %q; want KO 0 1 and KO 1 0", annKO, bobKO)
 	}
 	r.finish()
 }
