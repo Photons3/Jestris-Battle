@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "match_script.hpp"
@@ -150,15 +151,29 @@ TEST_CASE("match_game: replay matches live play however frames are split") {
     }
 }
 
-TEST_CASE("match_game: replay stops at upTo") {
+TEST_CASE("match_game: replay stops at upTo, with the events stamped upTo applied") {
     const MatchSetup setup = scriptSetup(7, false);
+    std::vector<LogEntry> events = scriptEvents(7);
+    // An instant at which the script has events, plus a garbage batch stamped exactly then (as in a RESYNC <T>).
+    const int upTo = std::find_if(events.begin(), events.end(), [](const LogEntry& e) { return e.t >= 20000; })->t;
+    const auto firstLater = std::find_if(events.begin(), events.end(), [upTo](const LogEntry& e) { return e.t > upTo; });
+    events.insert(firstLater, LogEntry{upTo, LogCode::Garbage, 99, 3});
+    std::vector<LogEntry> upToEvents, later;
+    for (const LogEntry& e : events) (e.t > upTo ? later : upToEvents).push_back(e);
+
     MatchGame live(setup);
-    runScript(live, scriptEvents(7), 1, 20000);
-    const std::uint64_t at20 = live.hash();
-    runScript(live, scriptEvents(7), 1, 40000);
-    const MatchGame replayed = MatchGame::replay(setup, live.log(), 20000);
-    CHECK(replayed.t() == 20000);
-    CHECK(replayed.hash() == at20);
+    runScript(live, upToEvents, 1, upTo);
+    REQUIRE(live.t() == upTo);
+    for (const LogEntry& e : upToEvents)
+        if (e.t == upTo) live.apply(e);
+    const std::uint64_t atUpTo = live.hash();
+    runScript(live, later, 1, upTo + 20000);
+    REQUIRE(live.log().back().t > upTo);  // entries after upTo exist and must be left out
+
+    const MatchGame replayed = MatchGame::replay(setup, live.log(), upTo);
+    CHECK(replayed.t() == upTo);
+    CHECK(replayed.hasGarbage(99));
+    CHECK(replayed.hash() == atUpTo);
 }
 
 TEST_CASE("match_game: garbage accepted while frozen replays identically") {

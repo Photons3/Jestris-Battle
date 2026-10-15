@@ -53,7 +53,7 @@ public:
     std::uint64_t hash() const;
 
     // A fresh match advanced to t == upTo with `log` applied: each entry before the step at its t, in log order.
-    // Entries stamped upTo or later belong to steps not yet run and are left out.
+    // Entries stamped upTo are applied too (as a live game at t() == upTo that took them); later ones are left out.
     static MatchGame replay(const MatchSetup& setup, const std::vector<LogEntry>& log, int upTo);
 
 private:

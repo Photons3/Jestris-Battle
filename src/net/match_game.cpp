@@ -133,6 +133,7 @@ MatchGame MatchGame::replay(const MatchSetup& setup, const std::vector<LogEntry>
         for (; next < log.size() && log[next].t <= match.t_; ++next) match.apply(log[next]);
         match.step();
     }
+    for (; next < log.size() && log[next].t <= upTo; ++next) match.apply(log[next]);  // this instant's events
     return match;
 }
 
