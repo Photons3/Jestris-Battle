@@ -288,3 +288,43 @@ TEST_CASE("protocol: malformed player-id messages are rejected") {
         CHECK_FALSE(decode(text).has_value());
     }
 }
+
+TEST_CASE("protocol: IN round-trips every token") {
+    InputBatch batch{900, {}};
+    const LogCode codes[] = {LogCode::Left,     LogCode::Right,    LogCode::RotateCW, LogCode::RotateCCW,
+                             LogCode::HardDrop, LogCode::Hold,     LogCode::LeftWall, LogCode::RightWall,
+                             LogCode::SoftOn,   LogCode::SoftOff,  LogCode::Garbage};
+    int t = 10;
+    for (LogCode code : codes) {
+        LogEntry entry{t++, code};
+        if (code == LogCode::Garbage) entry.garbageId = 3, entry.garbageLines = 2;
+        batch.entries.push_back(entry);
+    }
+    const std::string text = "IN 900 10:L 11:R 12:CW 13:CCW 14:HD 15:H 16:LW 17:RW 18:S+ 19:S- 20:G3x2";
+    CHECK(encode(batch) == text);
+    CHECK(decode(text) == Message{batch});
+}
+
+TEST_CASE("protocol: SDF, GARB and RESYNC round-trip") {
+    for (const char* text : {"SDF 0", "SDF 40", "GARB 5 4", "RESYNC 120 3:HD 100:G1x2"}) {
+        CAPTURE(text);
+        const auto message = decode(text);
+        REQUIRE(message.has_value());
+        CHECK(encode(*message) == text);
+    }
+    CHECK(decode("SDF 40") == Message{SoftDropSetting{40}});
+    CHECK(decode("GARB 5 4") == Message{GarbageIn{5, 4}});
+    CHECK(decode("RESYNC 120 3:HD 100:G1x2") ==
+          Message{Resync{120, {{3, LogCode::HardDrop}, {100, LogCode::Garbage, 1, 2}}}});
+}
+
+TEST_CASE("protocol: malformed input batches are rejected") {
+    std::string tooMany = "IN 100";
+    for (int i = 0; i <= kMaxInputEvents; ++i) tooMany += " " + std::to_string(i) + ":L";
+    std::vector<std::string> bad{tooMany, "IN 10 11:L", "IN 10 5:L 4:R", "IN 10 5:X", "IN 10 5:G0x2", "SDF 3",
+                                 "SDF 41", "GARB 0 1", "GARB 1 41", "IN -1", "RESYNC 5 3:L 2:R"};
+    for (const std::string& text : bad) {
+        CAPTURE(text);
+        CHECK_FALSE(decode(text).has_value());
+    }
+}
