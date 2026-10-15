@@ -57,10 +57,8 @@ func main() {
 	mux.Handle("/", web)
 	hub := NewHub()
 	hub.matchLength = *match
-	if s, err := newSharedSim(); err != nil { // compiles the game core now rather than at the first BEGIN
-		log.Printf("game core unavailable, matches run unsimulated: %v", err)
-	} else {
-		s.Close()
+	if err := warmEngine(*authMode, newSharedSim); err != nil {
+		log.Fatal(err)
 	}
 	hub.auth = authority{mode: *authMode, lead: *lead, lag: *lag, garbageWindow: *garbageWindow, maxResyncs: *maxResyncs}
 	for _, o := range strings.Split(*origins, ",") {

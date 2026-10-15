@@ -87,7 +87,7 @@ type Engine struct {
 }
 
 func NewEngine(ctx context.Context) (*Engine, error) {
-	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig()) // the compiler where supported, else the interpreter
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
 		rt.Close(ctx)
 		return nil, err

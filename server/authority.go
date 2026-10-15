@@ -65,6 +65,20 @@ var (
 	engineErr  error
 )
 
+// warmEngine compiles the game core now rather than at the first BEGIN. Without it log mode runs matches
+// unsimulated; enforce mode would end every match at once, so the error is returned for main to stop on.
+func warmEngine(mode string, newSim func() (gameSim, error)) error {
+	s, err := newSim()
+	if err != nil {
+		if mode == "enforce" {
+			return fmt.Errorf("-authority enforce needs the game core: %w", err)
+		}
+		log.Printf("game core unavailable, matches run unsimulated: %v", err)
+		return nil
+	}
+	return s.Close()
+}
+
 // newSharedSim instantiates the game core for one match from the process-wide engine, which compiles the
 // module on first use.
 func newSharedSim() (gameSim, error) {
@@ -329,16 +343,8 @@ func (r *matchRunner) tick(h *Hub, now time.Time) {
 		if r.auth.mode != "enforce" {
 			continue
 		}
-		if ps.started && !r.failed {
-			snap, err := r.sim.Snapshot(ps.h)
-			if err != nil {
-				r.fail(ps, err)
-				continue
-			}
-			if snap != ps.lastSnap {
-				ps.lastSnap = snap
-				r.effects = append(r.effects, runnerEffect{kind: effSnap, from: q, text: snap})
-			}
+		if r.snapshot(ps); r.failed {
+			continue
 		}
 		due := len(ps.resyncTimes) == 0 || now.Sub(ps.resyncTimes[len(ps.resyncTimes)-1]) >= resyncInterval
 		if ps.needResync && ps.sawINSinceMark && due {
@@ -382,11 +388,14 @@ func (r *matchRunner) apply(h *Hub) {
 			if enforce && e.from.room == r.room && r.match.alive[e.from] {
 				to := h.routeGarbage(e.from, e.lines)
 				target := r.players[to]
-				id := target.nextGarbageID
-				target.nextGarbageID++
-				target.pending[id] = garbageWindow{lines: e.lines, t0: target.t}
-				if to.room == r.room {
-					out = append(out, outgoing{to, fmt.Sprintf("GARB %d %d", id, e.lines)})
+				for left := e.lines; left > 0; left -= maxAttack { // the client takes at most 40 lines per GARB
+					lines := min(left, maxAttack)
+					id := target.nextGarbageID
+					target.nextGarbageID++
+					target.pending[id] = garbageWindow{lines: lines, t0: target.t}
+					if to.room == r.room {
+						out = append(out, outgoing{to, fmt.Sprintf("GARB %d %d", id, lines)})
+					}
 				}
 			}
 		case effTopOut:
@@ -667,17 +676,36 @@ func (r *matchRunner) advanceTo(ps *playerSim, target int) {
 		r.fail(ps, err)
 		return
 	}
-	for ; ps.simTopOuts < topOuts; ps.simTopOuts++ {
-		r.effects = append(r.effects, runnerEffect{kind: effTopOut, from: ps.p})
-	}
 	eliminated, err := r.sim.Eliminated(ps.h)
 	if err != nil {
 		r.fail(ps, err)
 		return
 	}
+	if eliminated && !ps.eliminated && r.auth.mode == "enforce" {
+		r.snapshot(ps) // ticks skip an eliminated player: the board it died with goes out now, before its OUT
+	}
+	for ; ps.simTopOuts < topOuts; ps.simTopOuts++ {
+		r.effects = append(r.effects, runnerEffect{kind: effTopOut, from: ps.p})
+	}
 	if eliminated && !ps.eliminated {
 		ps.eliminated = true
 		r.effects = append(r.effects, runnerEffect{kind: effEliminated, from: ps.p})
+	}
+}
+
+// snapshot queues ps's SNAP for the others if it changed since the last one.
+func (r *matchRunner) snapshot(ps *playerSim) {
+	if !ps.started || r.failed {
+		return
+	}
+	snap, err := r.sim.Snapshot(ps.h)
+	if err != nil {
+		r.fail(ps, err)
+		return
+	}
+	if snap != ps.lastSnap {
+		ps.lastSnap = snap
+		r.effects = append(r.effects, runnerEffect{kind: effSnap, from: ps.p, text: snap})
 	}
 }
 

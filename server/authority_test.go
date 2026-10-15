@@ -635,6 +635,20 @@ func TestFloodDoesNotDropLeft(t *testing.T) {
 	}
 }
 
+func TestWarmEngine(t *testing.T) {
+	failing := func() (gameSim, error) { return nil, errors.New("no engine") }
+	if err := warmEngine("enforce", failing); err == nil {
+		t.Error("enforce mode started without a game core")
+	}
+	if err := warmEngine("log", failing); err != nil {
+		t.Errorf("log mode: %v", err)
+	}
+	f := newFakeSim()
+	if err := warmEngine("enforce", func() (gameSim, error) { return f, nil }); err != nil || !f.closed {
+		t.Errorf("err=%v closed=%v", err, f.closed)
+	}
+}
+
 func TestRunnerIgnoresNonParticipants(t *testing.T) {
 	d := directMatch(t, "Ann", "Bob")
 	r := d.runner()
@@ -753,6 +767,59 @@ func TestEnforceRoutesSimAttackAsGarb(t *testing.T) {
 	d.expectQueues(t, nil, nil, []string{"GARB 1 4"})
 }
 
+// The client decodes at most 40 lines per GARB, so a bigger simulated attack goes out as several batches.
+func TestEnforceSplitsGarbageAt40Lines(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	d.at(1000)
+	d.sim().attacks[0] = []int{85}
+	d.h.receive(d.ps[0], "IN 100")
+	r.drain(d.h)
+	d.expectQueues(t, nil, []string{"GARB 1 40", "GARB 2 40", "GARB 3 5"})
+	pending := r.players[d.ps[1]].pending
+	if len(pending) != 3 || pending[1].lines != 40 || pending[3].lines != 5 {
+		t.Errorf("Bob's pending %v", pending)
+	}
+	if got := d.h.rooms["AAAA"].match.sent[d.ps[0]]; got != 85 {
+		t.Errorf("sent = %d, want 85", got)
+	}
+}
+
+// Ticks skip an eliminated player, so the board it died with goes out once at the elimination.
+func TestEnforceSendsTheFinalSnapshotAtElimination(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob", "Cat")
+	r := d.runner()
+	f := d.sim()
+	for _, p := range d.ps {
+		d.h.receive(p, "SDF 20") // handles 0, 1, 2 in order
+	}
+	r.drain(d.h)
+	d.at(100)
+	r.tick(d.h, d.now)
+	for _, p := range d.ps {
+		queued(p) // the first SNAPs
+	}
+	f.snaps[1] = "topped"
+	f.topOuts[1], f.eliminated[1] = 1, true
+	d.h.receive(d.ps[1], "IN 150")
+	r.drain(d.h)
+	d.expectQueues(t, []string{"SNAP 2 topped", "OUT 2 3"}, []string{"OUT 2 3"}, []string{"SNAP 2 topped", "OUT 2 3"})
+	for ms := 200; ms <= 1000; ms += 100 {
+		d.at(ms)
+		r.tick(d.h, d.now)
+	}
+	if got := withPrefix(queued(d.ps[0]), "SNAP 2"); len(got) != 0 {
+		t.Errorf("Bob's snapshot again: %q", got)
+	}
+	// Unchanged since the last tick: nothing more.
+	f.topOuts[2], f.eliminated[2] = 1, true
+	d.h.receive(d.ps[2], "IN 1000")
+	r.drain(d.h)
+	if got := withPrefix(queued(d.ps[0]), "SNAP 3"); len(got) != 0 {
+		t.Errorf("an unchanged final snapshot went out: %q", got)
+	}
+}
+
 func TestEnforceSimTopOutScoresKOAndEliminates(t *testing.T) {
 	d := directMatchWith(t, enforce, "Ann", "Bob")
 	r := d.runner()
@@ -780,7 +847,8 @@ func TestEnforceSimTopOutScoresKOAndEliminates(t *testing.T) {
 	f.topOuts[1], f.eliminated[1] = 1, true
 	d.h.receive(d.ps[1], "IN 100")
 	r.drain(d.h)
-	d.expectQueues(t, []string{"OUT 2 3"}, []string{"OUT 2 3"}, []string{"OUT 2 3"})
+	// Bob's board was never sent, so his final snapshot goes out with his elimination.
+	d.expectQueues(t, []string{"SNAP 2 snap", "OUT 2 3"}, []string{"OUT 2 3"}, []string{"SNAP 2 snap", "OUT 2 3"})
 	if !r.players[d.ps[1]].eliminated {
 		t.Error("Bob's game is not marked eliminated")
 	}

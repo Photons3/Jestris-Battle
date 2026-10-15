@@ -105,6 +105,9 @@ Rollout:
    bug or loosen a timing flag until it doesn't.
 3. Restart with `-authority enforce`.
 
+Log mode never sends `RESYNC`, so it can't validate the client's reconciliation of one; only
+`enforce` exercises that path.
+
 ## Hosting on a Debian VPS
 
     scripts/setup.sh   # once: apt packages, emsdk into ~/emsdk, Go into /usr/local/go
