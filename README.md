@@ -115,6 +115,17 @@ Log mode never sends `RESYNC`, so it can't validate the client's reconciliation 
     scripts/run.sh     # serves on 0.0.0.0:8080; extra flags go to the server
     scripts/restart.sh # stops a running server, rebuilds, and starts it; same flags as run.sh
 
+To keep the server running across reboots and crashes, install it as a systemd service on port 80
+(re-run with other flags to change them; `--uninstall` removes it):
+
+    sudo scripts/install-service.sh                     # serves on 0.0.0.0:80, -authority log
+    sudo scripts/install-service.sh -authority enforce  # extra flags go to the server
+    journalctl -u jestris -f                            # logs
+    scripts/restart.sh                                  # rebuilds, then restarts the service
+
+The service runs as the checkout's owner, with only the capability to bind port 80. For a
+checkout under `/root`, it runs as root; set `SERVICE_USER` to choose another account.
+
 Plain `http://` and `ws://` work out of the box. The game connects with `wss://` whenever the
 page was loaded over `https://`, so HTTPS works in either of two ways:
 

@@ -7,6 +7,21 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER="$ROOT/build-server/tetris-server"
+NAME="${SERVICE_NAME:-jestris}"
+
+# Installed as a service (scripts/install-service.sh): rebuild, then let systemd restart it.
+if systemctl is-enabled --quiet "$NAME" 2>/dev/null; then
+  if [ "$#" -gt 0 ]; then
+    echo "The $NAME service keeps its own flags; change them with: sudo scripts/install-service.sh $*" >&2
+    exit 1
+  fi
+  "$ROOT/scripts/build.sh"
+  SUDO=""
+  if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; fi
+  echo "==> Restarting the $NAME service"
+  $SUDO systemctl restart "$NAME"
+  exec systemctl --no-pager --lines=5 status "$NAME"
+fi
 
 # Only servers running this checkout's binary, not other copies on the machine.
 pids=()
