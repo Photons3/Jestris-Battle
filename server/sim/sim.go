@@ -7,7 +7,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"strconv"
+	"math"
 	"strings"
 
 	"github.com/tetratelabs/wazero"
@@ -52,12 +52,32 @@ func ParseToken(tok string) (code int, garbageID, garbageLines int, ok bool) {
 	if !found {
 		return 0, 0, 0, false
 	}
-	id, err1 := strconv.Atoi(a)
-	lines, err2 := strconv.Atoi(b)
-	if err1 != nil || err2 != nil || id < 1 || lines < 1 || lines > 40 {
+	id, ok1 := parseDigits(a, math.MaxInt32)
+	lines, ok2 := parseDigits(b, 40)
+	if !ok1 || !ok2 || id < 1 || lines < 1 {
 		return 0, 0, 0, false
 	}
 	return -1, id, lines, true
+}
+
+// parseDigits accepts what protocol.cpp's from_chars accepts for a non-negative number: ASCII digits only
+// (leading zeros allowed, no sign), at most max.
+func parseDigits(s string, max int) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+		if n > max {
+			return 0, false
+		}
+	}
+	return n, true
 }
 
 // Engine holds the wazero runtime and the compiled module, shared by matches.
@@ -140,45 +160,68 @@ func (m *Match) call(name string, args ...uint64) (uint64, error) {
 	return r[0], nil
 }
 
-func i32(v int) uint64 { return api.EncodeI32(int32(v)) }
+// args encodes ints as WASM i32 arguments, or fails without poisoning the match when one does not fit.
+func args(vs ...int) ([]uint64, error) {
+	out := make([]uint64, len(vs))
+	for i, v := range vs {
+		if v < math.MinInt32 || v > math.MaxInt32 {
+			return nil, fmt.Errorf("sim: argument %d out of int32 range", v)
+		}
+		out[i] = api.EncodeI32(int32(v))
+	}
+	return out, nil
+}
 
-func (m *Match) callInt(name string, args ...uint64) (int, error) {
-	r, err := m.call(name, args...)
+func (m *Match) callInts(name string, vs ...int) (uint64, error) {
+	a, err := args(vs...)
+	if err != nil {
+		return 0, err
+	}
+	return m.call(name, a...)
+}
+
+func (m *Match) callInt(name string, vs ...int) (int, error) {
+	r, err := m.callInts(name, vs...)
 	return int(api.DecodeI32(r)), err
 }
 
 func (m *Match) New(seed uint32, level, players, sdf int) (int, error) {
-	return m.callInt("sim_new", api.EncodeU32(seed), i32(level), i32(players), i32(sdf))
+	a, err := args(level, players, sdf)
+	if err != nil {
+		return 0, err
+	}
+	r, err := m.call("sim_new", append([]uint64{api.EncodeU32(seed)}, a...)...)
+	return int(api.DecodeI32(r)), err
 }
 
 func (m *Match) Input(h, code int) error {
-	_, err := m.call("sim_input", i32(h), i32(code))
+	_, err := m.callInts("sim_input", h, code)
 	return err
 }
 
 func (m *Match) AcceptGarbage(h, id, lines int) error {
-	_, err := m.call("sim_accept_garbage", i32(h), i32(id), i32(lines))
+	_, err := m.callInts("sim_accept_garbage", h, id, lines)
 	return err
 }
 
 func (m *Match) Advance(h, ms int) error {
-	_, err := m.call("sim_advance", i32(h), i32(ms))
+	_, err := m.callInts("sim_advance", h, ms)
 	return err
 }
 
-func (m *Match) T(h int) (int, error)          { return m.callInt("sim_t", i32(h)) }
-func (m *Match) TakeAttack(h int) (int, error) { return m.callInt("sim_take_attack", i32(h)) }
-func (m *Match) TopOuts(h int) (int, error)    { return m.callInt("sim_top_outs", i32(h)) }
+func (m *Match) T(h int) (int, error)          { return m.callInt("sim_t", h) }
+func (m *Match) TakeAttack(h int) (int, error) { return m.callInt("sim_take_attack", h) }
+func (m *Match) TopOuts(h int) (int, error)    { return m.callInt("sim_top_outs", h) }
 
 func (m *Match) Eliminated(h int) (bool, error) {
-	v, err := m.callInt("sim_eliminated", i32(h))
+	v, err := m.callInt("sim_eliminated", h)
 	return v != 0, err
 }
 
-func (m *Match) Hash(h int) (uint64, error) { return m.call("sim_hash", i32(h)) }
+func (m *Match) Hash(h int) (uint64, error) { return m.callInts("sim_hash", h) }
 
 func (m *Match) Snapshot(h int) (string, error) {
-	n, err := m.callInt("sim_snapshot", i32(h))
+	n, err := m.callInt("sim_snapshot", h)
 	if err != nil {
 		return "", err
 	}

@@ -125,10 +125,45 @@ func TestParseToken(t *testing.T) {
 	if _, _, _, ok := ParseToken("G1x40"); !ok {
 		t.Error("G1x40 should parse")
 	}
-	for _, bad := range []string{"X", "G0x1", "G1x41", "G1x0", "G1", "Gx", "G1x", ""} {
+	for _, bad := range []string{"X", "G0x1", "G1x41", "G1x0", "G+1x2", "G1x+2", "G-1x2", "G1x-2", "G4294967297x1", "G2147483648x1", "G1x041", "G1x2x3", "G1", "Gx", "G1x", ""} {
 		if _, _, _, ok := ParseToken(bad); ok {
 			t.Errorf("%q should be rejected", bad)
 		}
+	}
+}
+
+func TestParseTokenLeadingZerosMatchCpp(t *testing.T) {
+	if c, id, n, ok := ParseToken("G01x02"); !ok || c != -1 || id != 1 || n != 2 {
+		t.Errorf("G01x02: got %d %d %d %v", c, id, n, ok)
+	}
+	if _, id, _, ok := ParseToken("G2147483647x1"); !ok || id != 2147483647 {
+		t.Errorf("max id: got %d %v", id, ok)
+	}
+}
+
+func TestArgumentsOutOfRangeAreErrors(t *testing.T) {
+	m := newMatch(t)
+	h, err := m.New(1, 1, 2, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Input(1<<32+h, CodeHardDrop); err == nil {
+		t.Error("Input: expected range error")
+	}
+	if err := m.AcceptGarbage(h, 1<<32+1, 1); err == nil {
+		t.Error("AcceptGarbage: expected range error")
+	}
+	if err := m.Advance(h, 1<<31); err == nil {
+		t.Error("Advance: expected range error")
+	}
+	if _, err := m.New(1, 1<<32+1, 2, 20); err == nil {
+		t.Error("New: expected range error")
+	}
+	if _, err := m.T(-1 << 40); err == nil {
+		t.Error("T: expected range error")
+	}
+	if _, err := m.Hash(h); err != nil {
+		t.Fatalf("match must not be poisoned: %v", err)
 	}
 }
 
