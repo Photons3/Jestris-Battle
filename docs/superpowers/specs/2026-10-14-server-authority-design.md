@@ -119,11 +119,16 @@ The server alone decides what goes in the canonical log. Accepted client events 
 
 New files: `src/net/match_game.{hpp,cpp}`. They're compiled into the client's `tetris_duel` library and into `jestris_sim.wasm`. `kMatchMs` and `kKoFlashMs` move from `src/app/duel.hpp` to `match_game.hpp`, so the server's module gets the same values. `duel.hpp` includes the header.
 
+`LogCode` and `LogEntry` live in `src/net/protocol.hpp`, so the protocol can encode them without including `match_game.hpp`.
+
 ```cpp
-struct MatchSetup { StartMatch start; bool royale; int softDropFactor; };
+// protocol.hpp
 enum class LogCode : std::uint8_t { Left, Right, RotateCW, RotateCCW, HardDrop, Hold, LeftWall, RightWall,
                                     SoftOn, SoftOff, Garbage };
-struct LogEntry { int t; LogCode code; int garbageId = 0; int garbageLines = 0; };
+struct LogEntry { int t = 0; LogCode code = LogCode::Left; int garbageId = 0; int garbageLines = 0; };
+
+// match_game.hpp
+struct MatchSetup { StartMatch start; int softDropFactor = kDefaultSoftDropFactor; bool royale() const; };  // 3+ players
 
 class MatchGame {
 public:
@@ -134,12 +139,15 @@ public:
     void advance(int ms);                      // 1 ms at a time, see rules below
     int t() const;
     bool frozen() const;                       // KO flash, time-up or eliminated
+    bool eliminated() const;                   // royale
+    int topOuts() const;                       // KOs (duel) or 1 once eliminated (royale), predicted locally
+    int koFlashMs() const;                     // KO flash left, for display
+    bool hasGarbage(int id) const;             // batch id already in the log
     std::vector<LogEntry> takeUnsent();        // entries not yet sent in an IN
     const std::vector<LogEntry>& log() const;
+    const MatchSetup& setup() const;
     const Game& game() const; Game& game();
-    int kos() const;                            // top-outs predicted locally (display only)
-    bool eliminated() const;                    // royale
-    std::uint64_t hash() const;                 // see section 5
+    std::uint64_t hash() const;                // see section 5
     static MatchGame replay(const MatchSetup& setup, const std::vector<LogEntry>& log, int upTo);
 };
 ```
@@ -148,10 +156,10 @@ public:
 1. **Gravity floor (royale only):** `setLevelFloor(startLevel + t / kRoyaleLevelStepMs)`, the rule from the rooms spec. `kRoyaleLevelStepMs` moves to `match_game.hpp` along with `kMatchMs` and `kKoFlashMs`. Royale has no clock and no KO flash, so rule 4 and the duel freeze never apply to it.
 2. **Tick:** if not frozen, `game.setSoftDrop(…)`, `setSoftDropFactor(sdf)`, then `tick(1)`.
 3. **Top-out:**
-   - **Duel:** `GameState::GameOver` means `resetBoard()` immediately and freeze until `t + kKoFlashMs`.
+   - **Duel:** `GameState::GameOver` means `resetBoard()` immediately and freeze until `t + 1 + kKoFlashMs`, so exactly the next `kKoFlashMs` steps don't tick.
    - **Royale:** `GameOver` means eliminated, frozen for good. The eliminated player's board stays in its game-over state, as `DuelSession` does today.
    - **Simultaneous royale top-outs:** the server decides the places. It handles each player's `IN` in the order the messages arrive, so a game that tops out later in server processing order can still be the last one alive and win. The client already handles `OUT <me> 1` after predicting its own elimination (`duel.cpp`: "survived a simultaneous top-out"), and that stays as is. Once the match is over, the server stops simulating an eliminated player's game and ignores any `IN` from them.
-4. **Time-up (duel):** at `t == kMatchMs`, finish any clear still animating (`while Clearing: tick(1)`), then freeze for good.
+4. **Time-up (duel):** when `t + 1 == kMatchMs` (after exactly `kMatchMs` ticks), finish any clear still animating (`while Clearing: tick(1)`), then freeze for good.
 5. `t++`.
 
 This replaces the top-out handling at the end of the frame in `DuelSession::update`. That handling made the KO's exact millisecond depend on how frames were split, which the server can't reproduce.
@@ -165,13 +173,13 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
 - **Flags:** `-sSTANDALONE_WASM --no-entry -sALLOW_MEMORY_GROWTH -sINITIAL_MEMORY=262144` (256 KB, or the smallest emscripten accepts), the same optimization level as the web client, and no JS glue.
 - **C interface (`extern "C"`, handles index a table inside the module):**
   ```
-  int  sim_new(u32 seed, int level, int royale, int sdf)   void sim_free(int h)
+  int  sim_new(u32 seed, int level, int players, int sdf)  void sim_free(int h)   // players: StartMatch ids 1..players
   void sim_input(int h, int code)                          void sim_accept_garbage(int h, int id, int lines)
   void sim_advance(int h, int ms)                          int  sim_t(int h)
-  int  sim_take_attack(int h)                              int  sim_take_topouts(int h)   // KOs/elimination since last call
+  int  sim_take_attack(int h)                              int  sim_top_outs(int h)   // MatchGame::topOuts(), cumulative
   int  sim_eliminated(int h)                               u64  sim_hash(int h)
-  int  sim_snapshot(int h, char* buf, int cap)             // encoded SNAP arguments; returns length
-  char* sim_buffer(int bytes)                              // scratch memory the host writes into and reads from
+  int  sim_snapshot(int h)                                 // writes the encoded SNAP arguments into sim_buffer(); returns length
+  char* sim_buffer()                                       // a static 4096-byte buffer the host reads from
   ```
 - **`sim_hash`:** FNV-1a over the board cells, active piece, hold, the next 5, pending garbage batches (lines, msLeft, holeX), score, lines, level, combo, back-to-back, and the drop, lock and clear timers. It's used for logs and tests only, never sent on the wire.
 - **Native builds:** `tetris_core` and `match_game.cpp` compile with `-ffp-contract=off` on every target. Clang on arm64 (Apple Silicon) otherwise fuses a multiply and an add into one instruction, which rounds differently, so the native fixtures would not match the WASM build.

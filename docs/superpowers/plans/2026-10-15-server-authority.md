@@ -122,6 +122,8 @@
   5. `t++`.
 - **`replay`:** applies each entry before the step at its `t`, in log order, and stops at `upTo`. `input`, `softDrop` and `acceptGarbage` stamp the current `t()`. `takeUnsent` returns entries logged since the last call.
 
+- **Shared script:** put the scripted random run (below) in `tests/match_script.hpp`, parameterised by seed and duel/royale, so Task 5 generates its fixtures from the same script.
+
 - [ ] **Step 1: Write the failing tests** in `tests/match_game_test.cpp`. Use `StartMatch{seed, 1, {1, 2}}` for a duel and `{1, 2, 3}` for a royale. A helper `topOut(MatchGame&)` hard-drops until `topOuts()` rises, calling `advance(1)` after each `input(HardDrop)`.
   - `"match_game: a duel top-out resets the board and freezes exactly kKoFlashMs"`: after `topOut`, `t0 = t()`. `frozen()` stays true through `advance` until `t() == t0 + kKoFlashMs`, then becomes false. The board is empty and `topOuts() == 1`.
   - `"match_game: a royale top-out eliminates for good"`: `eliminated()`; `advance(60000)` keeps `frozen()` and leaves `game().state() == GameOver`.
@@ -155,7 +157,7 @@
   - Integers are non-negative.
   - `IN`: at most `kMaxInputEvents` entries, entry `t` never decreasing, every entry `t ≤ tEnd`.
   - `RESYNC`: no size cap, `t` never decreasing.
-  - `SDF`: `0` or 5–40.
+  - `SDF`: `0` or 5–40. Move `kMinSdf` and `kMaxSdf` (same names and values) from `src/app/input.hpp` to `src/core/game.hpp`, beside `kDefaultSoftDropFactor`: the sim module has no `src/app` sources, and `src/net` must not depend on `src/app`. `input.hpp` already includes `game.hpp`.
   - `GARB`: `id ≥ 1`, lines 1–40.
   - Anything else is `nullopt`.
 
@@ -239,6 +241,7 @@
   check <t> <attackTotal> <topOuts> <hash-hex16>
   ```
   `check` lines come every 10000 ms and at the end. `attackTotal` is the sum of `takeOutgoingAttack()` drained at each check.
+  Lines are processed strictly in file order: `ev` advances to its `t`, then applies the token; `check` advances to its `t`, then compares. A `check` at `t` comes before any `ev` with the same `t`. The generator computes each `check` by replaying the log through exactly this sequential process, so the native and WASM readers agree by construction.
 - **Generation:** the events are the scripted random run from Task 2, seeded by the fixture seed, over 120 s for a duel and until elimination or 120 s for a royale.
 
 - [ ] **Step 1: Write the test** `"match_game fixtures: checked-in fixtures match the native replay"`. For each of the four files, generate the content in memory and `CHECK` that it equals the file's text, read from `TETRIS_SOURCE_DIR "/server/sim/testdata/…"`. If the environment variable `UPDATE_FIXTURES=1` is set, write the file instead. Pass the `TETRIS_SOURCE_DIR` define through CMake: `target_compile_definitions(tetris_tests PRIVATE TETRIS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")`.
@@ -273,7 +276,7 @@
 - **`Dockerfile`:** in the `web` stage, also run the sim build. In the `server` stage, `COPY --from=web /src/build-sim/jestris_sim.wasm ./sim/` before `go test`.
 
 - [ ] **Step 1: Build** with the Verification Commands module line. Expected: `server/sim/jestris_sim.wasm` exists and is under 400 KB.
-- [ ] **Step 2: Check the exports:** `wasm-objdump -x server/sim/jestris_sim.wasm | grep -c 'sim_'` (wabt ships with emsdk) prints 12, and `_initialize` is exported. The imports are only `wasi_snapshot_preview1.*`.
+- [ ] **Step 2: Check the exports:** 12 `sim_` exports and `_initialize` are exported, and the imports are only `wasi_snapshot_preview1.*`. emsdk 6.0.12 does not ship wabt's `wasm-objdump`; use binaryen's `wasm-dis` (in `~/emsdk/upstream/bin`), `llvm-objdump`, or a short script that reads the export and import sections.
 - [ ] **Step 3: Verify the native build is unaffected:** the C++ suite still passes.
 - [ ] **Step 4: Commit** `build: jestris_sim.wasm target for the server`.
 
@@ -370,7 +373,7 @@
 
   The sim game is created lazily at the first `IN` or `SDF`, with the SDF if seen (else 20). `t` starts at 0.
 - **Algorithm — `handleIN(ps, text)`:**
-  1. Parse `IN tEnd entries`. If it doesn't parse, has more than 64 entries, has a decreasing `t`, has an entry outside `[reportedEnd, tEnd]`, has `tEnd < reportedEnd`, or has `tEnd > wall+lead`: `mark("bad-in")` and return.
+  1. Parse `IN tEnd entries`. If it doesn't parse, has more than 64 entries, has a decreasing `t`, has an entry outside `[reportedEnd, tEnd]`, has `tEnd < reportedEnd`, or has `tEnd > wall+lead`: `mark("bad-in")`, set `sawINSinceMark = true`, and return. (A rejected `IN` is still the player's next `IN` in spec rule 5, so its `RESYNC` goes out on the next tick; otherwise the abuse limit in Task 9 could never fire.)
   2. For each entry:
      - If `e.t < ps.t`: `mark("backdated")` and continue.
      - Otherwise `advanceTo(ps, e.t)`.
@@ -378,7 +381,7 @@
      - Apply any other token with `Input` and append it to canonical.
   3. `advanceTo(ps, tEnd)`, then `reportedEnd = tEnd` and `sawINSinceMark = true`.
 - **Algorithm — `advanceTo(ps, target)`:**
-  1. Take pending batches in `t0` order. For each batch with `t0+window ≤ target`: `Advance` to `t0+window`, `AcceptGarbage` (forced), append canonical, `mark("garbage-late")`.
+  1. Take pending batches in `t0` order. For each batch with `t0+window < target`: `Advance` to `t0+window`, `AcceptGarbage` (forced), append canonical, `mark("garbage-late")`. (Strictly less: spec rule 3 accepts a `G<id>` stamped exactly `t0+window`, so `advanceTo(t0+window)` must leave it pending.)
   2. `Advance` to `target`.
   3. Collect `TakeAttack` into `simAttack` and the effects, and `TopOuts`/`Eliminated` into the effects.
 - **`tick(now)`:**
@@ -395,7 +398,7 @@
   - Additionally, `ATK` pushes `msgClaimedAttack` instead of enqueuing `ATK` itself, and `DEAD` pushes `msgClaimedDead`.
   - `IN` and `SDF` from a participant push `msgIN`/`msgSDF`. A full channel drops the message and the runner marks `bad-in` on its next drain (count the drops per player with an atomic counter).
   - A non-participant's `IN` is ignored.
-- **`begin()`:** creates the runner (`h.newSim()`; on error log it and fall back to no runner, which is log mode only). In non-manual mode it starts `go r.loop(h)` (a 100 ms ticker calling `tick`, plus `drain` on each channel receive, until `stop`).
+- **`begin()`:** creates the runner (`h.newSim()`; on error log it and fall back to no runner, which is log mode only: `route()` then relays `ATK n` exactly as before this plan, which the client accepts as garbage id 0, and ignores `IN` and `SDF`). In non-manual mode it starts `go r.loop(h)` (a 100 ms ticker calling `tick`, plus `drain` on each channel receive, until `stop`).
 - **`endMatch()`:** `close(stop)` non-blocking and set `match.runner = nil`. The runner calls `finish()` itself, which logs `authority room=%s player=%d claimedSent=%d simAttack=%d claimedDead=%d simTopOuts=%d wouldResync=%v` per player.
 - **`leave()`:** pushes `msgLeft`.
 - **Flags** go in `main.go` per Global Constraints.
