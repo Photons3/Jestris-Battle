@@ -73,10 +73,42 @@ macOS firewall asks. Flags: `-addr` (default `0.0.0.0:8080`), `-dir` (default
 on-screen clock always starts at 2:00, so with `-match 20s` the server's verdict arrives early
 (the red clock and the 0:00 freeze only show at the default length).
 
+### Server authority
+
+The server re-simulates every match from the inputs each client sends, using the C++ core
+compiled to WebAssembly (`server/sim/jestris_sim.wasm`), so attacks, KOs and snapshots come
+from the server's own game. Flags:
+
+- `-authority log|enforce` (default `log`). `log` simulates every match and only logs
+  disagreements; `enforce` makes the simulation decide and sends `RESYNC` when a rule is broken.
+- `-lead` (default `250ms`): how far a player's game may run ahead of the server's match clock.
+- `-lag` (default `1s`): how far behind the match clock a player's game is forced forward.
+- `-garbage-window` (default `750ms`): time a player has to accept sent garbage.
+- `-max-resyncs` (default `10`): `RESYNC`s per 10 s before a player is disconnected (`enforce` only).
+
+`jestris_sim.wasm` is a build output and is git-ignored, but the server embeds it, so it must
+exist before any `go build` or `go test`. `scripts/build.sh` (and the Dockerfile) build it
+first, then run `go test` and `go build`. To build it by hand:
+
+    source ~/emsdk/emsdk_env.sh
+    emcmake cmake -S . -B build-sim -DCMAKE_BUILD_TYPE=Release -DTETRIS_SIM_ONLY=ON
+    cmake --build build-sim --target jestris_sim
+    cp build-sim/jestris_sim.wasm server/sim/
+
+Rollout:
+
+1. Deploy with the default `-authority log` and let real matches run.
+2. Grep the server log for `would-resync:` (rules `bad-in`, `backdated`, `garbage-bad`,
+   `garbage-late`) and read the per-player summaries
+   `authority room=... player=... claimedSent=... simAttack=... claimedDead=... simTopOuts=... wouldResync=...`.
+   Look for lines where `claimedSent` differs from `simAttack`. Honest play shows none; fix the
+   bug or loosen a timing flag until it doesn't.
+3. Restart with `-authority enforce`.
+
 ## Hosting on a Debian VPS
 
     scripts/setup.sh   # once: apt packages, emsdk into ~/emsdk, Go into /usr/local/go
-    scripts/build.sh   # web build into build-web/, server into build-server/
+    scripts/build.sh   # web build into build-web/, jestris_sim.wasm, server into build-server/
     scripts/run.sh     # serves on 0.0.0.0:8080; extra flags go to the server
     scripts/restart.sh # stops a running server, rebuilds, and starts it; same flags as run.sh
 

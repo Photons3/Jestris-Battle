@@ -1,5 +1,7 @@
 # Design: LAN 1v1 Tetris duels
 
+> **Partly superseded** by `2026-10-14-server-authority-design.md`: with `-authority enforce` the server ignores client `ATK`, `DEAD` and `SNAP`; it re-simulates each match from the clients' inputs, and attacks, KOs and snapshots come from that simulation.
+
 > **Partly superseded:** garbage gaps, "first top-out loses" and relaying `DEAD` are replaced by bomb garbage, KO matches and the server referee in `2026-10-13-bomb-battle-design.md`.
 
 > **Partly superseded** by `2026-10-14-multiplayer-rooms-design.md`: the two-seat room, starting on the second join, `REMATCH` and `OPP` are replaced by rooms of up to 16 players with host start, and 3 or more players play a battle royale.
