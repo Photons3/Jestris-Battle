@@ -14,6 +14,11 @@ This spec makes the server the authority on every match result. Each client keep
 
 It builds on the LAN duel (`2026-10-13-lan-duel-design.md`), the KO duel (`2026-10-13-bomb-battle-design.md`), garbage delay (`2026-10-14-garbage-delay-cap-design.md`) and rooms and royale (`2026-10-14-multiplayer-rooms-design.md`). Where this spec contradicts those, this spec wins: clients no longer send `ATK`, `DEAD` or `SNAP` once enforcement is on.
 
+The rooms and royale work (PR #16) has merged: rooms of 2–16 players, host `BEGIN`, a royale client (`DuelMode::Royale`, `OpponentView`, standings) and per-player outbound queues in the hub. This spec is written against that code. Two of its client-side behaviors change here:
+
+- **Royale gravity floor.** `DuelSession::update` sets `startLevel + playedMs_ / kRoyaleLevelStepMs` once per frame, so a level-up lands at a frame boundary. It moves into `MatchGame` and is applied every millisecond (section 4).
+- **Top-outs, KO and elimination alike.** These are detected at the end of the frame. They also move into `MatchGame` and are detected at the exact millisecond.
+
 ## Goals and non-goals
 - **Goals:**
   - Every accepted attack, KO, elimination and result comes from a legal input sequence replayed on the server.
@@ -137,11 +142,12 @@ public:
 ```
 
 **Rules applied in each 1 ms step of `advance`, in this order:**
-1. **Gravity floor (royale only):** `setLevelFloor(startLevel + t / 30000)`, the rule from the rooms spec.
+1. **Gravity floor (royale only):** `setLevelFloor(startLevel + t / kRoyaleLevelStepMs)`, the rule from the rooms spec. `kRoyaleLevelStepMs` moves to `match_game.hpp` along with `kMatchMs` and `kKoFlashMs`. Royale has no clock and no KO flash, so rule 4 and the duel freeze never apply to it.
 2. **Tick:** if not frozen, `game.setSoftDrop(…)`, `setSoftDropFactor(sdf)`, then `tick(1)`.
 3. **Top-out:**
    - **Duel:** `GameState::GameOver` means `resetBoard()` immediately and freeze until `t + kKoFlashMs`.
-   - **Royale:** `GameOver` means eliminated, frozen for good.
+   - **Royale:** `GameOver` means eliminated, frozen for good. The eliminated player's board stays in its game-over state, as `DuelSession` does today.
+   - **Simultaneous royale top-outs:** the server decides the places. It handles each player's `IN` in the order the messages arrive, so a game that tops out later in server processing order can still be the last one alive and win. The client already handles `OUT <me> 1` after predicting its own elimination (`duel.cpp`: "survived a simultaneous top-out"), and that stays as is. Once the match is over, the server stops simulating an eliminated player's game and ignores any `IN` from them.
 4. **Time-up (duel):** at `t == kMatchMs`, finish any clear still animating (`while Clearing: tick(1)`), then freeze for good.
 5. `t++`.
 
@@ -186,12 +192,12 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
 - **The runner:**
   1. steps the simulation;
   2. collects outputs (attack lines with sender, top-outs, snapshots, `GARB`, `RESYNC`);
-  3. takes `Hub.mu` briefly to apply them through the existing `scoreKO`, `eliminate`, `finish` and royale target selection (`pickTarget`) and to update `sent`;
-  4. calls `deliver()` after unlocking.
+  3. takes `Hub.mu` briefly to apply them through the existing `scoreKO`, `eliminate`, `finish` and royale target selection (`pickTarget`) and to update `sent`, then `enqueue()`s every message before unlocking. These are main's per-player queues, so each recipient gets messages in the order the hub produced them, even when they come from different match runners.
+- **Queue pressure:** a full 16-player room already sends each player about 150 `SNAP`s a second (`sendQueueLength = 1024`, kick on overflow). The server produces a player's `SNAP` only when it differs from that player's last one, which keeps traffic at or below today's. A `RESYNC` counts as one queued message.
 - **Shutdown:** `endMatch()` stops the runner, which closes the instance.
 - **A failed simulation:** the server logs `room, seed, player, err` and ends the match for everyone with `LEFT`, as when a player leaves. It never falls back to trusting clients.
 
-### Budget
+### Budget (a full 16-player room is the worst case)
 - **Memory:** about 256 KB per running match instance. Even with the 500-room cap all running matches, the total is about 128 MB.
 - **CPU:**
   - The target is under 20 ms to simulate one 2-minute game at about 3 pieces per second.
@@ -228,7 +234,7 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
 ## 8. Testing
 - **C++ (ctest), `MatchGame`:**
   - the KO reset and freeze at the exact millisecond;
-  - royale elimination;
+  - royale elimination and the per-millisecond gravity floor (a level-up at the same `t` regardless of how frames are split);
   - the time-up rule;
   - the gravity floor;
   - `acceptGarbage`;
