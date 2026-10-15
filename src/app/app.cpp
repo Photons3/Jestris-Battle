@@ -111,6 +111,7 @@ void applyCommand(App& app, UiCommand command) {
         app.keymap = defaultKeymap();
         app.handling = {};
         app.input.setHandling(app.handling);
+        app.duel.setSoftDropFactor(app.handling.softDropFactor);
         app.controls.capturing.reset();
         app.controls.note = "Keys and handling reset";
         app.saveSettings();
@@ -118,6 +119,7 @@ void applyCommand(App& app, UiCommand command) {
     case UiCommand::SaveHandling:
         app.handling = clampHandling(app.handling);
         app.input.setHandling(app.handling);
+        app.duel.setSoftDropFactor(app.handling.softDropFactor);
         app.saveSettings();
         break;
     }
@@ -284,6 +286,7 @@ void App::openDuel() {
         connection = connectToServer();
         if (connection) connection->send(encode(Hello{menu.playerName}));  // queued until the socket opens
     }
+    duel.setSoftDropFactor(handling.softDropFactor);
     menu.error.clear();
     screen = Screen::Duel;
 }
@@ -292,6 +295,7 @@ void App::openBotDuel() {
     if (connection) closeDuel();
     connection = std::make_unique<LocalMatch>(menu.botLevel, static_cast<std::uint32_t>(SDL_GetTicksNS()));
     connection->send(encode(Hello{menu.playerName}));  // the roster shows our name, not "You"
+    duel.setSoftDropFactor(handling.softDropFactor);
     menu.error.clear();
     screen = Screen::Duel;
     duel.createRoom(menu.startLevel);
@@ -368,13 +372,29 @@ void pumpNetwork(App& app) {
     }
 }
 
-// Advances input auto-repeat and the game in 1 ms steps.
+// Advances input auto-repeat and the game in 1 ms steps. A duel's match steps on through its KO flash and time-up,
+// and logs the inputs it takes.
 void step(App& app, int ms) {
     Game* game = app.activeGame();
+    const bool playingDuel = app.screen == Screen::Duel && app.duel.phase() == DuelPhase::Playing;
+    MatchGame* match = playingDuel ? app.duel.match() : nullptr;
     if (game == nullptr) {
         app.input.releaseAll();  // keys held across a countdown or result must not auto-repeat into a match
         app.pending.clear();
-    } else {
+    }
+    if (match != nullptr) {
+        auto flush = [&] {
+            for (Action action : app.pending) match->input(action);  // ignored while the match is frozen
+            app.pending.clear();
+        };
+        flush();
+        for (int i = 0; i < ms; ++i) {
+            if (game != nullptr) app.input.tick(app.pending);
+            flush();
+            match->softDrop(game != nullptr && app.input.softDrop());
+            app.duel.step(1);
+        }
+    } else if (game != nullptr) {
         auto flush = [&] {
             for (Action action : app.pending) game->apply(action);
             app.pending.clear();

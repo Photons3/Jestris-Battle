@@ -450,6 +450,7 @@ TEST_CASE("ui: royale boards draw while playing, eliminated, and in the result")
     for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
 
     topOutWithGarbage(*duel.game());
+    duel.step(1);  // the match handles the top-out at its next step
     duel.update(0);
     REQUIRE(duel.eliminated());
     for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);  // "OUT"
@@ -570,6 +571,7 @@ TEST_CASE("ui: an eliminated royale player can leave from the OUT overlay") {
     for (int frame = 0; frame < 2; ++frame) CHECK(duelFrame(duel, font, menu) == UiCommand::None);
     CHECK(ImGui::FindWindowByName("##out") == nullptr);  // only once we're out
     topOutWithGarbage(*duel.game());
+    duel.step(1);  // the match handles the top-out at its next step
     duel.update(0);
     REQUIRE(duel.eliminated());
     CHECK(pressButton(duel, font, "##out", "Leave") == UiCommand::LeaveDuel);
