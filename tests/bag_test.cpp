@@ -29,3 +29,12 @@ TEST_CASE("bag: peek shows upcoming pieces without consuming them") {
         for (PieceType type : upcoming) CHECK(bag.next() == type);
     }
 }
+
+TEST_CASE("bag: a seed gives the same sequence on every standard library") {
+    // Golden list from an explicit Fisher-Yates over std::mt19937 (both fully specified).
+    const PieceType golden[14] = {PieceType::I, PieceType::S, PieceType::L, PieceType::T, PieceType::O,
+                                  PieceType::Z, PieceType::J, PieceType::I, PieceType::T, PieceType::Z,
+                                  PieceType::O, PieceType::S, PieceType::J, PieceType::L};
+    Bag bag(7);
+    for (PieceType expected : golden) CHECK(bag.next() == expected);
+}

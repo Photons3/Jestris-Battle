@@ -38,7 +38,7 @@ ev 9194 H
 ev 9210 CW
 ev 9776 RW
 ev 9927 HD
-check 10000 0 0 c240ffa17af5e36b
+check 10000 0 0 8318f7ccdb654235
 ev 10354 HD
 ev 10700 R
 ev 10746 S-
@@ -72,7 +72,7 @@ ev 18449 CCW
 ev 18524 CW
 ev 19501 L
 ev 19819 L
-check 20000 0 0 7ed4273ea136b6b6
+check 20000 0 0 7b55e35bdb24b128
 ev 20069 CCW
 ev 20287 CW
 ev 20556 R
@@ -114,15 +114,4 @@ ev 28813 L
 ev 29142 CCW
 ev 29163 H
 ev 29405 L
-ev 29929 HD
-check 30000 0 0 9177ca86ec1a6bd0
-ev 30271 CCW
-ev 30281 G2x2
-ev 30439 S-
-ev 30459 CW
-ev 30505 CW
-ev 30762 RW
-ev 31067 S+
-ev 31135 H
-ev 31300 HD
-check 31301 0 1 d703bde9f1471e74
+check 29905 0 1 95ab59b1d08d83ef

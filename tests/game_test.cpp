@@ -1098,7 +1098,7 @@ TEST_CASE("game events: every kind of top-out is reported once") {
         CHECK(game.takeEvents() == Events{kHardDropped, kToppedOut});
     }
     SUBCASE("garbage overflow") {
-        Game game(seedWithFirst(PieceType::T), 1);
+        Game game(seedWithFirstTwo(PieceType::T, PieceType::Z), 1);
         topOutWithGarbage(game);
         game.tick(1000);
         CHECK(game.takeEvents() == Events{kHardDropped, kToppedOut});
@@ -1106,7 +1106,7 @@ TEST_CASE("game events: every kind of top-out is reported once") {
 }
 
 TEST_CASE("game events: resetting the board keeps events not yet taken") {
-    Game game(seedWithFirst(PieceType::T), 1);
+    Game game(seedWithFirstTwo(PieceType::T, PieceType::Z), 1);
     topOutWithGarbage(game);
     game.resetBoard();
     CHECK(game.takeEvents() == Events{kHardDropped, kToppedOut});
