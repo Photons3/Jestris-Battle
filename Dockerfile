@@ -20,7 +20,9 @@ COPY web web
 SHELL ["/bin/bash", "-c"]
 RUN . /emsdk/emsdk_env.sh \
     && emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build-web -j
+    && cmake --build build-web -j \
+    && emcmake cmake -S . -B build-sim -DCMAKE_BUILD_TYPE=Release -DTETRIS_SIM_ONLY=ON \
+    && cmake --build build-sim --target jestris_sim -j
 
 FROM debian:bookworm AS server
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -33,6 +35,7 @@ WORKDIR /src/server
 COPY server/go.mod server/go.sum ./
 RUN go mod download
 COPY server ./
+COPY --from=web /src/build-sim/jestris_sim.wasm ./sim/
 RUN go test ./... && CGO_ENABLED=0 go build -o /tetris-server .
 
 FROM debian:bookworm-slim

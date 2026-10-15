@@ -17,6 +17,29 @@ if(NOT EMSCRIPTEN)
   add_link_options($<$<CONFIG:Debug>:-fsanitize=address,undefined>)
 endif()
 
+option(TETRIS_SIM_ONLY "Build only the server's jestris_sim.wasm (Emscripten)" OFF)
+set(TETRIS_WARNINGS -Wall -Wextra -Wpedantic)
+
+# The server's replay module: only the game logic, so no SDL, imgui or tests (and no downloads).
+if(EMSCRIPTEN AND TETRIS_SIM_ONLY)
+  add_executable(jestris_sim
+    src/core/piece.cpp
+    src/core/board.cpp
+    src/core/srs.cpp
+    src/core/bag.cpp
+    src/core/game.cpp
+    src/net/protocol.cpp
+    src/net/match_game.cpp
+    src/sim/sim_api.cpp)
+  target_include_directories(jestris_sim PRIVATE src)
+  target_compile_options(jestris_sim PRIVATE ${TETRIS_WARNINGS} -ffp-contract=off -fno-exceptions)
+  target_link_options(jestris_sim PRIVATE
+    -O2 -sSTANDALONE_WASM --no-entry -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=262144 -sSTACK_SIZE=65536
+    -fno-exceptions)
+  set_target_properties(jestris_sim PROPERTIES SUFFIX ".wasm")
+  return()
+endif()
+
 include(FetchContent)
 FetchContent_Declare(imgui
   URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9b.tar.gz)
@@ -53,8 +76,6 @@ add_library(imgui STATIC
   ${IMGUI_RENDERER_BACKEND})
 target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(imgui PUBLIC SDL3::SDL3)
-
-set(TETRIS_WARNINGS -Wall -Wextra -Wpedantic)
 
 add_library(tetris_core STATIC
   src/core/piece.cpp
