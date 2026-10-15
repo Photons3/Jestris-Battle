@@ -1340,3 +1340,28 @@ TEST_CASE("game: raising the floor emits LevelUp once") {
     game.setLevelFloor(3);
     CHECK(game.takeEvents() == Events{kLevelUp});
 }
+
+TEST_CASE("game: equal seeds and inputs give equal state hashes") {
+    Game a(42, 1);
+    Game b(42, 1);
+    for (Game* g : {&a, &b}) {
+        g->apply(Action::Left);
+        g->apply(Action::RotateCW);
+        g->apply(Action::HardDrop);
+        g->tick(500);
+    }
+    CHECK(a.stateHash() == b.stateHash());
+}
+
+TEST_CASE("game: the state hash changes with a move, a tick and garbage") {
+    Game g(42, 1);
+    std::uint64_t prev = g.stateHash();
+    g.apply(Action::Left);
+    CHECK(g.stateHash() != prev);
+    prev = g.stateHash();
+    g.tick(1);
+    CHECK(g.stateHash() != prev);
+    prev = g.stateHash();
+    g.receiveGarbage(1);
+    CHECK(g.stateHash() != prev);
+}

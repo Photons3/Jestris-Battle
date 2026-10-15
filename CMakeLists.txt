@@ -63,7 +63,7 @@ add_library(tetris_core STATIC
   src/core/bag.cpp
   src/core/game.cpp)
 target_include_directories(tetris_core PUBLIC src)
-target_compile_options(tetris_core PRIVATE ${TETRIS_WARNINGS})
+target_compile_options(tetris_core PRIVATE ${TETRIS_WARNINGS} -ffp-contract=off)
 
 add_library(tetris_audio STATIC
   src/audio/synth.cpp
@@ -92,7 +92,7 @@ add_library(tetris_duel STATIC
   src/bot/local_match.cpp)
 target_include_directories(tetris_duel PUBLIC src)
 target_link_libraries(tetris_duel PUBLIC tetris_core tetris_audio tetris_bot)
-target_compile_options(tetris_duel PRIVATE ${TETRIS_WARNINGS})
+target_compile_options(tetris_duel PRIVATE ${TETRIS_WARNINGS} -ffp-contract=off)
 
 add_library(tetris_settings STATIC
   src/app/keymap.cpp

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <utility>
@@ -480,6 +481,54 @@ bool Game::clearEmptiesBoard() const {
             if (board_.at(x, y)) return false;
     }
     return true;
+}
+
+std::uint64_t Game::stateHash() const {
+    std::uint64_t h = 1469598103934665603ull;  // FNV-1a 64 offset basis
+    auto byte = [&h](std::uint8_t b) {
+        h ^= b;
+        h *= 1099511628211ull;
+    };
+    auto i32 = [&byte](std::int32_t v) {
+        const auto u = static_cast<std::uint32_t>(v);
+        for (int i = 0; i < 4; ++i) byte(static_cast<std::uint8_t>(u >> (8 * i)));
+    };
+    auto u64 = [&byte](std::uint64_t u) {
+        for (int i = 0; i < 8; ++i) byte(static_cast<std::uint8_t>(u >> (8 * i)));
+    };
+    auto piece = [&i32](const std::optional<PieceType>& t) { i32(t ? static_cast<int>(*t) + 1 : 0); };
+
+    // PieceType includes Garbage and Bomb, so type + 1 tells every kind of cell apart.
+    for (int y = 0; y < kBoardHeight; ++y)
+        for (int x = 0; x < kBoardWidth; ++x) piece(board_.at(x, y));
+    i32(static_cast<int>(active_.type));
+    i32(active_.pos.x);
+    i32(active_.pos.y);
+    i32(static_cast<int>(active_.rotation));
+    piece(hold_);
+    i32(canHold_ ? 1 : 0);
+    for (PieceType t : bag_.peek(5)) i32(static_cast<int>(t));
+    i32(static_cast<int>(incoming_.size()));
+    for (const GarbageBatch& b : incoming_) {
+        i32(b.lines);
+        i32(b.msLeft);
+        i32(b.holeX);
+    }
+    i32(lastHoleX_);
+    i32(outgoingAttack_);
+    i32(score_);
+    i32(lines_);
+    i32(level_);
+    i32(levelFloor_);
+    i32(combo_);
+    i32(backToBack_);
+    i32(static_cast<int>(state_));
+    u64(std::bit_cast<std::uint64_t>(dropTimerMs_));
+    i32(lockTimerMs_);
+    i32(lockResets_);
+    i32(lowestY_);
+    i32(clearTimerMs_);
+    return h;
 }
 
 }  // namespace tetris

@@ -155,6 +155,8 @@ public:
     int backToBack() const { return backToBack_; }
     GameState state() const { return state_; }
     const GameStats& stats() const { return stats_; }
+    // FNV-1a 64 over the whole simulation state, for replay checks. Integers enter as 4 little-endian bytes.
+    std::uint64_t stateHash() const;
 
 private:
     void step();
