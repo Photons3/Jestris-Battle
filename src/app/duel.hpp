@@ -183,6 +183,14 @@ private:
 // The line under the result title, e.g. "Time up · KO 1 : 1 · 12 : 7 sent". Empty outside Result.
 std::string resultReasonText(const DuelSession& duel);
 
+// The word over each well on a duel's result: "WIN", "LOSE" or "DRAW". Empty outside a duel Result, and on the
+// opponent's side when they left.
+struct BoardLabels {
+    const char* mine = "";
+    const char* theirs = "";
+};
+BoardLabels duelBoardLabels(const DuelSession& duel);
+
 // One player's line in a royale's final standings.
 struct Standing {
     int place = 0;

@@ -94,6 +94,22 @@ std::string resultReasonText(const DuelSession& duel) {
     return text;
 }
 
+BoardLabels duelBoardLabels(const DuelSession& duel) {
+    if (duel.phase() != DuelPhase::Result || duel.mode() != DuelMode::Duel) return {};
+    switch (duel.outcome()) {
+    case DuelOutcome::Won:
+        return {"WIN", "LOSE"};
+    case DuelOutcome::Lost:
+        return {"LOSE", "WIN"};
+    case DuelOutcome::Draw:
+        return {"DRAW", "DRAW"};
+    case DuelOutcome::OpponentLeft:
+        return {"WIN", ""};
+    default:
+        return {};
+    }
+}
+
 std::vector<Standing> royaleStandings(const DuelSession& duel) {
     if (!royaleResult(duel)) return {};
     std::vector<Standing> standings;

@@ -502,6 +502,32 @@ TEST_CASE("duel: the result line explains how the match ended") {
     }
 }
 
+TEST_CASE("duel: the result labels the winner's well WIN and the loser's LOSE") {
+    struct Case {
+        std::string message;
+        std::string mine;
+        std::string theirs;
+    };
+    const std::vector<Case> cases{
+        {"OVER WIN KO 0 0", "WIN", "LOSE"},
+        {"OVER LOSE KO 0 0", "LOSE", "WIN"},
+        {"OVER DRAW TIME 9 9", "DRAW", "DRAW"},
+        {"LEFT", "WIN", ""},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(c.message);
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startMatch(duel, wire);
+        CHECK(std::string(duelBoardLabels(duel).mine).empty());  // only on the result
+        CHECK(std::string(duelBoardLabels(duel).theirs).empty());
+        duel.onMessage(c.message);
+        REQUIRE(duel.phase() == DuelPhase::Result);
+        CHECK(duelBoardLabels(duel).mine == c.mine);
+        CHECK(duelBoardLabels(duel).theirs == c.theirs);
+    }
+}
+
 TEST_CASE("duel events: the countdown ticks each second, then the match starts") {
     Wire wire;
     DuelSession duel(wire.sender());
@@ -1304,6 +1330,18 @@ TEST_CASE("royale: a duel result has no standings or royale title") {
     REQUIRE(duel.phase() == DuelPhase::Result);
     CHECK(royaleStandings(duel).empty());
     CHECK(royaleResultTitle(duel).empty());
+}
+
+TEST_CASE("royale: a royale result has no duel board labels") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startRoyale(duel, wire);
+    duel.onMessage("OUT 2 4");
+    duel.onMessage("OUT 3 3");
+    duel.onMessage("OUT 4 2");
+    duel.onMessage("OUT 1 1");
+    REQUIRE(duel.phase() == DuelPhase::Result);
+    CHECK(std::string(duelBoardLabels(duel).mine).empty());
 }
 
 TEST_CASE("royale: the winner's board stays alive and is placed #1") {
