@@ -184,6 +184,7 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
 - **`sim_hash`:** FNV-1a over the board cells, active piece, hold, the next 5, pending garbage batches (lines, msLeft, holeX), score, lines, level, combo, back-to-back, and the drop, lock and clear timers. It's used for logs and tests only, never sent on the wire.
 - **Native builds:** `tetris_core` and `match_game.cpp` compile with `-ffp-contract=off` on every target. Clang on arm64 (Apple Silicon) otherwise fuses a multiply and an add into one instruction, which rounds differently, so the native fixtures would not match the WASM build.
 - **Why it matches the browser:** WASM floating-point arithmetic is fully specified and the format has no fused multiply-add, so the gravity timer (`double`) computes the same in the browser and on the server. Both are built from the same source with the same emscripten version.
+- **No implementation-defined library algorithms in the core.** `std::mt19937` is fully specified, but `std::shuffle` and the `std::*_distribution`s are not: libstdc++ (native Linux) and libc++ (Emscripten, macOS) give different results for the same engine state. The 7-bag uses an explicit Fisher–Yates over raw `mt19937` outputs, so the native golden fixtures, the browser and the server all deal the same pieces.
 - **Packaging:**
   - `scripts/build.sh` and the Dockerfile build the module before `go test` and `go build`, in an emscripten stage, and copy it to `server/sim/jestris_sim.wasm`.
   - The file is git-ignored and never committed.
