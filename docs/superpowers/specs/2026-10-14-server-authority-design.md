@@ -246,7 +246,7 @@ A simulation failure ends a royale with `LEFT` too. Today the client ignores `LE
 
 ## 7. Rollout
 1. **Release 1:** clients send `IN` + `SDF` alongside the old messages and understand `GARB` and `RESYNC`. The server runs `-authority=log`.
-2. **Watch the logs** for `attack-mismatch`, `ko-mismatch` and `would-resync:<rule>`. Honest play must show none. Fix bugs or adjust limits until it does.
+2. **Watch the logs** for `would-resync:<rule>` and for `authority …` summary lines where `claimedSent != simAttack` or `claimedDead != simTopOuts`. Honest play must show none. Fix bugs or adjust limits until it does.
 3. **Switch the server to `-authority=enforce`.**
 4. **Release 2:** clients stop sending `ATK`, `DEAD` and `SNAP`. The server drops log mode and the relay code for them.
 
