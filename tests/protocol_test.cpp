@@ -306,7 +306,7 @@ TEST_CASE("protocol: IN round-trips every token") {
 }
 
 TEST_CASE("protocol: SDF, GARB and RESYNC round-trip") {
-    for (const char* text : {"SDF 0", "SDF 40", "GARB 5 4", "RESYNC 120 3:HD 100:G1x2"}) {
+    for (const char* text : {"SDF 0", "SDF 40", "GARB 5 4", "RESYNC 120 2 3:HD 100:G1x2", "RESYNC 0 0"}) {
         CAPTURE(text);
         const auto message = decode(text);
         REQUIRE(message.has_value());
@@ -314,15 +314,16 @@ TEST_CASE("protocol: SDF, GARB and RESYNC round-trip") {
     }
     CHECK(decode("SDF 40") == Message{SoftDropSetting{40}});
     CHECK(decode("GARB 5 4") == Message{GarbageIn{5, 4}});
-    CHECK(decode("RESYNC 120 3:HD 100:G1x2") ==
-          Message{Resync{120, {{3, LogCode::HardDrop}, {100, LogCode::Garbage, 1, 2}}}});
+    CHECK(decode("RESYNC 120 2 3:HD 100:G1x2") ==
+          Message{Resync{120, 2, {{3, LogCode::HardDrop}, {100, LogCode::Garbage, 1, 2}}}});
 }
 
 TEST_CASE("protocol: malformed input batches are rejected") {
     std::string tooMany = "IN 100";
     for (int i = 0; i <= kMaxInputEvents; ++i) tooMany += " " + std::to_string(i) + ":L";
     std::vector<std::string> bad{tooMany, "IN 10 11:L", "IN 10 5:L 4:R", "IN 10 5:X", "IN 10 5:G0x2", "SDF 3",
-                                 "SDF 41", "GARB 0 1", "GARB 1 41", "IN -1", "RESYNC 5 3:L 2:R"};
+                                 "SDF 41", "GARB 0 1", "GARB 1 41", "IN -1", "RESYNC 5 1 3:L 2:R", "RESYNC 5", "RESYNC 5 3:L",
+                                 "RESYNC 5 -1"};
     for (const std::string& text : bad) {
         CAPTURE(text);
         CHECK_FALSE(decode(text).has_value());

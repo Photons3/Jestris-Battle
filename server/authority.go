@@ -94,6 +94,7 @@ type runnerMsg struct {
 	text      string
 	to        *player
 	id, lines int
+	seq       int // msgIN: the IN's number among from's INs this match, from 1
 }
 
 // garbageWindow is a GARB the player has not acknowledged yet: lines sent when its server-side t was t0.
@@ -123,6 +124,9 @@ type playerSim struct {
 	lastSnap       string
 	left           bool
 	dropped        atomic.Int32 // messages route() could not queue; counted under Hub.mu, read by the runner
+	ins            int          // INs route() has seen from p this match; only touched under Hub.mu
+	droppedIN      atomic.Int64 // the number of the last IN route() could not queue
+	consumedINs    int          // INs the runner has consumed (handled, rejected or dropped); RESYNC's count
 }
 
 type effectKind int
@@ -204,10 +208,18 @@ func (h *Hub) newRunner(r *room, m *match, seed uint32) *matchRunner {
 // push hands msg to the runner without blocking; the caller holds the lock. A full channel drops it, and
 // the runner treats that as a bad message from msg.from on its next drain.
 func (r *matchRunner) push(msg runnerMsg) {
+	ps := r.players[msg.from]
+	if msg.kind == msgIN {
+		ps.ins++
+		msg.seq = ps.ins
+	}
 	select {
 	case r.in <- msg:
 	default:
-		r.players[msg.from].dropped.Add(1)
+		ps.dropped.Add(1)
+		if msg.kind == msgIN {
+			ps.droppedIN.Store(int64(msg.seq))
+		}
 	}
 }
 
@@ -231,12 +243,15 @@ func (r *matchRunner) loop(h *Hub) {
 	}
 }
 
-// drain handles every queued runnerMsg, then applies the effects.
+// drain handles every queued runnerMsg, then applies the effects. A dropped IN counts as consumed: every IN
+// numbered below it was queued before it, so this drain handles them before any RESYNC is built.
 func (r *matchRunner) drain(h *Hub) {
 	for _, q := range r.match.players {
-		if ps := r.players[q]; ps.dropped.Swap(0) > 0 {
+		ps := r.players[q]
+		if ps.dropped.Swap(0) > 0 {
 			r.mark(ps, "bad-in")
 		}
+		ps.consumedINs = max(ps.consumedINs, int(ps.droppedIN.Load()))
 	}
 	for {
 		select {
@@ -254,6 +269,7 @@ func (r *matchRunner) handle(msg runnerMsg) {
 	ps := r.players[msg.from]
 	switch msg.kind {
 	case msgIN:
+		ps.consumedINs = max(ps.consumedINs, msg.seq)
 		if !ps.left && !(ps.eliminated && r.auth.mode == "enforce") { // an enforced elimination is final
 			r.handleIN(ps, msg.text)
 		}
@@ -301,7 +317,7 @@ func (r *matchRunner) tick(h *Hub, now time.Time) {
 		}
 		due := len(ps.resyncTimes) == 0 || now.Sub(ps.resyncTimes[len(ps.resyncTimes)-1]) >= resyncInterval
 		if ps.needResync && ps.sawINSinceMark && due {
-			text := "RESYNC " + strconv.Itoa(ps.t)
+			text := "RESYNC " + strconv.Itoa(ps.t) + " " + strconv.Itoa(ps.consumedINs)
 			if len(ps.canonical) > 0 {
 				text += " " + strings.Join(ps.canonical, " ")
 			}

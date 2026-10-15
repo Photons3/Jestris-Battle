@@ -313,7 +313,7 @@ std::string encode(const Message& message) {
             } else if constexpr (std::is_same_v<T, GarbageIn>) {
                 return "GARB " + std::to_string(m.id) + " " + std::to_string(m.lines);
             } else if constexpr (std::is_same_v<T, Resync>) {
-                return "RESYNC " + std::to_string(m.t) + encodeEntries(m.entries);
+                return "RESYNC " + std::to_string(m.t) + " " + std::to_string(m.consumedIns) + encodeEntries(m.entries);
             } else if constexpr (std::is_same_v<T, ListRooms>) {
                 return "LIST";
             } else if constexpr (std::is_same_v<T, UnlistRooms>) {
@@ -409,10 +409,12 @@ std::optional<Message> decode(std::string_view text) {
         const auto tEnd = parseNumber(parts[1], 0, kMaxInt);
         if (!tEnd) return std::nullopt;
         if (auto entries = decodeEntries(parts, 2, kMaxInputEvents, *tEnd)) return InputBatch{*tEnd, std::move(*entries)};
-    } else if (verb == "RESYNC" && args >= 1) {
+    } else if (verb == "RESYNC" && args >= 2) {
         const auto t = parseNumber(parts[1], 0, kMaxInt);
-        if (!t) return std::nullopt;
-        if (auto entries = decodeEntries(parts, 2, parts.size(), kMaxInt)) return Resync{*t, std::move(*entries)};
+        const auto consumed = parseNumber(parts[2], 0, kMaxInt);
+        if (!t || !consumed) return std::nullopt;
+        if (auto entries = decodeEntries(parts, 3, parts.size(), kMaxInt))
+            return Resync{*t, *consumed, std::move(*entries)};
     } else if (verb == "SDF" && args == 1) {
         const auto factor = parseNumber(parts[1], 0, kMaxSdf);
         if (factor && (*factor == kSoftDropInstant || *factor >= kMinSdf)) return SoftDropSetting{*factor};

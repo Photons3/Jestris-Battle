@@ -252,37 +252,27 @@ void DuelSession::acceptGarbage(int id, int lines) {
     events_.push_back(DuelEvent::Attacked);
 }
 
-// Replaces the match with the server's log up to its t, then replays our own later events at their times up to where
-// we were. Events already sent are with the server, or on their way, so they are not sent again. Events never sent
-// (a GARB ack logged earlier in this same batch of messages) still go out in the next IN: one stamped after the
-// server's t keeps its time, an earlier one the server's log lacks (garbage: by id) is applied at that t.
+// Replaces the match with the server's log up to its t, then replays our own events the server has not seen: those of
+// the INs it has not consumed yet (in flight) and those never sent (such as the ack of a GARB that arrived just
+// before the RESYNC), each at its own time or at the server's t if stamped earlier, up to where we were. Entries of
+// consumed INs that the server's log lacks were rejected and are gone. In-flight entries stay marked as sent;
+// never-sent ones go out with the next IN.
 void DuelSession::resync(const Resync& correction) {
     const int now = match_->t();
     const std::uint64_t before = match_->hash();
-    // Never-sent entries are the newest in the log, so they are its tail and come after every sent one.
     const std::vector<LogEntry> unsent = match_->takeUnsent();
-    const auto sentEnd = match_->log().end() - static_cast<std::ptrdiff_t>(unsent.size());
-    std::vector<LogEntry> ownSent;
-    std::copy_if(match_->log().begin(), sentEnd, std::back_inserter(ownSent),
-                 [&](const LogEntry& e) { return e.t > correction.t; });
+    while (!insInFlight_.empty() && insInFlight_.front().first <= correction.consumedIns) insInFlight_.pop_front();
     MatchGame corrected = MatchGame::replay(match_->setup(), correction.entries, correction.t);
     // A batch the server applied itself, before our ack reached it, is not taken twice.
     auto reapply = [&corrected](const LogEntry& entry) {
         if (entry.code == LogCode::Garbage && corrected.hasGarbage(entry.garbageId)) return;
+        if (entry.t > corrected.t()) corrected.advance(entry.t - corrected.t());
         corrected.apply(entry);
     };
-    for (const LogEntry& entry : ownSent) {
-        corrected.advance(entry.t - corrected.t());
-        reapply(entry);
-    }
+    for (const auto& [number, entries] : insInFlight_)
+        for (const LogEntry& entry : entries) reapply(entry);
     corrected.takeUnsent();
-    for (const LogEntry& entry : unsent) {
-        const bool serverHasIt =
-            entry.code != LogCode::Garbage && std::ranges::find(correction.entries, entry) != correction.entries.end();
-        if (entry.t <= correction.t && serverHasIt) continue;
-        if (entry.t > corrected.t()) corrected.advance(entry.t - corrected.t());
-        reapply(entry);  // logged at max(entry.t, the server's t), and sent with the next IN
-    }
+    for (const LogEntry& entry : unsent) reapply(entry);
     if (corrected.t() < now) corrected.advance(now - corrected.t());
     // The replay re-earns attacks and events the live game already reported.
     corrected.game().takeOutgoingAttack();
@@ -358,6 +348,7 @@ void DuelSession::sendInputs() {
         batch.entries.assign(unsent.begin() + static_cast<std::ptrdiff_t>(next),
                              unsent.begin() + static_cast<std::ptrdiff_t>(end));
         batch.tEnd = end < unsent.size() ? batch.entries.back().t : match_->t();
+        insInFlight_.emplace_back(++insSent_, batch.entries);
         send(batch);
         next = end;
     } while (next < unsent.size());
@@ -375,6 +366,8 @@ void DuelSession::startMatch(const StartMatch& start) {
     countdownMs_ = kCountdownMs;
     sinceSnapshotMs_ = 0;
     lastInT_ = 0;
+    insSent_ = 0;
+    insInFlight_.clear();
     topOutsSeen_ = 0;
     lastSent_.reset();
     std::vector<int> ids = start.players;
@@ -420,6 +413,8 @@ void DuelSession::reset() {
     countdownMs_ = 0;
     sinceSnapshotMs_ = 0;
     lastInT_ = 0;
+    insSent_ = 0;
+    insInFlight_.clear();
     topOutsSeen_ = 0;
     resetMatchStats();
 }

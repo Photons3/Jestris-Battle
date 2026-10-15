@@ -1452,18 +1452,21 @@ TEST_CASE("duel: GARB is accepted once, logged as G<id>x<lines>") {
     CHECK(ins[0] == "IN 1 0:G1x3");
 }
 
-TEST_CASE("duel: RESYNC keeps local events after t and ignores a GARB it already has") {
+TEST_CASE("duel: RESYNC keeps the events of INs the server has not consumed and ignores a GARB it already has") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
     duel.step(50);
     duel.match()->input(Action::HardDrop);
-    duel.step(100);
+    duel.step(50);
+    duel.update(100);  // IN 1: the hard drop
+    duel.step(50);
     duel.match()->input(Action::Left);
     duel.step(50);
     REQUIRE(duel.match()->t() == 200);
-    duel.update(200);  // our events go out
-    duel.onMessage("RESYNC 100 50:HD 80:G1x2");
+    duel.update(100);  // IN 2: the left, still on its way
+    REQUIRE(insOf(wire.sent) == std::vector<std::string>{"IN 100 50:HD", "IN 200 150:L"});
+    duel.onMessage("RESYNC 100 1 50:HD 80:G1x2");
     REQUIRE(duel.match() != nullptr);
     CHECK(duel.match()->t() == 200);
     CHECK(duel.match()->log() == std::vector<LogEntry>{{50, LogCode::HardDrop},
@@ -1475,6 +1478,79 @@ TEST_CASE("duel: RESYNC keeps local events after t and ignores a GARB it already
     CHECK(duel.game()->pendingGarbage() == pending);
 }
 
+// The reviewer's case: a key pressed at a frame's start is stamped with the last IN's tEnd, which is often the t the
+// server's RESYNC carries.
+TEST_CASE("duel: RESYNC keeps an in-flight event stamped exactly its t") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.step(200);
+    duel.update(200);  // IN 1
+    duel.match()->input(Action::HardDrop);
+    duel.step(16);
+    duel.update(16);  // IN 2, in flight
+    REQUIRE(insOf(wire.sent) == std::vector<std::string>{"IN 200", "IN 216 200:HD"});
+    const std::uint64_t live = duel.match()->hash();
+    duel.onMessage("RESYNC 200 1");
+    CHECK(duel.match()->log() == std::vector<LogEntry>{{200, LogCode::HardDrop}});
+    CHECK(duel.match()->hash() == live);
+    CHECK(duel.match()->takeUnsent().empty());
+}
+
+TEST_CASE("duel: RESYNC applies an in-flight event stamped before its t at that t") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.step(200);
+    duel.update(200);  // IN 1
+    duel.match()->input(Action::HardDrop);
+    duel.step(200);
+    duel.update(200);  // IN 2 (200:HD) is in flight, and the server forced the game on to 300
+    duel.onMessage("RESYNC 300 1");
+    CHECK(duel.match()->log() == std::vector<LogEntry>{{300, LogCode::HardDrop}});
+    CHECK(duel.match()->t() == 400);
+    CHECK(duel.match()->takeUnsent().empty());  // IN 2 still carries it, at 200
+}
+
+TEST_CASE("duel: RESYNC drops the events of a rejected IN and keeps later ones in flight") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.step(100);
+    duel.update(100);  // IN 1
+    duel.step(50);
+    duel.match()->input(Action::HardDrop);
+    duel.step(50);
+    duel.update(100);  // IN 2: rejected by the server
+    duel.match()->input(Action::Left);
+    duel.step(100);
+    duel.update(100);  // IN 3: in flight
+    REQUIRE(insOf(wire.sent) == std::vector<std::string>{"IN 100", "IN 200 150:HD", "IN 300 200:L"});
+    duel.onMessage("RESYNC 100 2");
+    CHECK(duel.match()->log() == std::vector<LogEntry>{{200, LogCode::Left}});
+    CHECK(duel.match()->t() == 300);
+    MatchGame expected = MatchGame::replay(duel.match()->setup(), {{200, LogCode::Left}}, 300);
+    CHECK(duel.match()->hash() == expected.hash());
+    CHECK(duel.match()->takeUnsent().empty());
+}
+
+TEST_CASE("duel: IN numbering starts again at each START") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    duel.match()->input(Action::HardDrop);
+    duel.step(100);
+    duel.update(100);  // IN 1 of the first match, never consumed
+    duel.onMessage("OVER WIN KO 3 0");
+    duel.onMessage("START 8 1 1 2");
+    duel.update(kCountdownMs);
+    REQUIRE(duel.phase() == DuelPhase::Playing);
+    duel.step(100);
+    duel.update(100);  // IN 1 of this match: no entries
+    duel.onMessage("RESYNC 100 0");
+    CHECK(duel.match()->log().empty());
+}
+
 TEST_CASE("duel: RESYNC to the same log leaves the board unchanged") {
     Wire wire;
     DuelSession duel(wire.sender());
@@ -1482,13 +1558,15 @@ TEST_CASE("duel: RESYNC to the same log leaves the board unchanged") {
     duel.onMessage("GARB 1 2");
     duel.step(50);
     duel.match()->input(Action::HardDrop);
-    duel.step(100);
+    duel.step(50);
+    duel.update(100);  // IN 1
+    duel.step(50);
     duel.match()->input(Action::Left);
     duel.match()->softDrop(true);
     duel.step(50);
-    duel.update(200);
+    duel.update(100);  // IN 2, in flight
     const std::uint64_t before = duel.match()->hash();
-    Resync resync{100, {}};
+    Resync resync{100, 1, {}};
     for (const LogEntry& entry : duel.match()->log())
         if (entry.t <= resync.t) resync.entries.push_back(entry);
     duel.onMessage(encode(resync));
@@ -1506,7 +1584,7 @@ TEST_CASE("duel: a GARB just before a RESYNC is still acknowledged once") {
         duel.update(200);
         wire.sent.clear();
         duel.onMessage("GARB 1 2");  // logged at t = 200, not sent yet
-        duel.onMessage(encode(Resync{resyncT, {}}));
+        duel.onMessage(encode(Resync{resyncT, 1, {}}));  // IN 1 (IN 200) consumed
         CHECK(duel.game()->pendingGarbage() == 2);
         CHECK(duel.match()->hasGarbage(1));
         duel.step(1);

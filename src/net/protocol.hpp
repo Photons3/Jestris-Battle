@@ -174,8 +174,11 @@ struct GarbageIn {  // GARB <id> <lines>: from the server, garbage to queue for 
     int lines = 0;
     friend bool operator==(const GarbageIn&, const GarbageIn&) = default;
 };
-struct Resync {  // RESYNC <t> <t>:<token>...: from the server, the receiver's authoritative log up to t
+// RESYNC <t> <n> <t>:<token>...: from the server, the receiver's authoritative log up to t, after it consumed the
+// receiver's first n INs of the match (handled, rejected or dropped)
+struct Resync {
     int t = 0;
+    int consumedIns = 0;
     std::vector<LogEntry> entries;  // no size cap, t never decreasing
     friend bool operator==(const Resync&, const Resync&) = default;
 };

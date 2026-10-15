@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <string>
@@ -149,6 +150,9 @@ private:
     int countdownMs_ = 0;
     int sinceSnapshotMs_ = 0;
     int lastInT_ = 0;      // the match t the last IN went out at
+    int insSent_ = 0;      // INs sent this match; the server's RESYNC says how many of them it has consumed
+    // The entries of each IN the server may not have consumed yet, by number (IN 1 is the match's first).
+    std::deque<std::pair<int, std::vector<LogEntry>>> insInFlight_;
     int topOutsSeen_ = 0;  // match_->topOuts() as of the last DEAD sent
     DuelReason reason_ = DuelReason::KOs;
     int kosMine_ = 0;

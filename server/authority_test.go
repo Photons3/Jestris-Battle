@@ -701,7 +701,7 @@ func TestResyncWaitsForNextINAndRateLimits(t *testing.T) {
 	r.drain(d.h)
 	d.at(1100)
 	r.tick(d.h, d.now)
-	if got, want := resyncs(), []string{"RESYNC 600 100:L 550:R"}; !slices.Equal(got, want) {
+	if got, want := resyncs(), []string{"RESYNC 600 2 100:L 550:R"}; !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 
@@ -717,7 +717,37 @@ func TestResyncWaitsForNextINAndRateLimits(t *testing.T) {
 	r.tick(d.h, d.now)
 	d.at(1250)
 	r.tick(d.h, d.now)
-	if got, want := resyncs(), []string{"RESYNC 600 100:L 550:R"}; !slices.Equal(got, want) {
+	if got, want := resyncs(), []string{"RESYNC 600 4 100:L 550:R"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	queued(d.ps[1])
+}
+
+// RESYNC's count covers every IN the runner consumed: handled, rejected whole or dropped from a full queue, but
+// not one still queued, nor SDF.
+func TestResyncCountsConsumedINs(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	a := d.ps[0]
+	d.at(500)
+	d.h.receive(a, "SDF 20")
+	d.h.receive(a, "IN 100 50:L")
+	d.h.receive(a, "IN 90") // rejected: tEnd went back
+	r.drain(d.h)
+	d.at(600)
+	r.tick(d.h, d.now)
+	if got, want := withPrefix(queued(a), "RESYNC"), []string{"RESYNC 100 2 50:L"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	sent := 2
+	for r.players[a].dropped.Load() == 0 { // a flood until the queue drops one
+		sent++
+		d.h.receive(a, fmt.Sprintf("IN %d", 100+sent))
+	}
+	r.drain(d.h)
+	d.at(700)
+	r.tick(d.h, d.now)
+	if got, want := withPrefix(queued(a), "RESYNC"), []string{fmt.Sprintf("RESYNC %d %d 50:L", 100+sent-1, sent)}; !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 	queued(d.ps[1])
