@@ -138,6 +138,7 @@ add_executable(tetris_tests
   tests/protocol_test.cpp
   tests/duel_test.cpp
   tests/match_game_test.cpp
+  tests/match_game_fixture_test.cpp
   tests/solo_test.cpp
   tests/planner_test.cpp
   tests/bot_player_test.cpp
@@ -147,6 +148,7 @@ add_executable(tetris_tests
   tests/keymap_test.cpp
   tests/settings_test.cpp)
 target_include_directories(tetris_tests PRIVATE tests)
+target_compile_definitions(tetris_tests PRIVATE TETRIS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(tetris_tests PRIVATE tetris_input tetris_duel tetris_bot tetris_audio tetris_settings doctest::doctest)
 target_compile_options(tetris_tests PRIVATE ${TETRIS_WARNINGS})
 add_test(NAME tetris_tests COMMAND tetris_tests)

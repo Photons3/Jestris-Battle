@@ -21,9 +21,10 @@ inline tetris::MatchSetup scriptSetup(std::uint32_t seed, bool royale) {
 
 // `count` random inputs and soft-drop changes over `durationMs`, plus a garbage batch of 1-4 lines about every
 // 5 s (ids 1, 2, ...), all from std::mt19937(seed) and ordered by t. The entries are what a player does, not a
-// log: a SoftOn while soft drop is already on, or an input during a freeze, logs nothing.
+// log: a SoftOn while soft drop is already on, or an input during a freeze, logs nothing. garbageEveryMs 0 leaves
+// the garbage out (a calmer match that lives longer).
 inline std::vector<tetris::LogEntry> scriptEvents(std::uint32_t seed, int count = 3000,
-                                                  int durationMs = tetris::kMatchMs) {
+                                                  int durationMs = tetris::kMatchMs, int garbageEveryMs = 5000) {
     using tetris::LogCode;
     std::mt19937 rng(seed);
     std::vector<tetris::LogEntry> events;
@@ -43,8 +44,8 @@ inline std::vector<tetris::LogEntry> scriptEvents(std::uint32_t seed, int count 
         else code = LogCode::SoftOff;
         events.push_back({t, code});
     }
-    for (int id = 1; id * 5000 < durationMs; ++id) {
-        const int t = std::clamp(id * 5000 + static_cast<int>(rng() % 1001) - 500, 0, durationMs - 1);
+    for (int id = 1; garbageEveryMs > 0 && id * garbageEveryMs < durationMs; ++id) {
+        const int t = std::clamp(id * garbageEveryMs + static_cast<int>(rng() % 1001) - 500, 0, durationMs - 1);
         events.push_back({t, LogCode::Garbage, id, 1 + static_cast<int>(rng() % 4)});
     }
     std::stable_sort(events.begin(), events.end(),
