@@ -557,7 +557,9 @@ TEST_CASE("duel events: our top-out survives the KO board reset") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
-    topOutWithGarbage(*duel.game());
+    topOutWithGarbage(duel);
+    duel.step(1);  // the KO: the match resets the board
+    REQUIRE(duel.match()->topOuts() == 1);
     duel.update(0);
     const std::vector<GameEvent> events = duel.game()->takeEvents();  // the last lock may also raise garbage
     REQUIRE_FALSE(events.empty());
@@ -1460,6 +1462,7 @@ TEST_CASE("duel: RESYNC keeps local events after t and ignores a GARB it already
     duel.match()->input(Action::Left);
     duel.step(50);
     REQUIRE(duel.match()->t() == 200);
+    duel.update(200);  // our events go out
     duel.onMessage("RESYNC 100 50:HD 80:G1x2");
     REQUIRE(duel.match() != nullptr);
     CHECK(duel.match()->t() == 200);
@@ -1491,4 +1494,25 @@ TEST_CASE("duel: RESYNC to the same log leaves the board unchanged") {
     duel.onMessage(encode(resync));
     CHECK(duel.match()->hash() == before);
     CHECK(duel.match()->t() == 200);
+}
+
+TEST_CASE("duel: a GARB just before a RESYNC is still acknowledged once") {
+    for (const int resyncT : {100, 200}) {  // before the ack's t, and at it
+        CAPTURE(resyncT);
+        Wire wire;
+        DuelSession duel(wire.sender());
+        startMatch(duel, wire);
+        duel.step(200);
+        duel.update(200);
+        wire.sent.clear();
+        duel.onMessage("GARB 1 2");  // logged at t = 200, not sent yet
+        duel.onMessage(encode(Resync{resyncT, {}}));
+        CHECK(duel.game()->pendingGarbage() == 2);
+        CHECK(duel.match()->hasGarbage(1));
+        duel.step(1);
+        duel.update(1);
+        CHECK(insOf(wire.sent) == std::vector<std::string>{"IN 201 200:G1x2"});
+        duel.onMessage("GARB 1 2");
+        CHECK(duel.game()->pendingGarbage() == 2);
+    }
 }

@@ -253,22 +253,37 @@ void DuelSession::acceptGarbage(int id, int lines) {
 }
 
 // Replaces the match with the server's log up to its t, then replays our own later events at their times up to where
-// we were. Those are already sent or on their way, so nothing is sent again.
+// we were. Events already sent are with the server, or on their way, so they are not sent again. Events never sent
+// (a GARB ack logged earlier in this same batch of messages) still go out in the next IN: one stamped after the
+// server's t keeps its time, an earlier one the server's log lacks (garbage: by id) is applied at that t.
 void DuelSession::resync(const Resync& correction) {
     const int now = match_->t();
     const std::uint64_t before = match_->hash();
-    std::vector<LogEntry> own;
-    std::ranges::copy_if(match_->log(), std::back_inserter(own),
-                         [&](const LogEntry& e) { return e.t > correction.t; });
+    // Never-sent entries are the newest in the log, so they are its tail and come after every sent one.
+    const std::vector<LogEntry> unsent = match_->takeUnsent();
+    const auto sentEnd = match_->log().end() - static_cast<std::ptrdiff_t>(unsent.size());
+    std::vector<LogEntry> ownSent;
+    std::copy_if(match_->log().begin(), sentEnd, std::back_inserter(ownSent),
+                 [&](const LogEntry& e) { return e.t > correction.t; });
     MatchGame corrected = MatchGame::replay(match_->setup(), correction.entries, correction.t);
-    for (const LogEntry& entry : own) {
-        corrected.advance(entry.t - corrected.t());
-        // A batch the server applied itself, before we acknowledged it, is not taken twice.
-        if (entry.code == LogCode::Garbage && corrected.hasGarbage(entry.garbageId)) continue;
+    // A batch the server applied itself, before our ack reached it, is not taken twice.
+    auto reapply = [&corrected](const LogEntry& entry) {
+        if (entry.code == LogCode::Garbage && corrected.hasGarbage(entry.garbageId)) return;
         corrected.apply(entry);
+    };
+    for (const LogEntry& entry : ownSent) {
+        corrected.advance(entry.t - corrected.t());
+        reapply(entry);
+    }
+    corrected.takeUnsent();
+    for (const LogEntry& entry : unsent) {
+        const bool serverHasIt =
+            entry.code != LogCode::Garbage && std::ranges::find(correction.entries, entry) != correction.entries.end();
+        if (entry.t <= correction.t && serverHasIt) continue;
+        if (entry.t > corrected.t()) corrected.advance(entry.t - corrected.t());
+        reapply(entry);  // logged at max(entry.t, the server's t), and sent with the next IN
     }
     if (corrected.t() < now) corrected.advance(now - corrected.t());
-    corrected.takeUnsent();
     // The replay re-earns attacks and events the live game already reported.
     corrected.game().takeOutgoingAttack();
     corrected.game().takeEvents();
