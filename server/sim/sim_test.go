@@ -229,6 +229,39 @@ func TestTwoMatchesAreIndependent(t *testing.T) {
 	}
 }
 
+// The module keeps no event log, so a flood of inputs does not grow its memory.
+func TestInputsDoNotGrowMemory(t *testing.T) {
+	m := newMatch(t)
+	h, err := m.New(9, 1, 2, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := m.mod.Memory().Size()
+	for range 300000 {
+		if err := m.Input(h, CodeLeft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := m.mod.Memory().Size(); after != before {
+		t.Errorf("memory grew from %d to %d bytes", before, after)
+	}
+}
+
+func TestFreeReleasesAHandle(t *testing.T) {
+	m := newMatch(t)
+	a, _ := m.New(1, 1, 2, 20)
+	b, _ := m.New(2, 1, 2, 20)
+	if err := m.Free(a); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := m.New(3, 1, 2, 7); err != nil || c != a {
+		t.Errorf("New after Free = %d, %v; want the freed handle %d", c, err, a)
+	}
+	if _, err := m.Hash(b); err != nil {
+		t.Errorf("the other game: %v", err)
+	}
+}
+
 func BenchmarkTwoMinuteGame(b *testing.B) {
 	m := newMatch(b)
 	b.ResetTimer()

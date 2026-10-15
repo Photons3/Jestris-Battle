@@ -29,24 +29,29 @@ bool logCodeOf(Action action, LogCode& code) {
 
 }  // namespace
 
-MatchGame::MatchGame(const MatchSetup& setup) : setup_(setup), game_(makeDuelGame(setup.start)) {}
+MatchGame::MatchGame(const MatchSetup& setup, bool keepLog)
+    : setup_(setup), game_(makeDuelGame(setup.start)), keepLog_(keepLog) {}
+
+void MatchGame::record(const LogEntry& entry) {
+    if (keepLog_) log_.push_back(entry);
+}
 
 void MatchGame::input(Action action) {
     LogCode code;
     if (!logCodeOf(action, code) || frozen()) return;
     game_.apply(action);
-    log_.push_back({t_, code});
+    record({t_, code});
 }
 
 void MatchGame::softDrop(bool on) {
     if (on == softDrop_) return;
     softDrop_ = on;
-    log_.push_back({t_, on ? LogCode::SoftOn : LogCode::SoftOff});
+    record({t_, on ? LogCode::SoftOn : LogCode::SoftOff});
 }
 
 void MatchGame::acceptGarbage(int id, int lines) {
     game_.receiveGarbage(lines);
-    log_.push_back({t_, LogCode::Garbage, id, lines});
+    record({t_, LogCode::Garbage, id, lines});
 }
 
 void MatchGame::apply(const LogEntry& entry) {

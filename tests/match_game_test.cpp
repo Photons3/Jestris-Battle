@@ -202,3 +202,22 @@ TEST_CASE("match_game: garbage accepted while frozen replays identically") {
         CHECK(MatchGame::replay(royaleSetup(), live.log(), live.t()).hash() == live.hash());
     }
 }
+
+TEST_CASE("match_game: without a log the game plays the same and keeps nothing") {
+    MatchGame logged(duelSetup());
+    MatchGame bare(duelSetup(), false);
+    for (MatchGame* match : {&logged, &bare}) {
+        match->advance(5);
+        match->input(Action::Left);
+        match->softDrop(true);
+        match->advance(3);
+        match->acceptGarbage(7, 2);
+        match->softDrop(false);
+        match->input(Action::HardDrop);
+        match->advance(500);
+    }
+    CHECK(bare.hash() == logged.hash());
+    CHECK(bare.log().empty());
+    CHECK(bare.takeUnsent().empty());
+    CHECK(logged.log().size() == 5);
+}

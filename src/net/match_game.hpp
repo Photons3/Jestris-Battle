@@ -28,7 +28,9 @@ struct MatchSetup {
 // server replays the log; both land on the same state however the client split its frames.
 class MatchGame {
 public:
-    explicit MatchGame(const MatchSetup& setup);
+    // Without `keepLog` (the server's simulation, which keeps its own record) nothing is logged: log() and
+    // takeUnsent() stay empty and hasGarbage() is always false. Play is the same either way.
+    explicit MatchGame(const MatchSetup& setup, bool keepLog = true);
 
     void input(Action action);  // applied now and logged at t(); Pause, and any input while frozen, does nothing
     void softDrop(bool on);     // logs SoftOn/SoftOff only on a change
@@ -58,6 +60,7 @@ public:
 
 private:
     void step();
+    void record(const LogEntry& entry);
 
     MatchSetup setup_;
     Game game_;
@@ -66,6 +69,7 @@ private:
     bool stopped_ = false;  // frozen for good: time-up (duel) or eliminated (royale)
     int topOuts_ = 0;
     bool softDrop_ = false;
+    bool keepLog_ = true;
     std::vector<LogEntry> log_;
     std::size_t sent_ = 0;  // log entries already returned by takeUnsent()
 };

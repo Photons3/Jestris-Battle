@@ -35,11 +35,11 @@ SIM_EXPORT("sim_new") int sim_new(std::uint32_t seed, int level, int players, in
     setup.softDropFactor = sdf;
     for (std::size_t h = 0; h < g_games.size(); ++h) {
         if (!g_games[h]) {
-            g_games[h].emplace(setup);
+            g_games[h].emplace(setup, false);  // the server keeps the canonical log itself
             return static_cast<int>(h);
         }
     }
-    g_games.emplace_back(std::in_place, setup);
+    g_games.emplace_back(std::in_place, setup, false);
     return static_cast<int>(g_games.size() - 1);
 }
 

@@ -21,7 +21,8 @@ const (
 	minSdf               = 5  // kMinSdf
 	maxSdf               = 40 // kMaxSdf
 	runnerTick           = 100 * time.Millisecond
-	runnerQueuePerPlayer = 64
+	runnerQueuePerPlayer = 64 // IN and SDF messages waiting per participant; more are dropped
+	entryAllowanceBase   = 256 // rule 4: a player's accepted entries stay within tEnd/4 + this
 	resyncInterval       = 100 * time.Millisecond
 	resyncLimitWindow    = 10 * time.Second // -max-resyncs counts the RESYNCs sent within this
 	defaultLead          = 250 * time.Millisecond
@@ -33,6 +34,7 @@ const (
 // gameSim is the game core the runner simulates with; *sim.Match satisfies it.
 type gameSim interface {
 	New(seed uint32, level, players, sdf int) (int, error)
+	Free(h int) error
 	Input(h, code int) error
 	AcceptGarbage(h, id, lines int) error
 	Advance(h, ms int) error
@@ -108,10 +110,12 @@ type playerSim struct {
 	started        bool // the sim game exists
 	t              int  // server-side match time
 	reportedEnd    int  // the last accepted IN's tEnd
+	accepted       int  // the player's entries accepted so far; rule 4 caps it at tEnd/4 + 256
+	changed        bool // an entry, accepted or forced, has changed the game since it was created
 	sdfSeen        bool
 	pending        map[int]garbageWindow
 	nextGarbageID  int
-	canonical      []string // accepted and forced entries, as t:token
+	canonical      []string // enforce only: accepted and forced entries, as t:token
 	needResync     bool
 	sawINSinceMark bool
 	resyncTimes    []time.Time // RESYNCs sent within the last resyncLimitWindow
@@ -124,6 +128,7 @@ type playerSim struct {
 	lastSnap       string
 	left           bool
 	dropped        atomic.Int32 // messages route() could not queue; counted under Hub.mu, read by the runner
+	waiting        atomic.Int32 // p's IN and SDF messages in the runner's inbox
 	ins            int          // INs route() has seen from p this match; only touched under Hub.mu
 	droppedIN      atomic.Int64 // the number of the last IN route() could not queue
 	consumedINs    int          // INs the runner has consumed (handled, rejected or dropped); RESYNC's count
@@ -162,7 +167,9 @@ type matchRunner struct {
 	now     func() time.Time
 	sim     gameSim
 	players map[*player]*playerSim // fixed at begin; route() reads it under Hub.mu
-	in      chan runnerMsg
+	inMu    sync.Mutex
+	inbox   []runnerMsg   // under inMu: what push() handed over, oldest first
+	notify  chan struct{} // 1-buffered: the inbox has something
 	stop    chan struct{}
 	wall0   time.Time
 	effects []runnerEffect
@@ -191,7 +198,7 @@ func (h *Hub) newRunner(r *room, m *match, seed uint32) *matchRunner {
 		now:     h.now,
 		sim:     s,
 		players: map[*player]*playerSim{},
-		in:      make(chan runnerMsg, runnerQueuePerPlayer*len(m.players)),
+		notify:  make(chan struct{}, 1),
 		stop:    make(chan struct{}),
 		wall0:   h.now().Add(countdown),
 	}
@@ -205,22 +212,42 @@ func (h *Hub) newRunner(r *room, m *match, seed uint32) *matchRunner {
 	return run
 }
 
-// push hands msg to the runner without blocking; the caller holds the lock. A full channel drops it, and
-// the runner treats that as a bad message from msg.from on its next drain.
+// push hands msg to the runner without blocking; the caller holds the lock. An IN or SDF from a player who
+// already has runnerQueuePerPlayer of them waiting is dropped, and the runner treats that as a bad message from
+// msg.from on its next drain; one player's flood never drops another's messages. Control messages (a claimed
+// ATK or DEAD, a player leaving) are never dropped.
 func (r *matchRunner) push(msg runnerMsg) {
 	ps := r.players[msg.from]
 	if msg.kind == msgIN {
 		ps.ins++
 		msg.seq = ps.ins
 	}
-	select {
-	case r.in <- msg:
-	default:
-		ps.dropped.Add(1)
-		if msg.kind == msgIN {
-			ps.droppedIN.Store(int64(msg.seq))
+	if msg.kind == msgIN || msg.kind == msgSDF {
+		if ps.waiting.Load() >= runnerQueuePerPlayer {
+			ps.dropped.Add(1)
+			if msg.kind == msgIN {
+				ps.droppedIN.Store(int64(msg.seq))
+			}
+			return
 		}
+		ps.waiting.Add(1)
 	}
+	r.inMu.Lock()
+	r.inbox = append(r.inbox, msg)
+	r.inMu.Unlock()
+	select {
+	case r.notify <- struct{}{}:
+	default:
+	}
+}
+
+// take empties the inbox.
+func (r *matchRunner) take() []runnerMsg {
+	r.inMu.Lock()
+	defer r.inMu.Unlock()
+	msgs := r.inbox
+	r.inbox = nil
+	return msgs
 }
 
 // loop runs the match until endMatch closes stop: messages as they come, the horizon and snapshots every
@@ -234,8 +261,7 @@ func (r *matchRunner) loop(h *Hub) {
 			r.drain(h)
 			r.finish()
 			return
-		case msg := <-r.in:
-			r.handle(msg)
+		case <-r.notify:
 			r.drain(h)
 		case <-ticker.C:
 			r.tick(h, r.now())
@@ -253,20 +279,19 @@ func (r *matchRunner) drain(h *Hub) {
 		}
 		ps.consumedINs = max(ps.consumedINs, int(ps.droppedIN.Load()))
 	}
-	for {
-		select {
-		case msg := <-r.in:
+	for msgs := r.take(); len(msgs) > 0; msgs = r.take() {
+		for _, msg := range msgs {
 			r.handle(msg)
-			continue
-		default:
 		}
-		break
 	}
 	r.apply(h)
 }
 
 func (r *matchRunner) handle(msg runnerMsg) {
 	ps := r.players[msg.from]
+	if msg.kind == msgIN || msg.kind == msgSDF {
+		ps.waiting.Add(-1)
+	}
 	switch msg.kind {
 	case msgIN:
 		ps.consumedINs = max(ps.consumedINs, msg.seq)
@@ -506,16 +531,45 @@ func parseCount(s string) (int, bool) {
 	return n, true
 }
 
-// handleSDF creates ps's game with its soft-drop factor. Only one SDF, before the first IN, is allowed.
+// handleSDF creates ps's game with its soft-drop factor. Only one SDF is allowed, before any entry has changed
+// the game: one that arrives after the horizon started the game with the default rebuilds it.
 func (r *matchRunner) handleSDF(ps *playerSim, text string) {
 	arg, found := strings.CutPrefix(text, "SDF ")
 	n, ok := parseCount(arg)
-	if !found || !ok || (n != 0 && (n < minSdf || n > maxSdf)) || ps.sdfSeen || ps.started {
+	if !found || !ok || (n != 0 && (n < minSdf || n > maxSdf)) || ps.sdfSeen || ps.changed {
 		r.mark(ps, "bad-in")
 		return
 	}
 	ps.sdfSeen = true
+	if ps.started {
+		r.rebuildGame(ps, n)
+		return
+	}
 	r.ensureGame(ps, n)
+}
+
+// rebuildGame replaces ps's game, which no entry has changed, with one at soft-drop factor sdf advanced to the
+// same t. Soft drop does nothing before an S+, so the new game is the one the client has been playing. Free
+// releases the old game's handle.
+func (r *matchRunner) rebuildGame(ps *playerSim, sdf int) {
+	if r.failed {
+		return
+	}
+	if err := r.sim.Free(ps.h); err != nil {
+		r.fail(ps, err)
+		return
+	}
+	h, err := r.sim.New(r.seed, r.level, len(r.match.players), sdf)
+	if err != nil {
+		r.fail(ps, err)
+		return
+	}
+	ps.h = h
+	if ps.t > 0 {
+		if err := r.sim.Advance(h, ps.t); err != nil {
+			r.fail(ps, err)
+		}
+	}
 }
 
 // handleIN applies an IN: the timing and shape rules of the spec's section 3, then each entry at its t.
@@ -526,7 +580,7 @@ func (r *matchRunner) handleIN(ps *playerSim, text string) {
 	tEnd, entries, ok := parseIN(text)
 	lead := int(r.auth.lead / time.Millisecond)
 	if ok && (tEnd < ps.reportedEnd || tEnd > r.wallMs(r.now())+lead ||
-		len(entries) > 0 && entries[0].t < ps.reportedEnd) {
+		len(entries) > 0 && entries[0].t < ps.reportedEnd || ps.accepted+len(entries) > tEnd/4+entryAllowanceBase) {
 		ok = false
 	}
 	if !ok {
@@ -555,11 +609,12 @@ func (r *matchRunner) handleIN(ps *playerSim, text string) {
 			}
 			delete(ps.pending, e.gid)
 			err = r.sim.AcceptGarbage(ps.h, e.gid, w.lines)
-			ps.canonical = append(ps.canonical, fmt.Sprintf("%d:G%dx%d", e.t, e.gid, w.lines))
+			r.record(ps, fmt.Sprintf("%d:G%dx%d", e.t, e.gid, w.lines))
 		} else {
 			err = r.sim.Input(ps.h, e.code)
-			ps.canonical = append(ps.canonical, fmt.Sprintf("%d:%s", e.t, e.token))
+			r.record(ps, fmt.Sprintf("%d:%s", e.t, e.token))
 		}
+		ps.accepted++
 		if err != nil {
 			r.fail(ps, err)
 			return
@@ -592,7 +647,7 @@ func (r *matchRunner) advanceTo(ps *playerSim, target int) {
 			r.fail(ps, err)
 			return
 		}
-		ps.canonical = append(ps.canonical, fmt.Sprintf("%d:G%dx%d", at, g.id, g.lines))
+		r.record(ps, fmt.Sprintf("%d:G%dx%d", at, g.id, g.lines))
 		r.mark(ps, "garbage-late")
 	}
 	if !r.step(ps, target) {
@@ -623,6 +678,14 @@ func (r *matchRunner) advanceTo(ps *playerSim, target int) {
 	if eliminated && !ps.eliminated {
 		ps.eliminated = true
 		r.effects = append(r.effects, runnerEffect{kind: effEliminated, from: ps.p})
+	}
+}
+
+// record notes an entry applied to ps's game; enforce mode keeps it in the canonical log for RESYNC.
+func (r *matchRunner) record(ps *playerSim, entry string) {
+	ps.changed = true
+	if r.auth.mode == "enforce" {
+		ps.canonical = append(ps.canonical, entry)
 	}
 }
 

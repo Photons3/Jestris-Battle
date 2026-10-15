@@ -194,6 +194,12 @@ func (m *Match) New(seed uint32, level, players, sdf int) (int, error) {
 	return int(api.DecodeI32(r)), err
 }
 
+// Free releases game h; New may reuse its handle.
+func (m *Match) Free(h int) error {
+	_, err := m.callInts("sim_free", h)
+	return err
+}
+
 func (m *Match) Input(h, code int) error {
 	_, err := m.callInts("sim_input", h, code)
 	return err

@@ -40,6 +40,7 @@ func (f *fakeSim) New(seed uint32, level, players, sdf int) (int, error) {
 	f.handles++
 	return f.handles - 1, nil
 }
+func (f *fakeSim) Free(h int) error        { f.record("Free(%d)", h); return nil }
 func (f *fakeSim) Input(h, code int) error { f.record("Input(%d,%d)", h, code); return nil }
 func (f *fakeSim) AcceptGarbage(h, id, lines int) error {
 	f.record("AcceptGarbage(%d,%d,%d)", h, id, lines)
@@ -71,11 +72,18 @@ func (f *fakeSim) TakeAttack(h int) (int, error) {
 	return n, nil
 }
 
+// queuedMsgs is the number of messages waiting in r's inbox.
+func queuedMsgs(r *matchRunner) int {
+	r.inMu.Lock()
+	defer r.inMu.Unlock()
+	return len(r.inbox)
+}
+
 // steps lists the recorded calls for handle h, without New.
 func (f *fakeSim) steps(h int) []string {
 	var out []string
 	for _, c := range f.calls {
-		if !strings.HasPrefix(c, "New(") && strings.Contains(c, fmt.Sprintf("(%d,", h)) {
+		if !strings.HasPrefix(c, "New(") && (strings.Contains(c, fmt.Sprintf("(%d,", h)) || c == fmt.Sprintf("Free(%d)", h)) {
 			out = append(out, c)
 		}
 	}
@@ -241,8 +249,8 @@ func TestINStepsSimToEachEventThenTEnd(t *testing.T) {
 		t.Errorf("SDF 7 did not create Bob's game: %q", f.calls)
 	}
 	ps := d.runner().players[d.ps[0]]
-	if ps.t != 120 || ps.reportedEnd != 120 || !slices.Equal(ps.canonical, []string{"10:L", "50:HD"}) {
-		t.Errorf("t=%d reportedEnd=%d canonical=%q", ps.t, ps.reportedEnd, ps.canonical)
+	if ps.t != 120 || ps.reportedEnd != 120 || ps.accepted != 2 || ps.canonical != nil { // log mode keeps no log
+		t.Errorf("t=%d reportedEnd=%d accepted=%d canonical=%q", ps.t, ps.reportedEnd, ps.accepted, ps.canonical)
 	}
 	d.expectQueues(t, nil, nil)
 }
@@ -335,8 +343,8 @@ func TestGarbageWindow(t *testing.T) {
 	if got := f.steps(0); !slices.Equal(got, want) {
 		t.Errorf("steps\n %q\nwant\n %q", got, want)
 	}
-	if want := []string{"1100:G1x2", "1950:G2x3", "9100:G3x1"}; !slices.Equal(ps.canonical, want) {
-		t.Errorf("canonical %q, want %q", ps.canonical, want)
+	if ps.accepted != 2 || ps.canonical != nil { // G1 and G3; G2 was forced. Log mode keeps no log.
+		t.Errorf("accepted %d, canonical %q", ps.accepted, ps.canonical)
 	}
 	if ps.wouldResync["garbage-bad"] != 2 || len(ps.pending) != 0 {
 		t.Errorf("wouldResync=%v pending=%v", ps.wouldResync, ps.pending)
@@ -391,8 +399,8 @@ func TestBadINShapes(t *testing.T) {
 	ok := "IN 600" + strings.Repeat(" 550:L", maxInputEvents)
 	d.h.receive(a, ok)
 	r.drain(d.h)
-	if ps.reportedEnd != 600 || len(ps.canonical) != maxInputEvents {
-		t.Errorf("64 entries: reportedEnd=%d, %d entries", ps.reportedEnd, len(ps.canonical))
+	if ps.reportedEnd != 600 || ps.accepted != maxInputEvents {
+		t.Errorf("64 entries: reportedEnd=%d, %d entries", ps.reportedEnd, ps.accepted)
 	}
 }
 
@@ -413,6 +421,87 @@ func TestBadINShapesIncludeBadSDF(t *testing.T) {
 	}
 	if got := d.sim().calls; !slices.Equal(got, []string{"New(101,1,2,0)"}) {
 		t.Errorf("calls %q", got)
+	}
+}
+
+// Rule 4's ceiling: an IN that would take the player past tEnd/4 + 256 accepted entries is dropped whole.
+func TestINEntryCeiling(t *testing.T) {
+	d := directMatch(t, "Ann", "Bob")
+	r := d.runner()
+	a := d.ps[0]
+	d.at(10000)
+	full := "IN 0" + strings.Repeat(" 0:L", maxInputEvents)
+	for range 4 {
+		d.h.receive(a, full) // 256 entries at tEnd 0: exactly the ceiling
+	}
+	d.h.receive(a, "IN 3 3:L") // 257 > 3/4 + 256
+	d.h.receive(a, "IN 4 4:L") // 257 = 4/4 + 256
+	r.drain(d.h)
+	ps := r.players[a]
+	if ps.accepted != 257 || ps.wouldResync["bad-in"] != 1 || ps.reportedEnd != 4 {
+		t.Errorf("accepted=%d wouldResync=%v reportedEnd=%d", ps.accepted, ps.wouldResync, ps.reportedEnd)
+	}
+	if ps.canonical != nil {
+		t.Errorf("log mode kept a canonical log of %d entries", len(ps.canonical))
+	}
+}
+
+// Enforce mode keeps the canonical log for RESYNC: accepted entries, and forced garbage at the window's end.
+func TestEnforceKeepsTheCanonicalLog(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	d.at(2000)
+	d.sim().attacks[0] = []int{4}
+	d.h.receive(d.ps[0], "IN 100") // Ann's game is handle 0; GARB 1 to Bob at t0 = 0
+	r.drain(d.h)
+	d.h.receive(d.ps[1], "IN 1000 900:L")
+	r.drain(d.h)
+	if got, want := r.players[d.ps[1]].canonical, []string{"750:G1x4", "900:L"}; !slices.Equal(got, want) {
+		t.Errorf("canonical %q, want %q", got, want)
+	}
+	queued(d.ps[1])
+}
+
+// An SDF that arrives after the horizon started the game with the default still applies while no entry has
+// changed the game: the game is rebuilt with it and advanced back to the server's t.
+func TestLateSDFRebuildsTheGame(t *testing.T) {
+	d := directMatch(t, "Ann", "Bob")
+	r := d.runner()
+	a, b := d.ps[0], d.ps[1]
+	d.h.receive(d.ps[0], "ATK 2") // GARB 1 to Bob at t0 = 0
+	r.drain(d.h)
+	d.at(3000)
+	r.tick(d.h, d.now) // Ann's game is handle 0, Bob's handle 1, both at 2000; Bob's G1 forced at 750
+	f := d.sim()
+	d.h.receive(a, "SDF 7")
+	d.h.receive(b, "SDF 7") // forced garbage changed Bob's game: too late
+	r.drain(d.h)
+	psA, psB := r.players[a], r.players[b]
+	if got, want := f.steps(0), []string{"Advance(0,2000)", "Free(0)"}; !slices.Equal(got, want) {
+		t.Errorf("handle 0 steps %q, want %q", got, want)
+	}
+	if !slices.Contains(f.calls, "New(101,1,2,7)") || psA.h != 2 || psA.t != 2000 || len(psA.wouldResync) != 0 {
+		t.Errorf("calls %q h=%d t=%d wouldResync=%v", f.calls, psA.h, psA.t, psA.wouldResync)
+	}
+	if got, want := f.steps(2), []string{"Advance(2,2000)"}; !slices.Equal(got, want) {
+		t.Errorf("rebuilt game steps %q, want %q", got, want)
+	}
+	if psB.wouldResync["bad-in"] != 1 || psB.h != 1 {
+		t.Errorf("Bob wouldResync=%v h=%d", psB.wouldResync, psB.h)
+	}
+	d.h.receive(a, "SDF 9") // a second SDF
+	d.h.receive(a, "IN 2100 2050:L")
+	r.drain(d.h)
+	if got, want := f.steps(2), []string{"Advance(2,2000)", "Advance(2,50)", "Input(2,0)", "Advance(2,50)"}; !slices.Equal(got, want) {
+		t.Errorf("rebuilt game steps %q, want %q", got, want)
+	}
+	if psA.wouldResync["bad-in"] != 1 {
+		t.Errorf("Ann wouldResync=%v", psA.wouldResync)
+	}
+	d.h.receive(a, "SDF 7") // after an accepted entry, too
+	r.drain(d.h)
+	if psA.wouldResync["bad-in"] != 2 {
+		t.Errorf("Ann wouldResync=%v", psA.wouldResync)
 	}
 }
 
@@ -483,7 +572,7 @@ func TestRunnerChannelFullMarksBadIN(t *testing.T) {
 	d := directMatch(t, "Ann", "Bob")
 	r := d.runner()
 	d.at(10000)
-	for i := range cap(r.in) + 3 {
+	for i := range runnerQueuePerPlayer + 3 {
 		d.h.receive(d.ps[0], fmt.Sprintf("IN %d", i))
 	}
 	if got := r.players[d.ps[0]].dropped.Load(); got != 3 {
@@ -492,6 +581,57 @@ func TestRunnerChannelFullMarksBadIN(t *testing.T) {
 	r.drain(d.h)
 	if got := r.players[d.ps[0]].wouldResync["bad-in"]; got != 1 {
 		t.Errorf("bad-in = %d, want 1", got)
+	}
+}
+
+// One player's flood fills only that player's queue: another player's IN and every claimed ATK still arrive.
+func TestOneFloodDoesNotDropOthers(t *testing.T) {
+	d := directMatch(t, "Ann", "Bob")
+	r := d.runner()
+	a, b := d.ps[0], d.ps[1]
+	d.at(10000)
+	for i := range 3 * runnerQueuePerPlayer {
+		d.h.receive(a, fmt.Sprintf("IN %d", i))
+	}
+	d.h.receive(a, "ATK 2")
+	d.h.receive(b, "IN 100 50:L")
+	d.h.receive(b, "ATK 3")
+	if got := r.players[a].dropped.Load(); got != 2*runnerQueuePerPlayer {
+		t.Errorf("Ann dropped %d, want %d", got, 2*runnerQueuePerPlayer)
+	}
+	r.drain(d.h)
+	psA, psB := r.players[a], r.players[b]
+	if psA.wouldResync["bad-in"] != 1 || psA.reportedEnd != runnerQueuePerPlayer-1 {
+		t.Errorf("Ann wouldResync=%v reportedEnd=%d", psA.wouldResync, psA.reportedEnd)
+	}
+	if len(psB.wouldResync) != 0 || psB.reportedEnd != 100 || psB.accepted != 1 {
+		t.Errorf("Bob wouldResync=%v reportedEnd=%d accepted=%d", psB.wouldResync, psB.reportedEnd, psB.accepted)
+	}
+	if psA.claimedSent != 2 || psB.claimedSent != 3 {
+		t.Errorf("claimedSent Ann=%d Bob=%d", psA.claimedSent, psB.claimedSent)
+	}
+	d.expectQueues(t, []string{"GARB 1 3"}, []string{"GARB 1 2"})
+	// The cap is per message waiting: once the runner has handled them, Ann may queue again.
+	d.h.receive(a, "IN 5000")
+	if got := r.players[a].dropped.Load(); got != 0 {
+		t.Errorf("after the drain, dropped %d", got)
+	}
+}
+
+// A leaving player's message is never dropped, however full the queues are.
+func TestFloodDoesNotDropLeft(t *testing.T) {
+	d := directMatch(t, "Ann", "Bob", "Cat")
+	r := d.runner()
+	d.at(10000)
+	for _, p := range d.ps {
+		for i := range 2 * runnerQueuePerPlayer {
+			d.h.receive(p, fmt.Sprintf("IN %d", i))
+		}
+	}
+	d.h.leave(d.ps[2])
+	r.drain(d.h)
+	if !r.players[d.ps[2]].left {
+		t.Error("Cat's leaving was dropped")
 	}
 }
 
@@ -504,8 +644,8 @@ func TestRunnerIgnoresNonParticipants(t *testing.T) {
 	queued(cat)
 	d.h.receive(cat, "IN 100 50:L")
 	d.h.receive(cat, "SDF 10")
-	if len(r.in) != 0 {
-		t.Errorf("%d messages queued for the runner from a non-participant", len(r.in))
+	if n := queuedMsgs(r); n != 0 {
+		t.Errorf("%d messages queued for the runner from a non-participant", n)
 	}
 }
 
@@ -576,7 +716,7 @@ func TestEnforceIgnoresForgedAttackAndDead(t *testing.T) {
 	r.drain(d.h)
 	d.expectQueues(t, nil, nil)
 	m := d.h.rooms["AAAA"].match
-	if m == nil || m.sent[d.ps[0]] != 0 || m.kos[d.ps[0]] != 0 || len(r.in) != 0 {
+	if m == nil || m.sent[d.ps[0]] != 0 || m.kos[d.ps[0]] != 0 || queuedMsgs(r) != 0 {
 		t.Errorf("a forged message changed the match: %+v", m)
 	}
 
