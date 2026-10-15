@@ -170,7 +170,11 @@ type matchRunner struct {
 func (h *Hub) newRunner(r *room, m *match, seed uint32) *matchRunner {
 	s, err := h.newSim()
 	if err != nil {
-		log.Printf("authority room=%s seed=%d: no simulation: %v", r.code, seed, err)
+		if h.auth.mode == "enforce" { // begin() then ends the match: player 0 is no player's game
+			log.Printf("sim error room=%s seed=%d player=%d: %v", r.code, seed, 0, err)
+		} else {
+			log.Printf("authority room=%s seed=%d: no simulation: %v", r.code, seed, err)
+		}
 		return nil
 	}
 	run := &matchRunner{

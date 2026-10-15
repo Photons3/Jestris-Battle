@@ -885,3 +885,56 @@ func TestRealSimDuelKO(t *testing.T) {
 	}
 	r.finish()
 }
+
+func TestEnforceSimStartFailureEndsMatch(t *testing.T) {
+	for _, names := range [][]string{{"Ann", "Bob"}, {"Ann", "Bob", "Cat"}} {
+		logs := captureLog(t)
+		h := NewHub()
+		h.newCode = func() string { return "AAAA" }
+		h.newSeed = func() uint32 { return 101 }
+		clock := &fakeClock{}
+		h.afterFunc = clock.afterFunc
+		h.auth.mode = "enforce"
+		h.newSim = func() (gameSim, error) { return nil, errors.New("no engine") }
+		var ps []*player
+		for _, name := range names {
+			ps = append(ps, testPlayer(name))
+		}
+		h.receive(ps[0], "CREATE 1")
+		for _, p := range ps[1:] {
+			h.receive(p, "JOIN AAAA")
+		}
+		for _, p := range ps {
+			queued(p)
+		}
+		h.receive(ps[0], "BEGIN")
+		start, during, after := "START 101 1", "PLAYERS 1", "PLAYERS 1"
+		for i, p := range ps {
+			start += fmt.Sprintf(" %d", i+1)
+			during += fmt.Sprintf(" %d:%s:1", i+1, p.name)
+			after += fmt.Sprintf(" %d:%s:0", i+1, p.name)
+		}
+		want := []string{start, during, "LEFT", after}
+		for _, p := range ps {
+			if got := queued(p); !slices.Equal(got, want) {
+				t.Errorf("%s got %q, want %q", p.name, got, want)
+			}
+		}
+		if h.rooms["AAAA"].match != nil {
+			t.Error("the match did not end")
+		}
+		if len(names) == 2 && !clock.timer(0).isStopped() {
+			t.Error("the duel timer is still armed")
+		}
+		if !strings.Contains(logs.String(), "sim error room=AAAA seed=101 player=0: no engine") {
+			t.Errorf("log %q lacks the sim error", logs.String())
+		}
+		h.receive(ps[0], "ATK 4") // no fallback to the client's word
+		h.receive(ps[1], "DEAD")
+		for _, p := range ps {
+			if got := queued(p); len(got) != 0 {
+				t.Errorf("%s got %q after the match ended", p.name, got)
+			}
+		}
+	}
+}

@@ -499,6 +499,7 @@ func (p *player) disconnect() {
 
 // begin starts a match for everyone in p's room if p is the host, there are 2 or more players and no match
 // is running. Each participant gets the same START, then the room gets PLAYERS. A duel arms the match timer.
+// In enforce mode a match whose simulation cannot start ends at once, as after a simulation error.
 func (h *Hub) begin(p *player) []outgoing {
 	r := p.room
 	if p.id != r.hostID || len(r.players) < 2 || r.match != nil {
@@ -529,7 +530,14 @@ func (h *Hub) begin(p *player) []outgoing {
 	for _, q := range m.players {
 		out = append(out, outgoing{q, b.String()})
 	}
-	return append(out, r.broadcast(r.rosterMessage())...)
+	out = append(out, r.broadcast(r.rosterMessage())...)
+	if m.runner == nil && h.auth.mode == "enforce" {
+		// a failed simulation: never fall back to trusting clients
+		out = append(out, m.tellConnected(r, "LEFT")...)
+		r.endMatch()
+		out = append(out, r.broadcast(r.rosterMessage())...)
+	}
+	return out
 }
 
 // timeUp runs on the timer's goroutine and ends match id unless it is already over or replaced.
