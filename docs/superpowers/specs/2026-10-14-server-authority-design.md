@@ -50,7 +50,7 @@ keys -> MatchGame (predicts, instant)
                                          -> every 100 ms: SNAP <id> from the server's own board
 GARB <id> <lines>            <-----
 acceptGarbage -> logs G<id>  ----->      applies G<id> at the reported t, if inside the window
-RESYNC <t> <log>             <-----      only when the server rejected or forced something
+RESYNC <t> <n> <log>         <-----      only when the server rejected or forced something
 ```
 
 `MatchGame` (section 4) is one C++ class compiled into both the browser client and the server's WASM module, so the match rules exist in exactly one place.
@@ -60,7 +60,7 @@ RESYNC <t> <log>             <-----      only when the server rejected or forced
 All times `t` are integer milliseconds of match time, counted from the end of the countdown. This is the clock `MatchGame::advance` moves forward one millisecond at a time.
 
 ### Client → server
-- `SDF <n>`: the player's soft-drop factor (`0` = instant, otherwise `kMinSdf`–`kMaxSdf`, 5–40). Sent once between `START` and the first `IN`. If it's missing, the server assumes `kDefaultSoftDropFactor`. Any other value is a bad message.
+- `SDF <n>`: the player's soft-drop factor (`0` = instant, otherwise `kMinSdf`–`kMaxSdf`, 5–40). Sent once between `START` and the first `IN`. If it's missing, the server assumes `kDefaultSoftDropFactor`. Any other value is a bad message. An `SDF` that arrives after the server started that player's game with the default is still accepted while none of the player's entries has been accepted: the server rebuilds the game with it and advances it back to its current `t` (soft drop has no effect before an `S+`, so this is exact).
 - `IN <tEnd> [<t>:<code> ...]`: the client's game has reached `tEnd`, and these events happened at these times.
   - Events are in order, with `t` never decreasing. Each `t` must be ≥ the previous message's `tEnd` and ≤ this message's `tEnd`.
   - `tEnd` never decreases.
@@ -69,13 +69,14 @@ All times `t` are integer milliseconds of match time, counted from the end of th
     - `L R CW CCW HD H LW RW`: the `Action`s Left, Right, RotateCW, RotateCCW, HardDrop, Hold, LeftWall, RightWall. `Pause` is never sent.
     - `S+` / `S-`: soft drop pressed / released.
     - `G<id>x<lines>`: garbage batch `id` of `lines` lines accepted. The client's `lines` value is ignored; the server uses the amount it sent. The count is on the wire so that the same token can appear in a `RESYNC`, where the client needs it to replay.
-  - **When it's sent:** at the end of every frame that produced events, and otherwise every 100 ms as a heartbeat.
+  - **When it's sent:** at the end of every frame that produced events, and otherwise every 100 ms as a heartbeat. A catch-up after a stalled or hidden tab sends one `IN` covering the whole stall (split only to respect the 64-event cap), not one per 100 ms of replayed time.
+  - The client numbers its `IN` messages from 1 within each match; the number is not on the wire, because the server counts them in the order they arrive.
 
 ### Server → client
 - `GARB <id> <lines>`: incoming garbage, replacing `ATK` toward the receiver in both modes.
   - `id` counts up from 1 within the match, per receiver.
   - The garbage's look needs no data on the wire. Bomb columns (duel) and hole columns (royale) come from the receiver's seeded `garbageRng_`, which is identical on both sides.
-- `RESYNC <t> [<t>:<code> ...]`: the canonical log of the receiver's own events from the start of the match, valid up to `t`.
+- `RESYNC <t> <n> [<t>:<code> ...]`: the canonical log of the receiver's own events from the start of the match, valid up to `t`, after the server consumed the receiver's first `n` `IN` messages (processed, rejected or dropped). Time alone can't tell an in-flight event from one the server already handled or rejected, so the client uses `n` (section 6).
 - `SNAP`, `KO`, `OUT`, `OVER`, `PLAYERS`, `START` and `LEFT` are unchanged. `SNAP` now comes from the server's simulation.
 
 ### Server modes (`-authority`)
@@ -106,7 +107,7 @@ The server notes `wall0` = the time it sent `START` + `countdown`. A player's al
    - `G<id>` must arrive with `T0 ≤ t ≤ T0 + window`.
    - If the server's `t` for that player passes `T0 + window` without it, the server applies the batch at `T0 + window` itself.
    - A `G<id>` stamped too early, or for an unknown or already-applied id, is dropped.
-4. **Message shape.** A bad `IN` (it doesn't parse, has more than 64 events, a decreasing `t`, or an event outside `[previous tEnd, tEnd]`) is dropped whole.
+4. **Message shape.** A bad `IN` (it doesn't parse, has more than 64 events, a decreasing `t`, or an event outside `[previous tEnd, tEnd]`) is dropped whole. So is an `IN` that would take the player's accepted events past `tEnd / 4 + 256` for the match (a generous ceiling of 250 inputs a second; it bounds the server's memory per player).
 5. **When a correction is sent.** In `enforce` mode, a rejected message or event, or forced garbage, marks the player as needing a `RESYNC`. A forced advance on its own does not: the client replays the same no-input stall, so the boards still agree.
    - A pending `RESYNC` goes out on the first 100 ms tick after that player's next `IN`, so a hidden tab that sends nothing receives nothing until it wakes.
    - At most one `RESYNC` per player per 100 ms. A single `RESYNC` covers everything that happened in that interval.
@@ -201,7 +202,8 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
   - one handle per participant;
   - per player: the server-side `t`, canonical log, pending garbage windows, last `RESYNC` time and resync count;
   - a 100 ms ticker for the snapshot and horizon checks.
-- **`route()`:** in a match, `IN` and `SDF` are pushed onto the runner's channel without simulating under `Hub.mu`. A full channel (capacity 64 per player) drops the message, which rule 4 then treats like any bad message.
+- **`route()`:** in a match, `IN` and `SDF` are pushed onto the runner's queue without simulating under `Hub.mu`. Each player may have at most 64 `IN`/`SDF` messages waiting; beyond that the message is dropped, which rule 4 then treats like any bad message, and one player's flood never drops another player's messages. Control messages (a claimed `ATK` or `DEAD` in log mode, a player leaving) are never dropped.
+- **Memory:** the server keeps the canonical log only in `enforce`, and the simulation module keeps no event log of its own.
 - **The runner:**
   1. steps the simulation;
   2. collects outputs (attack lines with sender, top-outs, snapshots, `GARB`, `RESYNC`);
@@ -227,13 +229,14 @@ This replaces the top-out handling at the end of the frame in `DuelSession::upda
   - Sends `IN` from `takeUnsent()` (or a heartbeat every 100 ms), and in `log` mode also the old messages.
   - Counts local `Sent` from `game().takeOutgoingAttack()` for sound and the live tally.
   - Shows the KO flash when `match.kos()` rises.
+  - Doesn't count wall time from before `START` into the match: the frame that processes `START` starts the countdown with no elapsed time, so a tab that was hidden or throttled when `START` arrived can't start ahead of the server's clock.
   - `KO`, `OUT` and `OVER` from the server stay final.
 - **On `GARB id n`:** `match->acceptGarbage(id, n)`, the `Attacked` event, and add to `sentTheirs`.
 - **On `RESYNC t log`:**
-  1. `own = match->log()` entries with `t' > t`.
+  1. `own` = the entries of every `IN` numbered above `n` (in flight: the server hasn't consumed them yet), followed by the entries not sent yet (such as the ack of a `GARB` that arrived just before the `RESYNC`).
   2. `match = MatchGame::replay(setup, log, t)`.
-  3. Re-apply `own` at their times while advancing to the previous local `t`.
-  4. Mark everything already sent as sent. The server already has those entries, or will, because those messages are in flight. Entries logged since the last `IN` (such as the ack of a `GARB` that arrived just before the `RESYNC`) have not been sent: they stay queued for the next `IN`, and one stamped at or before `t` that the server's log lacks is applied at `t`.
+  3. Re-apply `own` while advancing to the previous local `t`: each entry at its own time, or at `t` if it is stamped earlier (the server will apply it at its arrival `t` or drop it as backdated, and either way a later `RESYNC` settles it). A garbage entry whose id the server's log already has is skipped.
+  4. In-flight entries stay marked as sent; entries not sent yet stay queued for the next `IN`. Entries of `IN`s numbered `n` or below that aren't in the server's log were rejected and are gone.
   5. Log one line to the console with both hashes.
 
   The board snaps to the result. In the common honest cases, a hidden tab and a slow garbage acknowledgement, the replay gives the same board, so nothing changes on screen.
