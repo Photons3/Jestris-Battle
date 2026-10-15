@@ -20,6 +20,18 @@ inline constexpr int kMaxNameLength = 12;  // maxNameLength in server/hub.go
 inline constexpr int kMaxListedRooms = 20;  // maxListedRooms in server/hub.go
 inline constexpr int kMaxRoomPlayers = 16;  // maxRoomPlayers in server/hub.go
 
+// One entry of a player's match log (see net/match_game.hpp): an input, a soft-drop change or an accepted garbage
+// batch, stamped with the match time t in ms.
+enum class LogCode : std::uint8_t { Left, Right, RotateCW, RotateCCW, HardDrop, Hold, LeftWall, RightWall,
+                                    SoftOn, SoftOff, Garbage };
+struct LogEntry {
+    int t = 0;
+    LogCode code = LogCode::Left;
+    int garbageId = 0;     // Garbage only
+    int garbageLines = 0;  // Garbage only
+    friend bool operator==(const LogEntry&, const LogEntry&) = default;
+};
+
 // Four letters A-Z.
 bool isRoomCode(std::string_view text);
 

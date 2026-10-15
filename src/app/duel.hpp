@@ -9,17 +9,15 @@
 #include <vector>
 
 #include "core/game.hpp"
+#include "net/match_game.hpp"
 #include "net/protocol.hpp"
 
 namespace tetris {
 
 inline constexpr int kCountdownMs = 3000;  // must match countdown in server/hub.go
 inline constexpr int kSnapshotIntervalMs = 100;
-inline constexpr int kMatchMs = 120000;  // display clock; the server's -match default is the same 2 minutes
-inline constexpr int kKoFlashMs = 1000;
 inline constexpr int kMaxFrameMs = 100;  // longer stalls are dropped, not replayed, outside a match
 inline constexpr int kMaxCatchUpMs = 130000;  // a match replays stalls up to this long: the clock plus slack
-inline constexpr int kRoyaleLevelStepMs = 30000;  // a royale's gravity floor rises one level per this much play
 
 // How much of `elapsedMs` of wall time to simulate this frame. A browser stops or throttles a hidden tab's
 // loop, so a running match replays the gap: gravity keeps going and the opponent keeps getting snapshots.
@@ -46,10 +44,6 @@ struct OpponentView {
     bool alive = true;
     int place = 0;  // 0 until OUT
 };
-
-// The local game for a match: same seed (so the same pieces) as the opponents, and no pausing. A royale (3 or
-// more players) gets hole garbage instead of bombs.
-Game makeDuelGame(const StartMatch& start);
 
 // One player's side of a room and its matches. Reacts to server messages, owns the local Game while a match
 // runs, and reports attacks, snapshots and top-outs through `send`. The server referees KOs and the result.

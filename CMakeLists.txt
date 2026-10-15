@@ -86,6 +86,7 @@ target_compile_options(tetris_bot PRIVATE ${TETRIS_WARNINGS})
 
 add_library(tetris_duel STATIC
   src/net/protocol.cpp
+  src/net/match_game.cpp
   src/app/duel.cpp
   src/app/solo.cpp
   src/app/sound_cues.cpp
@@ -136,6 +137,7 @@ add_executable(tetris_tests
   tests/input_test.cpp
   tests/protocol_test.cpp
   tests/duel_test.cpp
+  tests/match_game_test.cpp
   tests/solo_test.cpp
   tests/planner_test.cpp
   tests/bot_player_test.cpp

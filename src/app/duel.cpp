@@ -9,11 +9,6 @@
 
 namespace tetris {
 
-Game makeDuelGame(const StartMatch& start) {
-    const GarbageStyle garbage = start.players.size() >= 3 ? GarbageStyle::Holes : GarbageStyle::Bombs;
-    return Game(start.seed, start.startLevel, Board{}, GameOptions{.allowPause = false, .garbage = garbage});
-}
-
 namespace {
 
 DuelOutcome outcomeOf(MatchResult result) {
