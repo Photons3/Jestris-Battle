@@ -642,6 +642,37 @@ void drawKoFlash(ImDrawList* dl, const Fonts& fonts, const Layout& well) {
     drawOutlinedText(dl, fonts, size, pos, text, kFlashFill, kFlashOutline, std::max(1.0f, std::floor(well.cell * 0.15f)));
 }
 
+constexpr ImU32 kLoseFill = IM_COL32(235, 70, 70, 255);
+constexpr ImU32 kLoseOutline = IM_COL32(90, 0, 0, 200);
+constexpr ImU32 kDrawFill = IM_COL32(230, 230, 230, 255);
+constexpr ImU32 kDrawOutline = IM_COL32(70, 70, 70, 200);
+
+// A word centered over a well, like "OUT · #7" or "WIN". `dim` darkens the cells under it first.
+void drawWellLabel(ImDrawList* dl, const Fonts& fonts, const Layout& well, const char* text, bool dim, ImU32 fill,
+                   ImU32 outline) {
+    const ImVec2 top = cellTopLeft(well, 0, kVisibleHeight - 1);
+    if (dim) dl->AddRectFilled(top, ImVec2(top.x + kBoardWidth * well.cell, wellBottom(well)), IM_COL32(0, 0, 0, 140));
+    float size = std::floor(well.cell * 1.5f);
+    const float maxWidth = kBoardWidth * well.cell * 0.9f;
+    if (const float width = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x; width > maxWidth)
+        size = std::floor(size * maxWidth / width);
+    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    const ImVec2 pos(well.origin.x + (kBoardWidth * well.cell - extent.x) * 0.5f,
+                     (wellTop(well) + wellBottom(well) - extent.y) * 0.5f);
+    drawOutlinedText(dl, fonts, size, pos, text, fill, outline, std::max(1.0f, std::floor(well.cell * 0.1f)));
+}
+
+// "WIN" in gold over the board, "LOSE" in red and "DRAW" in white over a dimmed one. Nothing for "".
+void drawResultLabel(ImDrawList* dl, const Fonts& fonts, const Layout& well, const char* text) {
+    if (*text == '\0') return;
+    if (std::strcmp(text, "WIN") == 0)
+        drawWellLabel(dl, fonts, well, text, false, kFlashFill, kFlashOutline);
+    else if (std::strcmp(text, "LOSE") == 0)
+        drawWellLabel(dl, fonts, well, text, true, kLoseFill, kLoseOutline);
+    else
+        drawWellLabel(dl, fonts, well, text, true, kDrawFill, kDrawOutline);
+}
+
 // "GO!" in the KO flash style, centered on the screen, as play starts.
 void drawGo(const Fonts& fonts) {
     const char* text = "GO!";
@@ -755,6 +786,9 @@ void drawDuelBoards(const DuelSession& duel, const Fonts& fonts, const ComboLabe
     drawOpponent(dl, layout, duel.opponent(), fonts);
     drawAttackTrails(dl, layout, duel, trails);
     if (duel.koFlashMs() > 0) drawKoFlash(dl, fonts, layout.mine);
+    const BoardLabels labels = duelBoardLabels(duel);
+    drawResultLabel(dl, fonts, layout.mine, labels.mine);
+    drawResultLabel(dl, fonts, layout.theirs, labels.theirs);
     ImGui::End();
 }
 
@@ -782,7 +816,7 @@ RoyaleLayout computeRoyaleLayout() {
 }
 
 // One opponent at mini size: the name, the pending-garbage meter and the cells, with no hold, next or ghost. An
-// eliminated board is dimmed, without its meter, and labelled with its place.
+// eliminated board is dimmed, without its meter, and labelled with its place; the winner's is labelled WIN.
 void drawMiniBoard(ImDrawList* dl, const Fonts& fonts, ImVec2 topLeft, float cell, const OpponentView& opponent) {
     const float nameSize = std::floor(cell * 0.9f);
     const float maxWidth = kBoardWidth * cell;
@@ -801,6 +835,14 @@ void drawMiniBoard(ImDrawList* dl, const Fonts& fonts, ImVec2 topLeft, float cel
         for (int x = 0; x < kBoardWidth; ++x)
             if (const Cell c = snapshot.cells[y * kBoardWidth + x])
                 drawCell(dl, ImVec2(top.x + x * cell, bottom.y - (y + 1) * cell), cell, *c, 1.0f);
+    if (opponent.place == 1) {  // the winner stays lit, with WIN across it
+        const char* text = "WIN";
+        const float size = std::floor(cell * 2.5f);
+        const float width = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x;
+        drawOutlinedText(dl, fonts, size, ImVec2(top.x + (maxWidth - width) * 0.5f, (top.y + bottom.y - size) * 0.5f),
+                         text, kFlashFill, kFlashOutline, std::max(1.0f, std::floor(cell * 0.15f)));
+        return;
+    }
     if (opponent.alive) {
         drawGarbageMeter(dl, bottom.x + std::floor(cell * 0.25f), bottom.y, cell, snapshot.pending, snapshot.ready);
         return;
@@ -814,21 +856,12 @@ void drawMiniBoard(ImDrawList* dl, const Fonts& fonts, ImVec2 topLeft, float cel
 
 // "OUT · #7" over our own well once we're eliminated; just "OUT" until the server places us. Leave sits under it.
 void drawOutOverlay(ImDrawList* dl, const Fonts& fonts, const Layout& well, int place) {
-    const ImVec2 top = cellTopLeft(well, 0, kVisibleHeight - 1);
-    dl->AddRectFilled(top, ImVec2(top.x + kBoardWidth * well.cell, wellBottom(well)), IM_COL32(0, 0, 0, 140));
     char text[24];
     if (place > 0)
         std::snprintf(text, sizeof text, "OUT \xC2\xB7 #%d", place);
     else
         std::snprintf(text, sizeof text, "OUT");
-    float size = std::floor(well.cell * 1.5f);
-    const float maxWidth = kBoardWidth * well.cell * 0.9f;
-    if (const float width = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text).x; width > maxWidth)
-        size = std::floor(size * maxWidth / width);
-    const ImVec2 extent = fonts.hud->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    const ImVec2 pos(well.origin.x + (kBoardWidth * well.cell - extent.x) * 0.5f,
-                     (wellTop(well) + wellBottom(well) - extent.y) * 0.5f);
-    drawOutlinedText(dl, fonts, size, pos, text, kFlashFill, kFlashOutline, std::max(1.0f, std::floor(well.cell * 0.1f)));
+    drawWellLabel(dl, fonts, well, text, true, kFlashFill, kFlashOutline);
 }
 
 // Our own well as in the duel, then a mini board per opponent in ID order.
@@ -847,7 +880,10 @@ void drawRoyaleBoards(const DuelSession& duel, const Fonts& fonts, const ComboLa
     const float left = layout.mine.origin.x - kMyWellCol * cell;
     drawGarbageMeter(dl, left + kRoyaleMeterCol * cell, wellBottom(layout.mine), cell, game.pendingGarbage(),
                      game.readyGarbage());
-    if (duel.eliminated()) drawOutOverlay(dl, fonts, layout.mine, duel.myPlace());
+    if (duel.myPlace() == 1)
+        drawResultLabel(dl, fonts, layout.mine, "WIN");
+    else if (duel.eliminated())
+        drawOutOverlay(dl, fonts, layout.mine, duel.myPlace());
 
     const std::vector<OpponentView>& opponents = duel.opponents();
     const float width = layout.gridMax.x - layout.gridMin.x;
