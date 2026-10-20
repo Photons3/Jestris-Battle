@@ -87,7 +87,7 @@ std::string resultReasonText(const DuelSession& duel) {
     if (duel.outcome() == DuelOutcome::OpponentLeft && duel.mode() == DuelMode::Royale) return "Match ended";
     if (duel.outcome() == DuelOutcome::OpponentLeft)
         return (duel.opponentName().empty() ? std::string("Opponent") : duel.opponentName()) + " left the match";
-    if (duel.reason() == DuelReason::KOs) return std::to_string(kKosToWin) + " KOs";
+    if (duel.reason() == DuelReason::KOs) return "KO " + versus(duel.kosMine(), duel.kosTheirs());
     std::string text = "Time up" + std::string(kSeparator) + "KO " + versus(duel.kosMine(), duel.kosTheirs());
     if (duel.kosMine() == duel.kosTheirs())
         text += std::string(kSeparator) + versus(duel.sentMine(), duel.sentTheirs()) + " sent";
@@ -363,7 +363,8 @@ void DuelSession::update(int ms) {
             lastSent_ = snapshot;
         }
     }
-    for (int i = 0; i < newTopOuts; ++i) send(Dead{});  // the server counts each KO, or places us
+    for (int i = 0; i < newTopOuts; ++i)
+        send(Dead{.buried = match_->buried() && i + 1 == newTopOuts});  // the server counts each KO, or places us
     topOutsSeen_ = match_->topOuts();
     if (royale) eliminated_ = match_->eliminated();
 }

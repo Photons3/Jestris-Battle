@@ -109,6 +109,7 @@ struct Attack {
     friend bool operator==(const Attack&, const Attack&) = default;
 };
 struct Dead {
+    bool buried = false;  // the dropped stack still blocked the spawn, so this KO ends the match
     friend bool operator==(const Dead&, const Dead&) = default;
 };
 struct OpponentLeft {

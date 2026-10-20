@@ -69,6 +69,8 @@ SIM_EXPORT("sim_top_outs") int sim_top_outs(int h) { return at(h).topOuts(); }
 
 SIM_EXPORT("sim_eliminated") int sim_eliminated(int h) { return at(h).eliminated() ? 1 : 0; }
 
+SIM_EXPORT("sim_buried") int sim_buried(int h) { return at(h).buried() ? 1 : 0; }
+
 SIM_EXPORT("sim_hash") std::uint64_t sim_hash(int h) { return at(h).hash(); }
 
 // The SNAP arguments (the encoding minus "SNAP "): 11 numbers of at most 11 characters, a few separators and

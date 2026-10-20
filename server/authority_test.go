@@ -22,13 +22,15 @@ type fakeSim struct {
 	attacks    map[int][]int // queued TakeAttack results, oldest first
 	topOuts    map[int]int
 	eliminated map[int]bool
+	buried     map[int]bool
 	snaps      map[int]string // Snapshot results; "snap" when unset
 	advanceErr error          // returned by every Advance once set
 	closed     bool
 }
 
 func newFakeSim() *fakeSim {
-	return &fakeSim{attacks: map[int][]int{}, topOuts: map[int]int{}, eliminated: map[int]bool{}, snaps: map[int]string{}}
+	return &fakeSim{attacks: map[int][]int{}, topOuts: map[int]int{}, eliminated: map[int]bool{},
+		buried: map[int]bool{}, snaps: map[int]string{}}
 }
 
 func (f *fakeSim) record(format string, a ...any) {
@@ -53,6 +55,7 @@ func (f *fakeSim) Advance(h, ms int) error {
 func (f *fakeSim) T(h int) (int, error)           { return 0, nil }
 func (f *fakeSim) TopOuts(h int) (int, error)     { return f.topOuts[h], nil }
 func (f *fakeSim) Eliminated(h int) (bool, error) { return f.eliminated[h], nil }
+func (f *fakeSim) Buried(h int) (bool, error)     { return f.buried[h], nil }
 func (f *fakeSim) Hash(h int) (uint64, error)     { return 0, nil }
 func (f *fakeSim) Close() error                   { f.closed = true; return nil }
 
@@ -818,6 +821,20 @@ func TestEnforceSendsTheFinalSnapshotAtElimination(t *testing.T) {
 	if got := withPrefix(queued(d.ps[0]), "SNAP 3"); len(got) != 0 {
 		t.Errorf("an unchanged final snapshot went out: %q", got)
 	}
+}
+
+func TestEnforceBuriedTopOutEndsTheDuel(t *testing.T) {
+	d := directMatchWith(t, enforce, "Ann", "Bob")
+	r := d.runner()
+	f := d.sim()
+	d.at(1000)
+	f.topOuts[0] = 1
+	f.buried[0] = true
+	d.h.receive(d.ps[0], "IN 100")
+	r.drain(d.h)
+	d.expectQueues(t,
+		[]string{"KO 0 1", "OVER LOSE KO 0 0", "PLAYERS 1 1:Ann:0 2:Bob:0"},
+		[]string{"KO 1 0", "OVER WIN KO 0 0", "PLAYERS 1 1:Ann:0 2:Bob:0"})
 }
 
 func TestEnforceSimTopOutScoresKOAndEliminates(t *testing.T) {

@@ -410,6 +410,20 @@ func TestAttacksAreCountedAndMalformedOnesDropped(t *testing.T) {
 	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
 }
 
+func TestDeadBuryEndsTheMatchBeforeThreeKOs(t *testing.T) {
+	srv, clock := newTestHub(t)
+	a, b := pair(t, srv)
+	b.send("DEAD BURY")
+	a.expect("KO 1 0")
+	b.expect("KO 0 1")
+	a.expect("OVER WIN KO 0 0")
+	b.expect("OVER LOSE KO 0 0")
+	expectAll("PLAYERS 1 1:Ann:0 2:Bob:0", a, b)
+	if !clock.timer(0).isStopped() {
+		t.Error("match timer still running after a buried KO")
+	}
+}
+
 func TestDeadIsAKOAndThreeKOsWin(t *testing.T) {
 	srv, clock := newTestHub(t)
 	a, b := pair(t, srv)

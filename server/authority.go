@@ -42,6 +42,7 @@ type gameSim interface {
 	TakeAttack(h int) (int, error)
 	TopOuts(h int) (int, error)
 	Eliminated(h int) (bool, error)
+	Buried(h int) (bool, error) // a duel KO whose stack still blocked the spawn
 	Hash(h int) (uint64, error)
 	Snapshot(h int) (string, error)
 	Close() error
@@ -138,6 +139,7 @@ type playerSim struct {
 	claimedSent    int
 	claimedDead    int
 	eliminated     bool
+	buried         bool // a duel top-out that ended the match early has already been reported
 	wouldResync    map[string]int
 	lastSnap       string
 	left           bool
@@ -154,6 +156,7 @@ const (
 	effGarbage effectKind = iota // GARB id lines to to
 	effAttack                    // the simulation of from sent lines
 	effTopOut                    // the simulation of from topped out
+	effBuried                    // that top-out left no room to spawn: the duel ends
 	effEliminated
 	effSnap     // SNAP <from's id> text
 	effResync   // text to from
@@ -401,6 +404,10 @@ func (r *matchRunner) apply(h *Hub) {
 		case effTopOut:
 			if enforce {
 				out = append(out, r.room.topOut(e.from)...)
+			}
+		case effBuried:
+			if enforce && r.room.match != nil && !r.room.match.royale {
+				out = append(out, r.room.finish("KO")...)
 			}
 		case effKick:
 			if e.from.room == r.room {
@@ -686,6 +693,15 @@ func (r *matchRunner) advanceTo(ps *playerSim, target int) {
 	}
 	for ; ps.simTopOuts < topOuts; ps.simTopOuts++ {
 		r.effects = append(r.effects, runnerEffect{kind: effTopOut, from: ps.p})
+	}
+	buried, err := r.sim.Buried(ps.h)
+	if err != nil {
+		r.fail(ps, err)
+		return
+	}
+	if buried && !ps.buried {
+		ps.buried = true
+		r.effects = append(r.effects, runnerEffect{kind: effBuried, from: ps.p})
 	}
 	if eliminated && !ps.eliminated {
 		ps.eliminated = true

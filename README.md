@@ -184,7 +184,7 @@ right above it 90% of the time, but never stacks more than two high. Land a piec
 top bomb to blow up the bombs touching it below. Exploded rows score and send like cleared lines,
 but only full rows count as a tetris or toward back-to-back.
 
-Topping out is a KO: your board resets and your opponent scores a KO. The first to 3 KOs wins.
+Topping out is a KO: the garbage drops out of your well and your blocks fall to the floor, and your opponent scores a KO. The first to 3 KOs wins. If the stack still fills the well after the garbage is gone, the opponent wins on that KO.
 When the 2:00 clock runs out, more KOs wins, then more lines sent; a full tie is a draw.
 
 ### Battle royale (3 to 16 players)

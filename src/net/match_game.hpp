@@ -42,6 +42,8 @@ public:
     // In the KO flash, at or after time-up (duel), or eliminated (royale): the game does not tick or take input.
     bool frozen() const { return stopped_ || t_ < koUntil_; }
     bool eliminated() const { return setup_.royale() && topOuts_ > 0; }
+    // A duel top-out whose stack still blocked the spawn: the match ends on this KO.
+    bool buried() const { return buried_; }
     int topOuts() const { return topOuts_; }  // KOs (duel) or 1 once eliminated (royale)
     int koFlashMs() const { return t_ < koUntil_ ? koUntil_ - t_ : 0; }  // ms of KO flash left, for display
     bool hasGarbage(int id) const;  // a Garbage entry with this id is already in the log
@@ -66,7 +68,8 @@ private:
     Game game_;
     int t_ = 0;
     int koUntil_ = 0;       // the KO flash freezes steps while t < koUntil_
-    bool stopped_ = false;  // frozen for good: time-up (duel) or eliminated (royale)
+    bool stopped_ = false;  // frozen for good: time-up (duel), eliminated (royale), or buried
+    bool buried_ = false;   // a duel KO left no room to spawn
     int topOuts_ = 0;
     bool softDrop_ = false;
     bool keepLog_ = true;

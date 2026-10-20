@@ -288,7 +288,7 @@ std::string encode(const Message& message) {
                 for (int i = 0; i < kSnapshotCells; ++i) text += fieldChar(m.cells[i], m.ghost[i]);
                 return text;
             } else if constexpr (std::is_same_v<T, Dead>) {
-                return "DEAD";
+                return m.buried ? "DEAD BURY" : "DEAD";
             } else if constexpr (std::is_same_v<T, OpponentLeft>) {
                 return "LEFT";
             } else if constexpr (std::is_same_v<T, ServerError>) {
@@ -424,6 +424,8 @@ std::optional<Message> decode(std::string_view text) {
         if (id && lines) return GarbageIn{*id, *lines};
     } else if (verb == "HELLO" && args == 1) {
         if (isValidName(parts[1])) return Hello{std::string(parts[1])};
+    } else if (verb == "DEAD" && args == 1 && parts[1] == "BURY") {
+        return Dead{true};
     } else if (args == 0) {
         if (verb == "DEAD") return Dead{};
         if (verb == "LEFT") return OpponentLeft{};

@@ -265,13 +265,18 @@ func (h *Hub) route(p *player, text string) []outgoing {
 	case "ATK":
 		return h.attack(p, arg)
 	case "DEAD":
-		if text != "DEAD" {
+		if text != "DEAD" && text != "DEAD BURY" {
 			return nil
 		}
 		if m := p.room.match; m != nil && m.runner != nil && m.alive[p] {
 			m.runner.push(runnerMsg{from: p, kind: msgClaimedDead})
 		}
-		return p.room.knockOut(p)
+		out := p.room.knockOut(p)
+		// A stack that still blocks the spawn ends the duel on this KO.
+		if text == "DEAD BURY" && p.room.match != nil && !p.room.match.royale {
+			out = append(out, p.room.finish("KO")...)
+		}
+		return out
 	case "SNAP":
 		return p.room.relaySnapshot(p, arg)
 	case "IN", "SDF":

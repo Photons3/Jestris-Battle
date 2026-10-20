@@ -88,9 +88,11 @@ void MatchGame::step() {
         ++topOuts_;
         if (royale) {
             stopped_ = true;  // eliminated: the board stays on its game-over state
-        } else {
-            game_.resetBoard();
+        } else if (game_.resumeAfterKo()) {
             koUntil_ = t_ + 1 + kKoFlashMs;  // the next kKoFlashMs steps don't tick
+        } else {
+            stopped_ = true;  // the dropped stack still blocks the spawn: this KO ends the match
+            buried_ = true;
         }
     }
     if (!royale && t_ + 1 == kMatchMs) {

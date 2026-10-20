@@ -42,7 +42,10 @@ void LocalMatch::send(const std::string& text) {
                 bot_->receiveGarbage(m.lines);
                 sentHuman_ += m.lines;
             } else if constexpr (std::is_same_v<T, Dead>) {
-                if (playing()) knockOut(false);
+                if (playing()) {
+                    knockOut(false);
+                    if (m.buried && playing()) finish(MatchReason::KOs);
+                }
             } else if constexpr (std::is_same_v<T, Begin>) {
                 if (!over_) return;
                 start();
@@ -97,10 +100,11 @@ void LocalMatch::step() {
             }
         }
         if (toppedOut) {
-            bot_->resetBoard();
+            const bool resumed = bot_->resumeAfterKo();
             player_.reset();
-            koFlashMs_ = kKoFlashMs;
+            if (resumed) koFlashMs_ = kKoFlashMs;
             knockOut(true);
+            if (!resumed && playing()) finish(MatchReason::KOs);
             if (over_) return;
         }
     }

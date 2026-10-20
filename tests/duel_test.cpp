@@ -195,7 +195,7 @@ TEST_CASE("duel: a clear still animating at 0:00 is settled and sent") {
     CHECK(duel.sentMine() == 4);
 }
 
-TEST_CASE("duel: topping out sends a final snapshot and DEAD, resets the board and keeps playing") {
+TEST_CASE("duel: topping out sends a final snapshot and DEAD and keeps the dropped stack") {
     Wire wire;
     DuelSession duel(wire.sender());
     startMatch(duel, wire);
@@ -208,9 +208,28 @@ TEST_CASE("duel: topping out sends a final snapshot and DEAD, resets the board a
     CHECK(sent[1] == "DEAD");
     CHECK(duel.phase() == DuelPhase::Playing);
     CHECK(duel.game()->state() == GameState::Playing);
-    CHECK(countFilled(duel.game()->board()) == 0);
+    CHECK(countFilled(duel.game()->board()) > 0);
     CHECK(duel.game()->pendingGarbage() == 0);
     CHECK(duel.koFlashMs() == kKoFlashMs);
+}
+
+TEST_CASE("duel: a KO that still blocks the spawn sends DEAD BURY") {
+    Wire wire;
+    DuelSession duel(wire.sender());
+    startMatch(duel, wire);
+    Board board;
+    for (int y = 0; y < 24; ++y)
+        for (int x = 0; x < kBoardWidth; ++x) board.set(x, y, PieceType::J);
+    duel.match()->game() = Game(1, 1, board, GameOptions{.allowPause = false});
+    REQUIRE(duel.game()->state() == GameState::GameOver);
+    duel.step(1);
+    duel.update(0);
+    const std::vector<std::string> sent = withoutIn(wire.sent);
+    REQUIRE(sent.size() == 2);
+    CHECK(sent[0].starts_with("SNAP "));
+    CHECK(sent[1] == "DEAD BURY");
+    CHECK(duel.match()->buried());
+    CHECK(duel.phase() == DuelPhase::Playing);  // the server's OVER ends it
 }
 
 TEST_CASE("duel: a relayed DEAD is ignored now that the server referees") {
@@ -484,8 +503,9 @@ TEST_CASE("duel: the result line explains how the match ended") {
         std::string line;
     };
     const std::vector<Case> cases{
-        {{"KO 3 0", "OVER WIN KO 0 0"}, "3 KOs"},
-        {{"KO 0 3", "OVER LOSE KO 0 0"}, "3 KOs"},
+        {{"KO 3 0", "OVER WIN KO 0 0"}, "KO 3 : 0"},
+        {{"KO 0 3", "OVER LOSE KO 0 0"}, "KO 0 : 3"},
+        {{"KO 1 0", "OVER WIN KO 0 0"}, "KO 1 : 0"},
         {{"KO 2 1", "OVER WIN TIME 3 9"}, "Time up \xC2\xB7 KO 2 : 1"},
         {{"KO 1 1", "OVER WIN TIME 12 7"}, "Time up \xC2\xB7 KO 1 : 1 \xC2\xB7 12 : 7 sent"},
         {{"OVER DRAW TIME 9 9"}, "Time up \xC2\xB7 KO 0 : 0 \xC2\xB7 9 : 9 sent"},
