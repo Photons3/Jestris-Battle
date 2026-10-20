@@ -113,7 +113,7 @@ type Match struct {
 }
 
 var exportNames = []string{"sim_new", "sim_free", "sim_input", "sim_accept_garbage", "sim_advance", "sim_t",
-	"sim_take_attack", "sim_top_outs", "sim_eliminated", "sim_hash", "sim_snapshot", "sim_buffer"}
+	"sim_take_attack", "sim_top_outs", "sim_eliminated", "sim_buried", "sim_hash", "sim_snapshot", "sim_buffer"}
 
 func (e *Engine) NewMatch(ctx context.Context) (*Match, error) {
 	cfg := wazero.NewModuleConfig().WithName("").WithStartFunctions()
@@ -218,6 +218,11 @@ func (m *Match) Advance(h, ms int) error {
 func (m *Match) T(h int) (int, error)          { return m.callInt("sim_t", h) }
 func (m *Match) TakeAttack(h int) (int, error) { return m.callInt("sim_take_attack", h) }
 func (m *Match) TopOuts(h int) (int, error)    { return m.callInt("sim_top_outs", h) }
+
+func (m *Match) Buried(h int) (bool, error) {
+	v, err := m.callInt("sim_buried", h)
+	return v != 0, err
+}
 
 func (m *Match) Eliminated(h int) (bool, error) {
 	v, err := m.callInt("sim_eliminated", h)

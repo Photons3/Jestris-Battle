@@ -109,6 +109,18 @@ TEST_CASE("local match: the bot waits out the countdown, then plays and sends sn
     for (const PlayerSnapshot& s : snapshots) CHECK(s.fromId == 2);  // SNAP 2 ...
 }
 
+TEST_CASE("local match: one buried death loses before three KOs") {
+    LocalMatch match(BotLevel::Easy, 4);
+    startPlaying(match);
+    match.send(encode(Dead{true}));
+    const auto got = drain(match);
+    REQUIRE(got.size() == 3);
+    CHECK(std::get<KoCounts>(got[0]) == KoCounts{0, 1});
+    const MatchOver over = endOf(got);
+    CHECK(over.result == MatchResult::Lose);
+    CHECK(over.reason == MatchReason::KOs);
+}
+
 TEST_CASE("local match: three deaths lose by KOs") {
     LocalMatch match(BotLevel::Easy, 4);
     startPlaying(match);

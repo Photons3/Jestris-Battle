@@ -657,6 +657,55 @@ TEST_CASE("game: a clear that drops a cell onto a bomb does not detonate it") {
     CHECK(game.board().at(4, 1) == PieceType::Z);
 }
 
+TEST_CASE("game: resumeAfterKo drops colored blocks onto the floor and removes garbage") {
+    Board board;
+    board.pushGarbage(3, 4);  // rows 0-2, bomb in column 4
+    board.set(0, 3, PieceType::T);
+    board.set(1, 3, PieceType::T);
+    board.set(2, 5, PieceType::L);  // one empty row between this and the T
+    board.set(2, 6, PieceType::L);
+    Game game(seedWithFirst(PieceType::O), 1, board);
+
+    CHECK(game.resumeAfterKo());
+
+    CHECK(game.state() == GameState::Playing);
+    CHECK(game.board().at(0, 0) == PieceType::T);
+    CHECK(game.board().at(1, 0) == PieceType::T);
+    CHECK_FALSE(game.board().at(0, 1).has_value());
+    CHECK(game.board().at(2, 2) == PieceType::L);
+    CHECK(game.board().at(2, 3) == PieceType::L);
+    CHECK(game.board().garbageRows() == 0);
+    for (int y = 0; y < kBoardHeight; ++y)
+        for (int x = 0; x < kBoardWidth; ++x) {
+            const Cell cell = game.board().at(x, y);
+            CHECK(cell != PieceType::Garbage);
+            CHECK(cell != PieceType::Bomb);
+        }
+}
+
+TEST_CASE("game: resumeAfterKo keeps hold, combo and back-to-back and forgets queued garbage") {
+    Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
+    dropUprightI(game);
+    game.tick(kClearDelayMs);
+    REQUIRE(game.combo() == 0);
+    REQUIRE(game.backToBack() == 0);
+    game.apply(Action::Hold);
+    REQUIRE(game.hold().has_value());
+    REQUIRE_FALSE(game.canHold());
+    game.receiveGarbage(4, 1000);
+    const int combo = game.combo();
+    const int backToBack = game.backToBack();
+    const PieceType held = *game.hold();
+
+    CHECK(game.resumeAfterKo());
+
+    CHECK(game.combo() == combo);
+    CHECK(game.backToBack() == backToBack);
+    CHECK(game.hold() == held);
+    CHECK(game.canHold());
+    CHECK(game.pendingGarbage() == 0);
+}
+
 TEST_CASE("game: resetBoard after a top-out empties everything but keeps score, lines and level") {
     Game game(seedWithFirst(PieceType::I), 1, boardWithWell(4, 5));
     dropUprightI(game);

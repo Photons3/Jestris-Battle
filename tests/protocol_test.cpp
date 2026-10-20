@@ -34,6 +34,7 @@ TEST_CASE("protocol: every message survives an encode/decode round trip") {
                                         unlockedHold,
                                         Snapshot{},
                                         Dead{},
+                                        Dead{true},
                                         OpponentLeft{},
                                         ServerError{"room is full"},
                                         KoCounts{1, 0},

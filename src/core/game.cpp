@@ -172,6 +172,27 @@ void Game::resetBoard() {
     spawn(bag_.next());
 }
 
+bool Game::resumeAfterKo() {
+    std::vector<int> garbageRows;
+    for (int y = 0; y < kBoardHeight; ++y) {
+        for (int x = 0; x < kBoardWidth; ++x) {
+            const Cell cell = board_.at(x, y);
+            if (cell == PieceType::Garbage || cell == PieceType::Bomb) {
+                garbageRows.push_back(y);
+                break;
+            }
+        }
+    }
+    board_.removeRows(garbageRows);
+    incoming_.clear();
+    canHold_ = true;
+    clearingRows_.clear();
+    clearTimerMs_ = 0;
+    state_ = GameState::Playing;
+    spawn(bag_.next());
+    return state_ == GameState::Playing;
+}
+
 bool Game::applyGarbage() {
     int rising = 0;
     std::vector<int> holeColumns;

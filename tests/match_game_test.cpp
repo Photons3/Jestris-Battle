@@ -26,24 +26,49 @@ void topOut(MatchGame& match) {
 
 }  // namespace
 
-TEST_CASE("match_game: a duel top-out resets the board and freezes exactly kKoFlashMs") {
-    MatchGame match(duelSetup());
-    CHECK_FALSE(match.setup().royale());
-    topOut(match);
-    const int t0 = match.t();
+TEST_CASE("match_game: a duel KO drops the colored stack and flashes when a piece still fits") {
+    const std::uint32_t seed = seedWithFirst(PieceType::O);
+    MatchGame match(duelSetup(seed));
+    Board board;
+    board.pushGarbage(4, 2);
+    board.set(0, 32, PieceType::S);  // one more row of garbage would push this off the top
+    match.game() = Game(seed, 1, board, GameOptions{.allowPause = false});
+    match.game().receiveGarbage(kMaxGarbagePerLock, 0);
+    match.input(Action::HardDrop);
+    REQUIRE(match.game().state() == GameState::GameOver);
+
+    match.advance(1);
+
     CHECK(match.topOuts() == 1);
-    CHECK(countFilled(match.game().board()) == 0);
+    CHECK_FALSE(match.buried());
     CHECK(match.game().state() == GameState::Playing);
+    CHECK(match.game().board().at(4, 0) == PieceType::O);  // the locked O, dropped with the garbage rows
+    CHECK(match.game().board().at(0, 28) == PieceType::S);
+    CHECK(match.game().pendingGarbage() == 0);
     CHECK(match.koFlashMs() == kKoFlashMs);
+    const int t0 = match.t();
     while (match.t() < t0 + kKoFlashMs) {
         REQUIRE(match.frozen());
         match.advance(1);
     }
-    CHECK(match.t() == t0 + kKoFlashMs);
     CHECK_FALSE(match.frozen());
-    CHECK(match.koFlashMs() == 0);
-    CHECK_FALSE(match.eliminated());
-    CHECK(countFilled(match.game().board()) == 0);
+    CHECK(match.topOuts() == 1);
+}
+
+TEST_CASE("match_game: a duel KO that still blocks the spawn stops after that one KO") {
+    MatchGame match(duelSetup());
+    topOut(match);
+    const int t0 = match.t();
+    CHECK(match.topOuts() == 1);
+    CHECK(match.buried());
+    CHECK(match.frozen());
+    CHECK(match.game().state() == GameState::GameOver);
+    CHECK(countFilled(match.game().board()) > 0);
+    match.advance(kKoFlashMs + 1000);
+    CHECK(match.t() == t0 + kKoFlashMs + 1000);
+    CHECK(match.topOuts() == 1);
+    CHECK(match.buried());
+    CHECK(match.game().state() == GameState::GameOver);
 }
 
 TEST_CASE("match_game: a royale top-out eliminates for good") {

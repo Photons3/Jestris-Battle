@@ -128,6 +128,10 @@ public:
     // Starts over on an empty board after a duel KO. Drops pending garbage, the hold and any clear in
     // progress, then spawns the next piece from the same bag. Score, lines and level carry on.
     void resetBoard();
+    // After a duel KO: deletes every garbage and bomb row, lets the colored blocks fall onto the floor, forgets
+    // queued garbage and spawns the next piece. Hold, combo and back-to-back stay, and hold can be used again.
+    // Returns false, leaving the game over, when that piece cannot spawn.
+    bool resumeAfterKo();
 
     void apply(Action action);
     void setSoftDrop(bool on) { softDrop_ = on; }
