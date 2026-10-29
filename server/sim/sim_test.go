@@ -191,6 +191,32 @@ func TestSnapshotTracksState(t *testing.T) {
 	}
 }
 
+func TestStatsCountPiecesAndTime(t *testing.T) {
+	m := newMatch(t)
+	h, err := m.New(5, 1, 2, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Input(h, CodeHardDrop); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Advance(h, 250); err != nil {
+		t.Fatal(err)
+	}
+	st, err := m.Stats(h)
+	now, _ := m.T(h)
+	if err != nil || st.Pieces != 1 || st.T != now || st.T <= 0 || st.Attack != 0 {
+		t.Fatalf("stats %+v (t %d) err %v", st, now, err)
+	}
+}
+
+func TestStatsOfABadHandleIsAnError(t *testing.T) {
+	m := newMatch(t)
+	if _, err := m.Stats(99); err == nil {
+		t.Fatal("want an error")
+	}
+}
+
 func TestTrapBecomesError(t *testing.T) {
 	m := newMatch(t)
 	if err := m.Advance(99, 1); err == nil {

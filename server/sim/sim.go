@@ -113,7 +113,7 @@ type Match struct {
 }
 
 var exportNames = []string{"sim_new", "sim_free", "sim_input", "sim_accept_garbage", "sim_advance", "sim_t",
-	"sim_take_attack", "sim_top_outs", "sim_eliminated", "sim_buried", "sim_hash", "sim_snapshot", "sim_buffer"}
+	"sim_take_attack", "sim_top_outs", "sim_eliminated", "sim_buried", "sim_hash", "sim_snapshot", "sim_stats", "sim_buffer"}
 
 func (e *Engine) NewMatch(ctx context.Context) (*Match, error) {
 	cfg := wazero.NewModuleConfig().WithName("").WithStartFunctions()
@@ -242,6 +242,38 @@ func (m *Match) Snapshot(h int) (string, error) {
 		return "", m.err
 	}
 	return string(b), nil
+}
+
+// Stats is a game's GameStats counters (src/core/game.hpp) plus its sim time in ms.
+type Stats struct {
+	Pieces, Attack, GarbageCleared, Cancelled, Tetrises, TSpins, MaxCombo, T int
+}
+
+func (m *Match) Stats(h int) (Stats, error) {
+	n, err := m.callInt("sim_stats", h)
+	if err != nil {
+		return Stats{}, err
+	}
+	b, ok := m.mod.Memory().Read(m.bufPtr, uint32(n))
+	if n < 0 || !ok {
+		m.err = errors.New("sim: stats out of range")
+		return Stats{}, m.err
+	}
+	fields := strings.Split(string(b), " ")
+	if len(fields) != 8 {
+		m.err = fmt.Errorf("sim: stats has %d fields, want 8", len(fields))
+		return Stats{}, m.err
+	}
+	var v [8]int
+	for i, f := range fields {
+		n, ok := parseDigits(f, math.MaxInt32)
+		if !ok {
+			m.err = fmt.Errorf("sim: bad stats field %q", f)
+			return Stats{}, m.err
+		}
+		v[i] = n
+	}
+	return Stats{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]}, nil
 }
 
 // Close releases the instance; further calls return an error.
