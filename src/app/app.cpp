@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <string>
 
+#include "app/account.hpp"
+#include "app/account_store.hpp"
 #include "app/keymap.hpp"
 #include "app/settings.hpp"
 #include "app/settings_store.hpp"
@@ -122,6 +124,22 @@ void applyCommand(App& app, UiCommand command) {
         app.duel.setSoftDropFactor(app.handling.softDropFactor);
         app.saveSettings();
         break;
+    case UiCommand::Register:
+        app.menu.accountBusy = true;
+        sendAccountRequest(AccountCall::Register, credentialsBody(app.menu.loginName, app.menu.loginPassword));
+        break;
+    case UiCommand::Login:
+        app.menu.accountBusy = true;
+        sendAccountRequest(AccountCall::Login, credentialsBody(app.menu.loginName, app.menu.loginPassword));
+        break;
+    case UiCommand::Logout:
+        sendAccountRequest(AccountCall::Logout, "");
+        app.leaveAccount();
+        break;
+    case UiCommand::ChangePassword:
+        app.menu.accountBusy = true;
+        sendAccountRequest(AccountCall::Password, passwordBody(app.menu.currentPassword, app.menu.newPassword));
+        break;
     }
 }
 
@@ -155,6 +173,10 @@ void playSoloEvents(App& app) {
         if (!result || !app.menu.bests.submit(app.solo->mode(), *result)) continue;
         app.newBest = true;
         app.saveSettings();
+        if (app.menu.loggedIn) {
+            if (const std::optional<std::string> body = bestBody(app.solo->mode(), *result))
+                sendAccountRequest(AccountCall::Best, *body);
+        }
         if (const auto sound = soundFor(DuelEvent::Won); sound && !app.hidden) app.audio.play(*sound);
     }
 }
@@ -232,36 +254,78 @@ App::App()
           if (connection) connection->send(text);
       }) {
     menu.duelsEnabled = duelsSupported();
-    const Settings saved = parseSettings(loadSettingsText());
-    keymap = saved.keys;
-    handling = saved.handling;
-    menu.bests = saved.bests;
-    input.setHandling(handling);
-    menu.muted = saved.muted;
-    menu.musicOff = saved.musicOff;
-    menu.soundVolume = saved.soundVolume;
-    menu.musicVolume = saved.musicVolume;
-    menu.publicRooms = saved.publicRooms;
-    menu.playerName = saved.playerName;
-    if (menu.playerName.empty()) {
-        menu.playerName = defaultPlayerName(static_cast<std::uint32_t>(SDL_GetTicksNS()));
-        saveSettings();  // keep the generated name across visits
-    }
-    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    applySettings(parseSettings(loadSettingsText()));
+    ensureGuestName();
     std::string invite = takeInviteCode();
     std::transform(invite.begin(), invite.end(), invite.begin(),
                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     if (isRoomCode(invite)) menu.inviteCode = invite;
     menu.inviteLinkBase = inviteLinkBase();
     menu.canCopyLink = canCopyToClipboard();
+    menu.accountsEnabled = accountsSupported();
+    if (menu.accountsEnabled) sendAccountRequest(AccountCall::Me, "");
+}
+
+void App::applySettings(const Settings& settings) {
+    keymap = settings.keys;
+    handling = settings.handling;
+    input.setHandling(handling);
+    duel.setSoftDropFactor(handling.softDropFactor);
+    menu.bests = settings.bests;
+    menu.muted = settings.muted;
+    menu.musicOff = settings.musicOff;
+    menu.soundVolume = settings.soundVolume;
+    menu.musicVolume = settings.musicVolume;
+    menu.publicRooms = settings.publicRooms;
+    menu.playerName = settings.playerName;
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
     audio.setMuted(menu.muted);
     audio.setMusicMuted(menu.musicOff);
     applyVolumes();
 }
 
+Settings App::currentSettings() const {
+    return {keymap, menu.muted, menu.musicOff, menu.soundVolume, menu.musicVolume,
+            menu.playerName, menu.publicRooms, handling, menu.bests};
+}
+
+void App::ensureGuestName() {
+    if (!menu.playerName.empty()) return;
+    menu.playerName = defaultPlayerName(static_cast<std::uint32_t>(SDL_GetTicksNS()));
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    saveSettings();  // keep the generated name across visits
+}
+
 void App::saveSettings() {
-    saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.soundVolume, menu.musicVolume,
-                                        menu.playerName, menu.publicRooms, handling, menu.bests}));
+    const std::string text = serializeSettings(currentSettings());
+    if (menu.loggedIn)
+        sendAccountRequest(AccountCall::Settings, text);
+    else
+        saveSettingsText(text);
+}
+
+void App::enterAccount(const Profile& profile) {
+    Settings s = parseSettings(profile.settings);
+    s.playerName = profile.username;
+    s.bests = profile.bests;
+    applySettings(s);
+    menu.loggedIn = true;
+    menu.record = profile.career;
+    menu.loginPassword[0] = '\0';
+    menu.currentPassword[0] = '\0';
+    menu.newPassword[0] = '\0';
+    menu.accountError.clear();
+    menu.accountNote.clear();
+    menu.accountBusy = false;
+}
+
+void App::leaveAccount() {
+    menu.loggedIn = false;
+    menu.record.reset();
+    menu.accountError.clear();
+    menu.accountNote.clear();
+    applySettings(parseSettings(loadSettingsText()));
+    ensureGuestName();
 }
 
 void App::applyVolumes() {
@@ -369,6 +433,48 @@ void pumpNetwork(App& app) {
         app.menu.error = app.duel.error();
         app.connection.reset();
         app.screen = Screen::Start;
+    }
+}
+
+void pumpAccount(App& app) {
+    for (const AccountReply& reply : takeAccountReplies()) {
+        switch (reply.call) {
+        case AccountCall::Me:
+            if (reply.status == 200) {
+                if (const std::optional<Profile> profile = parseProfile(reply.body)) app.enterAccount(*profile);
+            }
+            break;
+        case AccountCall::Register:
+        case AccountCall::Login: {
+            app.menu.accountBusy = false;
+            const std::optional<Profile> profile = reply.status == 200 ? parseProfile(reply.body) : std::nullopt;
+            if (profile)
+                app.enterAccount(*profile);
+            else
+                app.menu.accountError = accountErrorText(reply.status, reply.body);
+            break;
+        }
+        case AccountCall::Password:
+            app.menu.accountBusy = false;
+            if (reply.status == 204) {
+                app.menu.accountNote = "Password changed";
+                app.menu.accountError.clear();
+                app.menu.currentPassword[0] = '\0';
+                app.menu.newPassword[0] = '\0';
+            } else {
+                app.menu.accountNote.clear();
+                app.menu.accountError = accountErrorText(reply.status, reply.body);
+            }
+            break;
+        case AccountCall::Best:
+            if (reply.status == 200 && app.menu.loggedIn) {
+                if (const std::optional<PersonalBests> bests = parseBests(reply.body)) app.menu.bests = *bests;
+            }
+            break;
+        case AccountCall::Logout:
+        case AccountCall::Settings:  // a failed save waits for the next one
+            break;
+        }
     }
 }
 

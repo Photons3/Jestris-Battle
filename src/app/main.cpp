@@ -109,6 +109,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     const Uint64 now = SDL_GetTicks();
     syncVisibility(host);
     pumpNetwork(host.app);
+    pumpAccount(host.app);
     runFrame(host.app.duel, host.app.screen == Screen::Duel, now - host.last, [&host](int ms) { step(host.app, ms); });
     host.last = now;
     if (host.app.hidden) {

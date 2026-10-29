@@ -54,14 +54,22 @@ struct App {
     void toggleMusic();                   // flips the music on or off and saves it
     void syncMusic(const MusicCue& cue);  // starts, pauses, retimes or stops the music to match `cue`
     void toggleSound();  // flips mute and saves it
-    void saveSettings();  // stores the keymap, handling, mute, music, volumes and bests for the next launch
+    void saveSettings();  // guest file, or PUT /api/settings while logged in
+    void applySettings(const Settings& settings);  // keymap, handling, menu, name and audio
+    Settings currentSettings() const;              // what saveSettings stores
+    void enterAccount(const Profile& profile);     // in-memory settings become the account's
+    void leaveAccount();                           // back to the guest settings text
     void applyVolumes();  // hands the menu's volume sliders to the mixer
     Game* activeGame();  // the game the keys control: solo, or the duel game while a match is running
+
+private:
+    void ensureGuestName();  // a guest with no name gets a generated one, stored for the next visit
 };
 
 void handleEvent(App& app, SDL_Window* window, const SDL_Event& event);
 void setHidden(App& app, bool hidden);  // call when the tab or window is hidden or shown again
 void pumpNetwork(App& app);  // feeds received messages to the duel; once per frame, before step()
+void pumpAccount(App& app);  // applies account API replies; once per frame, before step()
 void step(App& app, int ms);                   // advances input auto-repeat and the game in 1 ms steps
 void drawFrame(App& app, const Fonts& fonts);  // builds the ImGui frame and applies the chosen menu command
 
