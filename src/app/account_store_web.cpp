@@ -16,6 +16,7 @@ EM_JS(void, accountFetch, (int call, const char* method, const char* path, const
     fetch(UTF8ToString(path), {
         method: verb,
         credentials: "include",
+        cache: "no-store",
         body: verb === "GET" ? undefined : text
     }).then(
         (r) => r.text().then(

@@ -46,7 +46,8 @@ struct App {
     std::vector<Action> pending;
     bool quit = false;
     bool hidden = false;  // tab hidden or window minimized: keep stepping, skip drawing and sound
-    bool ignoreStartupMe = false;  // Register, Login, or Logout was sent; drop the startup Me
+    bool wasOnStart = true;  // the opening frame is already Start, so it does not refresh the record
+    AccountSync accountSync;
 
     void newSolo(SoloMode mode);  // starts a run at the menu's start level, replacing any other
     void openDuel();   // connects (once) and shows the duel screens

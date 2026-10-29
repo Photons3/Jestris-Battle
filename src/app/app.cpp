@@ -19,6 +19,10 @@
 namespace tetris {
 namespace {
 
+void sendAccount(const std::vector<AccountRequest>& requests) {
+    for (const AccountRequest& request : requests) sendAccountRequest(request.call, request.body);
+}
+
 void applyCommand(App& app, UiCommand command) {
     switch (command) {
     case UiCommand::None:
@@ -59,28 +63,34 @@ void applyCommand(App& app, UiCommand command) {
         app.saveSettings();
         break;
     case UiCommand::CreateRoom:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.createRoom(app.menu.startLevel, app.menu.publicRooms);
         break;
     case UiCommand::CreatePublicRoom:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.createRoom(app.menu.startLevel, true);
         break;
     case UiCommand::BrowseRooms:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.openLobby();
         break;
     case UiCommand::QuickMatch:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.quickMatch(app.menu.startLevel);
         break;
     case UiCommand::JoinListedRoom:
+        if (app.accountSync.logoutPending) break;
         app.duel.joinRoom(app.menu.pickedRoom, RoomVisibility::Public);  // it was in the public list
         break;
     case UiCommand::SavePublic:
         app.saveSettings();
         break;
     case UiCommand::JoinInvite:
+        if (app.accountSync.logoutPending) break;
         std::snprintf(app.menu.joinCode, sizeof app.menu.joinCode, "%s", app.menu.inviteCode.c_str());
         app.menu.inviteCode.clear();
         app.openDuel();
@@ -90,6 +100,7 @@ void applyCommand(App& app, UiCommand command) {
         copyInviteLink(app.duel.roomCode());
         break;
     case UiCommand::JoinRoom:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.joinRoom(app.menu.joinCode);
         break;
@@ -125,19 +136,17 @@ void applyCommand(App& app, UiCommand command) {
         app.saveSettings();
         break;
     case UiCommand::Register:
-        app.ignoreStartupMe = true;
         app.menu.accountBusy = true;
         sendAccountRequest(AccountCall::Register, credentialsBody(app.menu.loginName, app.menu.loginPassword));
         break;
     case UiCommand::Login:
-        app.ignoreStartupMe = true;
         app.menu.accountBusy = true;
         sendAccountRequest(AccountCall::Login, credentialsBody(app.menu.loginName, app.menu.loginPassword));
         break;
     case UiCommand::Logout:
-        app.ignoreStartupMe = true;
         sendAccountRequest(AccountCall::Logout, "");
         app.leaveAccount();
+        app.accountSync.onLogoutSent();
         break;
     case UiCommand::ChangePassword:
         app.menu.accountBusy = true;
@@ -176,10 +185,8 @@ void playSoloEvents(App& app) {
         if (!result || !app.menu.bests.submit(app.solo->mode(), *result)) continue;
         app.newBest = true;
         app.saveSettings();
-        if (app.menu.loggedIn) {
-            if (const std::optional<std::string> body = bestBody(app.solo->mode(), *result))
-                sendAccountRequest(AccountCall::Best, *body);
-        }
+        if (app.menu.loggedIn)
+            sendAccount(app.accountSync.submitBest(true, app.solo->mode(), *result));
         if (const auto sound = soundFor(DuelEvent::Won); sound && !app.hidden) app.audio.play(*sound);
     }
 }
@@ -266,7 +273,7 @@ App::App()
     menu.inviteLinkBase = inviteLinkBase();
     menu.canCopyLink = canCopyToClipboard();
     menu.accountsEnabled = accountsSupported();
-    if (menu.accountsEnabled) sendAccountRequest(AccountCall::Me, "");
+    sendAccount(accountSync.noteEnabled(menu.accountsEnabled));
 }
 
 void App::applySettings(const Settings& settings) {
@@ -301,10 +308,11 @@ void App::ensureGuestName() {
 
 void App::saveSettings() {
     const std::string text = serializeSettings(currentSettings());
-    if (menu.loggedIn)
-        sendAccountRequest(AccountCall::Settings, text);
-    else
-        saveSettingsText(text);
+    if (!menu.loggedIn) {
+        saveSettingsText(text);  // guest file, synchronous, one write
+        return;
+    }
+    sendAccount(accountSync.save(true, text));
 }
 
 void App::enterAccount(const Profile& profile) {
@@ -320,6 +328,7 @@ void App::enterAccount(const Profile& profile) {
     menu.accountError.clear();
     menu.accountNote.clear();
     menu.accountBusy = false;
+    accountSync.onEnteredAccount();
 }
 
 void App::leaveAccount() {
@@ -349,6 +358,7 @@ void App::newSolo(SoloMode mode) {
 }
 
 void App::openDuel() {
+    if (accountSync.logoutPending) return;  // the logout reply has not arrived; don't open an account socket
     if (!connection) {  // the lobby keeps its connection when it opens a room
         connection = connectToServer();
         if (connection) connection->send(encode(Hello{menu.playerName}));  // queued until the socket opens
@@ -439,46 +449,48 @@ void pumpNetwork(App& app) {
     }
 }
 
+void applyAccount(App& app, const AccountSync::Outcome& out) {
+    switch (out.action) {
+    case AccountSync::Action::SignIn:
+        app.enterAccount(out.profile);
+        break;
+    case AccountSync::Action::Refresh:  // record and bests only; keys stay as the player left them
+        app.menu.record = out.profile.career;
+        app.menu.bests = out.profile.bests;
+        break;
+    case AccountSync::Action::LoginFailed:
+    case AccountSync::Action::LogoutFailed:
+        app.menu.accountError = out.error;
+        break;
+    case AccountSync::Action::PasswordChanged:
+        app.menu.accountNote = "Password changed";
+        app.menu.accountError.clear();
+        app.menu.currentPassword[0] = '\0';
+        app.menu.newPassword[0] = '\0';
+        break;
+    case AccountSync::Action::PasswordFailed:
+        app.menu.accountNote.clear();
+        app.menu.accountError = out.error;
+        break;
+    case AccountSync::Action::Bests:
+        app.menu.bests = out.bests;
+        break;
+    case AccountSync::Action::None:
+        break;
+    }
+    sendAccount(out.more);
+}
+
 void pumpAccount(App& app) {
+    // Runs every frame, including while hidden, so a return to Start still refreshes the record.
+    if (returnedToStart(app.screen == Screen::Start, app.wasOnStart))
+        sendAccount(app.accountSync.noteReturnedToStart(app.menu.loggedIn));
     for (const AccountReply& reply : takeAccountReplies()) {
-        switch (reply.call) {
-        case AccountCall::Me:
-            if (app.ignoreStartupMe) break;  // a later Register, Login, or Logout already replaced it
-            if (reply.status == 200) {
-                if (const std::optional<Profile> profile = parseProfile(reply.body)) app.enterAccount(*profile);
-            }
-            break;
-        case AccountCall::Register:
-        case AccountCall::Login: {
+        if (reply.call == AccountCall::Register || reply.call == AccountCall::Login ||
+            reply.call == AccountCall::Password) {
             app.menu.accountBusy = false;
-            const std::optional<Profile> profile = reply.status == 200 ? parseProfile(reply.body) : std::nullopt;
-            if (profile)
-                app.enterAccount(*profile);
-            else
-                app.menu.accountError = accountErrorText(reply.status, reply.body);
-            break;
         }
-        case AccountCall::Password:
-            app.menu.accountBusy = false;
-            if (reply.status == 204) {
-                app.menu.accountNote = "Password changed";
-                app.menu.accountError.clear();
-                app.menu.currentPassword[0] = '\0';
-                app.menu.newPassword[0] = '\0';
-            } else {
-                app.menu.accountNote.clear();
-                app.menu.accountError = accountErrorText(reply.status, reply.body);
-            }
-            break;
-        case AccountCall::Best:
-            if (reply.status == 200 && app.menu.loggedIn) {
-                if (const std::optional<PersonalBests> bests = parseBests(reply.body)) app.menu.bests = *bests;
-            }
-            break;
-        case AccountCall::Logout:
-        case AccountCall::Settings:  // a failed save waits for the next one
-            break;
-        }
+        applyAccount(app, app.accountSync.take(reply, app.menu.loggedIn));
     }
 }
 

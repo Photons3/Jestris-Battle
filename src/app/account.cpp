@@ -390,6 +390,164 @@ std::vector<std::string> recordLines(const CareerView& career) {
     return lines;
 }
 
+AccountSync::Outcome signedIn(AccountSync& sync, const Profile& profile) {
+    sync.ignoreStartupMe = true;
+    AccountSync::Outcome out;
+    out.action = AccountSync::Action::SignIn;
+    out.profile = profile;
+    return out;
+}
+
+std::vector<AccountRequest> AccountSync::noteEnabled(bool accountsEnabled) {
+    if (!accountsEnabled || startupOutstanding) return {};
+    startupOutstanding = true;
+    return {AccountRequest{AccountCall::Me, ""}};
+}
+
+std::vector<AccountRequest> AccountSync::noteReturnedToStart(bool loggedIn) {
+    if (!loggedIn) return {};
+    return {AccountRequest{AccountCall::Me, ""}};
+}
+
+std::vector<AccountRequest> AccountSync::save(bool loggedIn, const std::string& text) {
+    std::vector<AccountRequest> out;
+    if (!loggedIn) return out;
+    const bool inFlight = !settingsInFlight.empty() && settingsInFlight.back() == epoch;
+    if (inFlight) {
+        if (text != settingsSent) settingsWaiting = text;
+        else settingsWaiting.reset();
+    } else {
+        sendSettings(text, out);
+    }
+    queueBestRetries(out);
+    return out;
+}
+
+std::vector<AccountRequest> AccountSync::submitBest(bool loggedIn, SoloMode mode, int result) {
+    if (!loggedIn) return {};
+    const auto body = bestBody(mode, result);
+    if (!body) return {};
+    bestsInFlight.push_back(PendingBest{mode, result, epoch});
+    return {AccountRequest{AccountCall::Best, *body}};
+}
+
+void AccountSync::onEnteredAccount() { ignoreStartupMe = true; }
+
+void AccountSync::onLogoutSent() {
+    ignoreStartupMe = true;
+    logoutPending = true;
+    ++epoch;
+    settingsWaiting.reset();
+    bestsWaiting.clear();
+}
+
+void AccountSync::sendSettings(const std::string& text, std::vector<AccountRequest>& out) {
+    settingsSent = text;
+    settingsWaiting.reset();
+    settingsInFlight.push_back(epoch);
+    out.push_back(AccountRequest{AccountCall::Settings, text});
+}
+
+void AccountSync::queueBestRetries(std::vector<AccountRequest>& out) {
+    for (const PendingBest& best : bestsWaiting) {
+        if (best.epoch != epoch) continue;
+        const auto body = bestBody(best.mode, best.result);
+        if (!body) continue;
+        bestsInFlight.push_back(PendingBest{best.mode, best.result, epoch});
+        out.push_back(AccountRequest{AccountCall::Best, *body});
+    }
+    bestsWaiting.clear();
+}
+
+void AccountSync::rememberBest(PendingBest best) {
+    for (PendingBest& waiting : bestsWaiting) {
+        if (waiting.mode == best.mode) {
+            waiting = best;
+            return;
+        }
+    }
+    bestsWaiting.push_back(best);
+}
+
+AccountSync::Outcome AccountSync::takeMe(const AccountReply& reply, bool loggedIn) {
+    if (startupOutstanding) {
+        startupOutstanding = false;
+        if (ignoreStartupMe || reply.status != 200) return {};
+        if (const auto profile = parseProfile(reply.body)) return signedIn(*this, *profile);
+        return {};
+    }
+    if (!loggedIn || reply.status != 200) return {};
+    if (const auto profile = parseProfile(reply.body)) {
+        Outcome out;
+        out.action = Action::Refresh;
+        out.profile = *profile;
+        return out;
+    }
+    return {};
+}
+
+AccountSync::Outcome AccountSync::takeSettings(bool loggedIn) {
+    if (settingsInFlight.empty()) return {};
+    const int sentEpoch = settingsInFlight.front();
+    settingsInFlight.erase(settingsInFlight.begin());
+    if (sentEpoch != epoch) return {};
+    Outcome out;
+    if (loggedIn && settingsWaiting && *settingsWaiting != settingsSent) {
+        const std::string next = *settingsWaiting;
+        sendSettings(next, out.more);
+    } else {
+        settingsWaiting.reset();
+    }
+    return out;
+}
+
+AccountSync::Outcome AccountSync::takeBest(const AccountReply& reply, bool loggedIn) {
+    if (bestsInFlight.empty()) return {};
+    const PendingBest sent = bestsInFlight.front();
+    bestsInFlight.erase(bestsInFlight.begin());
+    if (sent.epoch != epoch) return {};
+    if (reply.status == 200 && loggedIn) {
+        if (const auto bests = parseBests(reply.body)) {
+            std::vector<PendingBest> kept;
+            for (const PendingBest& waiting : bestsWaiting)
+                if (waiting.mode != sent.mode) kept.push_back(waiting);
+            bestsWaiting = std::move(kept);
+            Outcome out;
+            out.action = Action::Bests;
+            out.bests = *bests;
+            return out;
+        }
+    }
+    if (loggedIn) rememberBest(sent);
+    return {};
+}
+
+AccountSync::Outcome AccountSync::take(const AccountReply& reply, bool loggedIn) {
+    switch (reply.call) {
+    case AccountCall::Me:
+        return takeMe(reply, loggedIn);
+    case AccountCall::Register:
+    case AccountCall::Login:
+        if (reply.status == 200) {
+            if (const auto profile = parseProfile(reply.body)) return signedIn(*this, *profile);
+        }
+        return Outcome{Action::LoginFailed, {}, {}, accountErrorText(reply.status, reply.body), {}};
+    case AccountCall::Logout: {
+        logoutPending = false;
+        if (reply.status == 204) return {};
+        return Outcome{Action::LogoutFailed, {}, {}, accountErrorText(reply.status, reply.body), {}};
+    }
+    case AccountCall::Password:
+        if (reply.status == 204) return Outcome{Action::PasswordChanged, {}, {}, {}, {}};
+        return Outcome{Action::PasswordFailed, {}, {}, accountErrorText(reply.status, reply.body), {}};
+    case AccountCall::Settings:
+        return takeSettings(loggedIn);
+    case AccountCall::Best:
+        return takeBest(reply, loggedIn);
+    }
+    return {};
+}
+
 std::string accountErrorText(int status, std::string_view body) {
     if (status == 0) return "cannot reach the server";
     constexpr std::string_view kSpace = " \t\r\n";

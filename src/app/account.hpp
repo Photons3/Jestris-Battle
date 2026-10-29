@@ -59,4 +59,64 @@ std::vector<std::string> recordLines(const CareerView& career);
 // The server's plain-text error without its trailing newline, or a stand-in when there is none.
 std::string accountErrorText(int status, std::string_view body);
 
+// One call the account sync wants sent. `body` is empty for GET and logout.
+struct AccountRequest {
+    AccountCall call = AccountCall::Me;
+    std::string body;
+};
+
+// Which Me is the startup one, one settings PUT at a time, and a best that has not yet got a 200.
+// Replies are applied in arrival order, which is the order the requests were sent.
+struct AccountSync {
+    // Set once a register or login has succeeded, or Logout is sent. Drops the startup Me only.
+    bool ignoreStartupMe = false;
+    bool logoutPending = false;  // Logout was sent and its reply has not arrived
+
+    std::vector<AccountRequest> noteEnabled(bool accountsEnabled);       // the constructor's Me, once
+    std::vector<AccountRequest> noteReturnedToStart(bool loggedIn);      // refresh Me, record and bests only
+    std::vector<AccountRequest> save(bool loggedIn, const std::string& text);
+    std::vector<AccountRequest> submitBest(bool loggedIn, SoloMode mode, int result);
+    void onEnteredAccount();
+    void onLogoutSent();
+
+    enum class Action { None, SignIn, Refresh, LoginFailed, LogoutFailed, PasswordChanged, PasswordFailed, Bests };
+    struct Outcome {
+        Action action = Action::None;
+        Profile profile;      // SignIn and Refresh
+        PersonalBests bests;  // Bests
+        std::string error;    // LoginFailed, LogoutFailed, PasswordFailed
+        std::vector<AccountRequest> more;
+    };
+    Outcome take(const AccountReply& reply, bool loggedIn);
+
+private:
+    struct PendingBest {
+        SoloMode mode = SoloMode::Marathon;
+        int result = 0;
+        int epoch = 0;  // which login the request belonged to
+    };
+
+    bool startupOutstanding = false;
+    int epoch = 0;  // bumped on logout so a late reply is not the next session's
+    std::vector<int> settingsInFlight;
+    std::string settingsSent;
+    std::optional<std::string> settingsWaiting;
+    std::vector<PendingBest> bestsInFlight;
+    std::vector<PendingBest> bestsWaiting;
+
+    void sendSettings(const std::string& text, std::vector<AccountRequest>& out);
+    void queueBestRetries(std::vector<AccountRequest>& out);
+    void rememberBest(PendingBest best);
+    Outcome takeMe(const AccountReply& reply, bool loggedIn);
+    Outcome takeSettings(bool loggedIn);
+    Outcome takeBest(const AccountReply& reply, bool loggedIn);
+};
+
+// True when `onStart` becomes true. `wasOnStart` begins true, so the first frame is not a return to Start.
+inline bool returnedToStart(bool onStart, bool& wasOnStart) {
+    const bool returned = onStart && !wasOnStart;
+    wasOnStart = onStart;
+    return returned;
+}
+
 }  // namespace tetris
