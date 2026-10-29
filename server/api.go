@@ -70,11 +70,12 @@ func (a *accountAPI) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if a.registrations.blocked(ip) {
+	if !a.registrations.reserve(ip) {
 		http.Error(w, "try again later", http.StatusTooManyRequests)
 		return
 	}
 	acc, token, err := a.store.Register(r.Context(), c.Username, c.Password)
+	a.registrations.settle(ip, err == nil)
 	switch {
 	case errors.Is(err, errNameTaken):
 		http.Error(w, "username is taken", http.StatusConflict)
@@ -89,7 +90,6 @@ func (a *accountAPI) register(w http.ResponseWriter, r *http.Request) {
 		serverError(w, "register", err)
 		return
 	}
-	a.registrations.add(ip)
 	a.startSession(w, r, acc, token)
 }
 
@@ -98,15 +98,21 @@ func (a *accountAPI) login(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &c) {
 		return
 	}
+	// No account can have such a name, so it never reaches the limiter, whose keys would
+	// otherwise be as large as the attacker's body.
+	if !validName(c.Username) {
+		http.Error(w, "wrong username or password", http.StatusUnauthorized)
+		return
+	}
 	key := strings.ToLower(c.Username)
-	if a.logins.blocked(key) {
+	if !a.logins.reserve(key) {
 		http.Error(w, "try again later", http.StatusTooManyRequests)
 		return
 	}
 	acc, token, err := a.store.Login(r.Context(), c.Username, c.Password)
+	a.logins.settle(key, errors.Is(err, errWrongLogin))
 	switch {
 	case errors.Is(err, errWrongLogin):
-		a.logins.add(key)
 		http.Error(w, "wrong username or password", http.StatusUnauthorized)
 		return
 	case err != nil:
@@ -304,45 +310,84 @@ func clientIP(r *http.Request) string {
 }
 
 // rateLimiter allows max events per key within window, remembering them in memory only.
+// A caller reserves a slot before the work and settles it after, so parallel requests cannot all pass the check.
 type rateLimiter struct {
-	mu     sync.Mutex
-	max    int
-	window time.Duration
-	now    func() time.Time
-	events map[string][]time.Time
+	mu        sync.Mutex
+	max       int
+	window    time.Duration
+	now       func() time.Time
+	keys      map[string]*limitKey
+	lastSweep time.Time
+}
+
+type limitKey struct {
+	events   []time.Time // recorded events, oldest first
+	inflight int         // reservations not yet settled
 }
 
 func newRateLimiter(max int, window time.Duration, now func() time.Time) *rateLimiter {
-	return &rateLimiter{max: max, window: window, now: now, events: map[string][]time.Time{}}
+	return &rateLimiter{max: max, window: window, now: now, keys: map[string]*limitKey{}}
 }
 
-// prune drops key's events older than the window, and the key itself once none is left. Caller holds mu.
-func (l *rateLimiter) prune(key string) []time.Time {
-	cutoff := l.now().Add(-l.window)
-	list := l.events[key]
+// expire drops k's events older than the window. Caller holds mu.
+func (l *rateLimiter) expire(k *limitKey, now time.Time) {
+	cutoff := now.Add(-l.window)
 	i := 0
-	for i < len(list) && !list[i].After(cutoff) {
+	for i < len(k.events) && !k.events[i].After(cutoff) {
 		i++
 	}
-	list = list[i:]
-	if len(list) == 0 {
-		delete(l.events, key)
-		return nil
+	k.events = k.events[i:]
+}
+
+// sweep forgets every key with no live events and no reservation, at most once per window,
+// so the map holds only the keys that were active in the last window. Caller holds mu.
+func (l *rateLimiter) sweep(now time.Time) {
+	if d := now.Sub(l.lastSweep); d >= 0 && d < l.window {
+		return
 	}
-	l.events[key] = list
-	return list
+	l.lastSweep = now
+	for key, k := range l.keys {
+		l.expire(k, now)
+		if len(k.events) == 0 && k.inflight == 0 {
+			delete(l.keys, key)
+		}
+	}
 }
 
-// blocked reports whether key has already used up its events in the window.
-func (l *rateLimiter) blocked(key string) bool {
+// reserve claims a slot for key, or reports false when the events in the window plus the
+// reservations in flight already reach the limit. Every true must be followed by one settle.
+func (l *rateLimiter) reserve(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.prune(key)) >= l.max
+	now := l.now()
+	l.sweep(now)
+	k := l.keys[key]
+	if k == nil {
+		k = &limitKey{}
+	} else {
+		l.expire(k, now)
+	}
+	if len(k.events)+k.inflight >= l.max {
+		return false
+	}
+	k.inflight++
+	l.keys[key] = k
+	return true
 }
 
-// add counts one event for key.
-func (l *rateLimiter) add(key string) {
+// settle releases a reserved slot, and records an event for key when counted.
+func (l *rateLimiter) settle(key string, counted bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.events[key] = append(l.prune(key), l.now())
+	k := l.keys[key]
+	if k == nil {
+		return
+	}
+	k.inflight--
+	if counted {
+		k.events = append(k.events, l.now())
+	}
+	if len(k.events) == 0 && k.inflight == 0 {
+		delete(l.keys, key)
+	}
 }

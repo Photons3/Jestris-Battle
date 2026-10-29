@@ -313,6 +313,91 @@ func TestLoginFailuresAreCappedPerUsername(t *testing.T) {
 	login(t, newBrowser(t), srv, "Sam", "password1")
 }
 
+func TestParallelWrongLoginsCannotBypassTheCap(t *testing.T) {
+	srv, _ := newAPIServer(t)
+	register(t, newBrowser(t), srv, "Sam", "password1")
+
+	const attempts = 30
+	statuses := make(chan int, attempts)
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.Post(srv.URL+"/api/login", "application/json", strings.NewReader(creds("sam", "wrongpass1")))
+			if err != nil {
+				t.Error(err)
+				statuses <- 0
+				return
+			}
+			resp.Body.Close()
+			statuses <- resp.StatusCode
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	counts := map[int]int{}
+	for s := range statuses {
+		counts[s]++
+	}
+	if counts[401] > loginFailureLimit || counts[401]+counts[429] != attempts {
+		t.Fatalf("statuses %v: want at most %d x 401 and the rest 429", counts, loginFailureLimit)
+	}
+}
+
+func TestJunkUsernamesNeverReachTheLoginLimiter(t *testing.T) {
+	srv, api := newAPIServer(t)
+	c := newBrowser(t)
+	for _, name := range []string{strings.Repeat("x", 1000), "bad name", "", "Sam\u00e9"} {
+		expectCall(t, c, "POST", srv.URL+"/api/login", creds(name, "password1"), 401, "wrong username or password")
+	}
+	api.logins.mu.Lock()
+	defer api.logins.mu.Unlock()
+	if n := len(api.logins.keys); n != 0 {
+		t.Fatalf("login limiter holds %d keys", n)
+	}
+}
+
+func TestRateLimiterSweepsExpiredKeys(t *testing.T) {
+	clock := &settableClock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+	l := newRateLimiter(3, time.Hour, clock.now)
+	for _, key := range []string{"a", "b", "c"} {
+		if !l.reserve(key) {
+			t.Fatalf("reserve %s", key)
+		}
+		l.settle(key, true)
+	}
+	if !l.reserve("busy") { // still reserved when the others expire
+		t.Fatal("reserve busy")
+	}
+	clock.advance(time.Hour)
+	if !l.reserve("d") {
+		t.Fatal("reserve d")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.keys) != 2 || l.keys["busy"] == nil || l.keys["d"] == nil {
+		t.Fatalf("keys after the window: %v", l.keys)
+	}
+}
+
+func TestRateLimiterCountsReservationsInFlight(t *testing.T) {
+	clock := &settableClock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+	l := newRateLimiter(2, time.Hour, clock.now)
+	if !l.reserve("k") || !l.reserve("k") || l.reserve("k") {
+		t.Fatal("two reservations should fit and a third should not")
+	}
+	l.settle("k", false) // a success frees its slot
+	if !l.reserve("k") {
+		t.Fatal("a freed slot should be reservable")
+	}
+	l.settle("k", true)
+	l.settle("k", true)
+	if l.reserve("k") {
+		t.Fatal("two recorded events reach the limit")
+	}
+}
+
 func TestRegistrationsAreCappedPerIP(t *testing.T) {
 	srv, api := newAPIServer(t)
 	clock := &settableClock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
