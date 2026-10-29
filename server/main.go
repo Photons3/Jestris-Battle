@@ -17,6 +17,7 @@ import (
 func main() {
 	addr := flag.String("addr", "0.0.0.0:8080", "address to listen on")
 	dir := flag.String("dir", "../build-web", "directory holding the web build (index.html, index.js, index.wasm)")
+	db := flag.String("db", "jestris.db", "SQLite file for accounts, settings and career stats")
 	match := flag.Duration("match", defaultMatchLength, "match length, e.g. 20s for quick manual tests")
 	cert := flag.String("cert", "", "TLS certificate file (PEM, full chain); serves HTTPS/WSS when set with -key")
 	key := flag.String("key", "", "TLS private key file (PEM)")
@@ -53,10 +54,14 @@ func main() {
 		log.Fatalf("bad -addr: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/", web)
+	store, err := OpenStore(*db)
+	if err != nil {
+		log.Fatalf("cannot open the database %s: %v", *db, err)
+	}
 	hub := NewHub()
 	hub.matchLength = *match
+	hub.sessions = store
+	hub.career = newCareerWriter(store)
 	if err := warmEngine(*authMode, newSharedSim); err != nil {
 		log.Fatal(err)
 	}
@@ -66,7 +71,7 @@ func main() {
 			hub.originPatterns = append(hub.originPatterns, o)
 		}
 	}
-	mux.Handle("/ws", hub)
+	mux := newMux(web, hub, newAccountAPI(store, hub))
 
 	scheme := "http"
 	if useTLS {
@@ -81,6 +86,15 @@ func main() {
 		log.Fatal(http.ListenAndServeTLS(*addr, *cert, *key, mux))
 	}
 	log.Fatal(http.ListenAndServe(*addr, mux))
+}
+
+// newMux serves the web build, the match socket, and the account API.
+func newMux(web http.Handler, hub *Hub, a *accountAPI) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/", web)
+	mux.Handle("/ws", hub)
+	a.routes(mux)
+	return mux
 }
 
 // lanIPs lists this machine's IPv4 addresses that other devices on the network can reach.
