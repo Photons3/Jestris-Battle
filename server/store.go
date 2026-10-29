@@ -265,3 +265,125 @@ func (s *Store) ChangePassword(ctx context.Context, userID int64, keepToken, cur
 	}
 	return tx.Commit()
 }
+
+var errBadMode = errors.New("bad mode")
+
+// Bests are the solo bests. A mode never played is nil.
+type Bests struct {
+	SprintMs   *int `json:"sprintMs"`
+	CheeseMs   *int `json:"cheeseMs"`
+	BlitzScore *int `json:"blitzScore"`
+}
+
+// Career is the stored career totals, and also the delta one match adds to them.
+type Career struct {
+	DuelWins, DuelLosses, DuelDraws, KosDealt, KosTaken, RoyaleMatches, RoyaleWins, RoyalePlaceSum,
+	Pieces, Attack, Sent, GarbageCleared, Cancelled, Tetrises, TSpins, MaxCombo, MsPlayed int
+}
+
+// Profile is everything an account owns.
+type Profile struct {
+	Username, Settings string
+	Bests              Bests
+	Career             Career
+}
+
+// careerView is the career as the menu shows it, with the rates computed.
+type careerView struct {
+	DuelWins      int      `json:"duelWins"`
+	DuelLosses    int      `json:"duelLosses"`
+	DuelDraws     int      `json:"duelDraws"`
+	KosDealt      int      `json:"kosDealt"`
+	KosTaken      int      `json:"kosTaken"`
+	RoyaleMatches int      `json:"royaleMatches"`
+	RoyaleWins    int      `json:"royaleWins"`
+	AvgPlace      *float64 `json:"avgPlace"`
+	PPS           float64  `json:"pps"`
+	APM           float64  `json:"apm"`
+	VS            float64  `json:"vs"`
+}
+
+func (c Career) view() careerView {
+	v := careerView{
+		DuelWins: c.DuelWins, DuelLosses: c.DuelLosses, DuelDraws: c.DuelDraws,
+		KosDealt: c.KosDealt, KosTaken: c.KosTaken,
+		RoyaleMatches: c.RoyaleMatches, RoyaleWins: c.RoyaleWins,
+	}
+	if c.RoyaleMatches > 0 {
+		avg := float64(c.RoyalePlaceSum) / float64(c.RoyaleMatches)
+		v.AvgPlace = &avg
+	}
+	if c.MsPlayed > 0 {
+		ms := float64(c.MsPlayed)
+		v.PPS = float64(c.Pieces) / (ms / 1000)
+		v.APM = float64(c.Attack) / (ms / 60000)
+		v.VS = float64(c.Attack+c.GarbageCleared) / (ms / 1000) * 100
+	}
+	return v
+}
+
+// Profile returns the account's name, settings text, solo bests and career totals.
+func (s *Store) Profile(ctx context.Context, userID int64) (Profile, error) {
+	var p Profile
+	c := &p.Career
+	err := s.db.QueryRowContext(ctx, `
+SELECT u.username, st.body, b.sprint_ms, b.cheese_ms, b.blitz_score,
+       c.duel_wins, c.duel_losses, c.duel_draws, c.kos_dealt, c.kos_taken, c.royale_matches, c.royale_wins,
+       c.royale_place_sum, c.pieces, c.attack, c.sent, c.garbage_cleared, c.cancelled, c.tetrises, c.tspins,
+       c.max_combo, c.ms_played
+FROM users u
+JOIN settings st ON st.user_id = u.id
+JOIN solo_bests b ON b.user_id = u.id
+JOIN career c ON c.user_id = u.id
+WHERE u.id = ?`, userID).Scan(&p.Username, &p.Settings, &p.Bests.SprintMs, &p.Bests.CheeseMs, &p.Bests.BlitzScore,
+		&c.DuelWins, &c.DuelLosses, &c.DuelDraws, &c.KosDealt, &c.KosTaken, &c.RoyaleMatches, &c.RoyaleWins,
+		&c.RoyalePlaceSum, &c.Pieces, &c.Attack, &c.Sent, &c.GarbageCleared, &c.Cancelled, &c.Tetrises, &c.TSpins,
+		&c.MaxCombo, &c.MsPlayed)
+	return p, err
+}
+
+// SaveSettings stores the settings text as is.
+func (s *Store) SaveSettings(ctx context.Context, userID int64, body string) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE settings SET body = ? WHERE user_id = ?", body, userID)
+	return err
+}
+
+// bestUpdates replace a best only when the new result is better: sprint and cheese are times, blitz is a score.
+var bestUpdates = map[string]string{
+	"sprint": "UPDATE solo_bests SET sprint_ms = ? WHERE user_id = ? AND (sprint_ms IS NULL OR sprint_ms > ?)",
+	"cheese": "UPDATE solo_bests SET cheese_ms = ? WHERE user_id = ? AND (cheese_ms IS NULL OR cheese_ms > ?)",
+	"blitz":  "UPDATE solo_bests SET blitz_score = ? WHERE user_id = ? AND (blitz_score IS NULL OR blitz_score < ?)",
+}
+
+// SubmitBest records a solo result when it beats the stored best, and returns the three stored bests.
+func (s *Store) SubmitBest(ctx context.Context, userID int64, mode string, result int) (Bests, error) {
+	q, ok := bestUpdates[mode]
+	if !ok || result < 0 {
+		return Bests{}, errBadMode
+	}
+	if _, err := s.db.ExecContext(ctx, q, result, userID, result); err != nil {
+		return Bests{}, err
+	}
+	var b Bests
+	err := s.db.QueryRowContext(ctx, "SELECT sprint_ms, cheese_ms, blitz_score FROM solo_bests WHERE user_id = ?", userID).
+		Scan(&b.SprintMs, &b.CheeseMs, &b.BlitzScore)
+	return b, err
+}
+
+// AddCareer adds a match's delta to the totals. max_combo takes the greater value, every other column sums.
+func (s *Store) AddCareer(ctx context.Context, userID int64, d Career) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE career SET
+  duel_wins = duel_wins + ?, duel_losses = duel_losses + ?, duel_draws = duel_draws + ?,
+  kos_dealt = kos_dealt + ?, kos_taken = kos_taken + ?,
+  royale_matches = royale_matches + ?, royale_wins = royale_wins + ?, royale_place_sum = royale_place_sum + ?,
+  pieces = pieces + ?, attack = attack + ?, sent = sent + ?, garbage_cleared = garbage_cleared + ?,
+  cancelled = cancelled + ?, tetrises = tetrises + ?, tspins = tspins + ?,
+  max_combo = MAX(max_combo, ?), ms_played = ms_played + ?
+WHERE user_id = ?`,
+		d.DuelWins, d.DuelLosses, d.DuelDraws, d.KosDealt, d.KosTaken,
+		d.RoyaleMatches, d.RoyaleWins, d.RoyalePlaceSum,
+		d.Pieces, d.Attack, d.Sent, d.GarbageCleared, d.Cancelled, d.Tetrises, d.TSpins,
+		d.MaxCombo, d.MsPlayed, userID)
+	return err
+}
