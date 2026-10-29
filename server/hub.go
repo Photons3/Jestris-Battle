@@ -72,6 +72,7 @@ type Hub struct {
 	originPatterns []string
 	sessions       sessionLookup     // nil means no accounts: every socket is a guest
 	accounts       map[int64]*player // the live socket of each logged-in account, guarded by mu
+	career         careerRecorder    // takes each account's career delta at match end; nil records nothing
 }
 
 // sessionLookup resolves a session cookie value into its account; *Store satisfies it.
@@ -127,6 +128,7 @@ type match struct {
 	sent    map[*player]int // lines sent: the total of each participant's accepted ATK n
 	alive   map[*player]bool
 	runner  *matchRunner // nil without a simulation, and once the match has ended
+	career  careerRecorder
 }
 
 // outgoing is a message for the queue of player to.
@@ -576,6 +578,7 @@ func (h *Hub) begin(p *player) []outgoing {
 		kos:     map[*player]int{},
 		sent:    map[*player]int{},
 		alive:   map[*player]bool{},
+		career:  h.career,
 	}
 	seed := h.newSeed()
 	var b strings.Builder
@@ -750,9 +753,11 @@ func (r *room) eliminate(p *player) []outgoing {
 		}
 	}
 	m.alive[p] = false
+	m.recordPlace(p, place)
 	out := m.tellConnected(r, fmt.Sprintf("OUT %d %d", p.id, place))
 	if place == 2 {
 		i := slices.IndexFunc(m.players, func(q *player) bool { return m.alive[q] })
+		m.recordPlace(m.players[i], 1)
 		out = append(out, m.tellConnected(r, fmt.Sprintf("OUT %d 1", m.players[i].id))...)
 		r.endMatch()
 	}
@@ -788,6 +793,7 @@ func (r *room) scoreKO(p *player) []outgoing {
 // finish ends the duel, sends each participant the verdict from their own side, then sends the room PLAYERS.
 func (r *room) finish(reason string) []outgoing {
 	m := r.match
+	m.recordDuel() // while the runner still holds the stats
 	r.endMatch()
 	out := make([]outgoing, 0, 2+len(r.players))
 	for _, p := range m.players {
