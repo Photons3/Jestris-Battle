@@ -71,6 +71,12 @@ func TestDuelRecordsBothAccounts(t *testing.T) {
 	})
 }
 
+func TestDuelRecordsOneDeltaWhenBothSeatsShareAnAccount(t *testing.T) {
+	d, fc := careerMatch(t, []int64{1, 1}, "Ann", "Bob")
+	d.clock.timer(0).fire()
+	fc.expect(t, map[int64]Career{1: {DuelDraws: 1}})
+}
+
 func TestDuelDrawRecordsADrawForBoth(t *testing.T) {
 	d, fc := careerMatch(t, []int64{1, 2}, "Ann", "Bob")
 	d.clock.timer(0).fire()

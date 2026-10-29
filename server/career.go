@@ -29,13 +29,23 @@ func (m *match) careerBase(p *player) Career {
 	return c
 }
 
+// claimAccount is true the first time this match records p's account. A second seat with the same
+// accountID, which a kicked socket must not leave behind, does not write another delta.
+func (m *match) claimAccount(p *player) bool {
+	if m.career == nil || p.accountID == 0 || m.recorded[p.accountID] {
+		return false
+	}
+	if m.recorded == nil {
+		m.recorded = map[int64]bool{}
+	}
+	m.recorded[p.accountID] = true
+	return true
+}
+
 // recordDuel records each account participant's verdict and KOs. It runs before endMatch drops the runner.
 func (m *match) recordDuel() {
-	if m.career == nil {
-		return
-	}
 	for _, p := range m.players {
-		if p.accountID == 0 {
+		if !m.claimAccount(p) {
 			continue
 		}
 		c := m.careerBase(p)
@@ -54,7 +64,7 @@ func (m *match) recordDuel() {
 
 // recordPlace records p's royale place, 1 for the winner. It runs before endMatch drops the runner.
 func (m *match) recordPlace(p *player, place int) {
-	if m.career == nil || p.accountID == 0 {
+	if !m.claimAccount(p) {
 		return
 	}
 	c := m.careerBase(p)

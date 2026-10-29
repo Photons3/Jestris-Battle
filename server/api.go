@@ -158,6 +158,7 @@ func (a *accountAPI) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *accountAPI) me(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	acc, _, ok := a.session(w, r)
 	if !ok {
 		return

@@ -97,6 +97,30 @@ func expectCall(t *testing.T, c *http.Client, method, url, body string, wantStat
 	}
 }
 
+func TestMeIsNotCached(t *testing.T) {
+	srv, _ := newAPIServer(t)
+	clients := []*http.Client{newBrowser(t), newBrowser(t)}
+	register(t, clients[1], srv, "Sam", "password1")
+	want := []int{http.StatusUnauthorized, http.StatusOK}
+	for i, c := range clients {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/me", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want[i] {
+			t.Fatalf("status %d, want %d", resp.StatusCode, want[i])
+		}
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("status %d Cache-Control %q, want no-store", want[i], got)
+		}
+	}
+}
+
 func TestRegisterLoginMeLogout(t *testing.T) {
 	srv, _ := newAPIServer(t)
 	resp, err := http.Post(srv.URL+"/api/register", "application/json", strings.NewReader(creds("Sam", "password1")))
