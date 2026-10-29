@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -69,7 +70,17 @@ type Hub struct {
 	// originPatterns are extra page hosts allowed to open /ws (e.g. "game.example.com"), for a
 	// reverse proxy that does not pass the Host header through. The page's own host is always allowed.
 	originPatterns []string
+	sessions       sessionLookup     // nil means no accounts: every socket is a guest
+	accounts       map[int64]*player // the live socket of each logged-in account, guarded by mu
+	career         careerRecorder    // takes each account's career delta at match end; nil records nothing
 }
+
+// sessionLookup resolves a session cookie value into its account; *Store satisfies it.
+type sessionLookup interface {
+	Session(ctx context.Context, token string) (Account, error)
+}
+
+const sessionCookie = "jestris_session"
 
 // stopper is a match timer; *time.Timer satisfies it.
 type stopper interface{ Stop() bool }
@@ -96,6 +107,8 @@ type player struct {
 	queue    chan string   // outbound messages in production order, filled under Hub.mu
 	kick     chan struct{} // closed when queue overflows; the writer then closes the connection
 	kicked   bool          // guarded by Hub.mu
+	// accountID is the logged-in account, or 0 for a guest. Set by attach before the player is shared.
+	accountID int64
 }
 
 func newPlayer(conn *websocket.Conn) *player {
@@ -107,14 +120,16 @@ func newPlayer(conn *websocket.Conn) *player {
 	}
 }
 
-// match is one match in a room: its participants are the room's players at BEGIN.
+// match is one match in a room: its participants are the room's players at BEGIN, skipping any already kicked.
 type match struct {
-	royale  bool
-	players []*player // participants, in START order
-	kos     map[*player]int
-	sent    map[*player]int // lines sent: the total of each participant's accepted ATK n
-	alive   map[*player]bool
-	runner  *matchRunner // nil without a simulation, and once the match has ended
+	royale   bool
+	players  []*player // participants, in START order
+	kos      map[*player]int
+	sent     map[*player]int // lines sent: the total of each participant's accepted ATK n
+	alive    map[*player]bool
+	runner   *matchRunner // nil without a simulation, and once the match has ended
+	career   careerRecorder
+	recorded map[int64]bool // account IDs already given their one delta for this match
 }
 
 // outgoing is a message for the queue of player to.
@@ -127,6 +142,7 @@ func NewHub() *Hub {
 	return &Hub{
 		rooms:       map[string]*room{},
 		watchers:    map[*player]bool{},
+		accounts:    map[int64]*player{},
 		maxRooms:    defaultMaxRooms,
 		newCode:     randomCode,
 		newSeed:     rand.Uint32,
@@ -148,7 +164,54 @@ func randomCode() string {
 	return string(b)
 }
 
+// account resolves r's session cookie. A missing, unknown or expired cookie, or a failed lookup, means a guest.
+func (h *Hub) account(r *http.Request) (Account, bool) {
+	if h.sessions == nil {
+		return Account{}, false
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return Account{}, false
+	}
+	a, err := h.sessions.Session(r.Context(), c.Value)
+	if err != nil {
+		if !errors.Is(err, errNoSession) {
+			log.Printf("session lookup: %v", err)
+		}
+		return Account{}, false
+	}
+	return a, true
+}
+
+// attach makes p the live socket of account a, kicking the one it replaces, and names p after the account.
+// The older socket is taken out of its room before this returns, with the same results as leave. Its read
+// loop still calls leave later; that call is a no-op for the room. leave locks Hub.mu itself, so this does
+// not call it.
+func (h *Hub) attach(p *player, a Account) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []outgoing
+	if old := h.accounts[a.ID]; old != nil && old != p {
+		old.disconnect()
+		out = h.removeFromRoom(old)
+	}
+	h.accounts[a.ID] = p
+	p.accountID = a.ID
+	p.name = a.Username
+	enqueue(out)
+}
+
+// DisconnectAccount closes the account's live socket, if it has one.
+func (h *Hub) DisconnectAccount(userID int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if p := h.accounts[userID]; p != nil {
+		p.disconnect()
+	}
+}
+
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	account, loggedIn := h.account(r)
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.originPatterns})
 	if err != nil {
 		log.Printf("websocket accept: %v", err)
@@ -162,6 +225,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := newPlayer(conn)
 	go p.write(ctx)
 	defer h.leave(p)
+	if loggedIn {
+		h.attach(p, account)
+	}
 	for {
 		typ, data, err := conn.Read(ctx)
 		if err != nil {
@@ -226,7 +292,7 @@ func keepAlive(ctx context.Context, conn *websocket.Conn) {
 func (h *Hub) route(p *player, text string) []outgoing {
 	verb, arg, _ := strings.Cut(text, " ")
 	if verb == "HELLO" {
-		if p.room == nil && validName(arg) {
+		if p.accountID == 0 && p.room == nil && validName(arg) {
 			p.name = arg
 		}
 		return nil
@@ -339,16 +405,17 @@ func (h *Hub) join(p *player, code string) []outgoing {
 	return h.enter(p, r)
 }
 
-// enter adds p to r with the lowest free ID and a room-unique name. p gets ROOM, the room gets PLAYERS, and
-// the lobby hears of a public room's new player count. A player who joins mid-match waits for the next one.
+// enter adds p to r with the lowest free ID and a room-unique name. An account keeps its username, and a
+// guest who already has that name is renamed into the roster this join broadcasts. A guest who joins is
+// still suffixed when the name is taken, including when an account holds it. Two accounts with one name
+// suffix the joiner. p gets ROOM, the room gets PLAYERS, and the lobby hears of a public room's new player
+// count. A player who joins mid-match waits for the next one.
 func (h *Hub) enter(p *player, r *room) []outgoing {
 	p.id = 1
 	for r.player(p.id) != nil {
 		p.id++
 	}
-	p.roomName = uniqueName(p.name, func(s string) bool {
-		return slices.ContainsFunc(r.players, func(q *player) bool { return q.roomName == s })
-	})
+	h.assignRoomName(p, r)
 	if len(r.players) == 0 {
 		r.hostID = p.id
 	}
@@ -360,6 +427,31 @@ func (h *Hub) enter(p *player, r *room) []outgoing {
 		out = append(out, h.lobbyUpdate()...)
 	}
 	return out
+}
+
+// assignRoomName sets p.roomName. The caller holds Hub.mu and has not added p to r.players yet.
+func (h *Hub) assignRoomName(p *player, r *room) {
+	heldByAccount := slices.ContainsFunc(r.players, func(q *player) bool {
+		return q.accountID != 0 && q.roomName == p.name
+	})
+	if p.accountID != 0 && !heldByAccount {
+		p.roomName = p.name
+		for _, q := range r.players {
+			if q.accountID != 0 || q.roomName != p.name {
+				continue
+			}
+			q.roomName = uniqueName(p.name, func(s string) bool {
+				if s == p.name {
+					return true
+				}
+				return slices.ContainsFunc(r.players, func(o *player) bool { return o != q && o.roomName == s })
+			})
+		}
+		return
+	}
+	p.roomName = uniqueName(p.name, func(s string) bool {
+		return slices.ContainsFunc(r.players, func(q *player) bool { return q.roomName == s })
+	})
 }
 
 // uniqueName returns base, or else base with the lowest free suffix 2, 3, ..., shortening base so the result
@@ -447,39 +539,50 @@ func validName(s string) bool {
 
 // leave takes p out of its room. A duel p was playing ends with LEFT to the other participant; in a royale a
 // living p is eliminated as if by DEAD, but gets nothing. The longest present player becomes host if p was,
-// and an empty room is deleted.
+// and an empty room is deleted. A player attach already removed is not in a room, so this does nothing there.
 func (h *Hub) leave(p *player) {
 	h.mu.Lock()
-	var out []outgoing
 	delete(h.watchers, p)
-	if r := p.room; r != nil {
-		if m := r.match; m != nil && m.runner != nil && m.has(p) {
-			m.runner.push(runnerMsg{from: p, kind: msgLeft})
-		}
-		r.players = slices.DeleteFunc(r.players, func(q *player) bool { return q == p })
-		p.room = nil
-		if m := r.match; m != nil && !m.royale && m.has(p) {
-			r.endMatch()
-			out = append(out, outgoing{m.opponent(p), "LEFT"})
-		}
-		if m := r.match; m != nil && m.royale && m.alive[p] {
-			out = append(out, r.eliminate(p)...)
-		}
-		if len(r.players) == 0 {
-			r.endMatch()
-			delete(h.rooms, r.code)
-		} else {
-			if r.hostID == p.id {
-				r.hostID = r.players[0].id
-			}
-			out = append(out, r.broadcast(r.rosterMessage())...)
-		}
-		if r.public {
-			out = append(out, h.lobbyUpdate()...)
-		}
+	if p.accountID != 0 && h.accounts[p.accountID] == p {
+		delete(h.accounts, p.accountID) // a newer socket of the account stays registered
 	}
-	enqueue(out)
+	enqueue(h.removeFromRoom(p))
 	h.mu.Unlock()
+}
+
+// removeFromRoom applies leave's room results. The caller holds Hub.mu. A player with no room, including one
+// attach already removed, produces nothing.
+func (h *Hub) removeFromRoom(p *player) []outgoing {
+	r := p.room
+	if r == nil {
+		return nil
+	}
+	var out []outgoing
+	if m := r.match; m != nil && m.runner != nil && m.has(p) {
+		m.runner.push(runnerMsg{from: p, kind: msgLeft})
+	}
+	r.players = slices.DeleteFunc(r.players, func(q *player) bool { return q == p })
+	p.room = nil
+	if m := r.match; m != nil && !m.royale && m.has(p) {
+		r.endMatch()
+		out = append(out, outgoing{m.opponent(p), "LEFT"})
+	}
+	if m := r.match; m != nil && m.royale && m.alive[p] {
+		out = append(out, r.eliminate(p)...)
+	}
+	if len(r.players) == 0 {
+		r.endMatch()
+		delete(h.rooms, r.code)
+	} else {
+		if r.hostID == p.id {
+			r.hostID = r.players[0].id
+		}
+		out = append(out, r.broadcast(r.rosterMessage())...)
+	}
+	if r.public {
+		out = append(out, h.lobbyUpdate()...)
+	}
+	return out
 }
 
 // enqueue adds each message to its recipient's queue without blocking; the caller holds the lock. A
@@ -502,20 +605,32 @@ func (p *player) disconnect() {
 	}
 }
 
-// begin starts a match for everyone in p's room if p is the host, there are 2 or more players and no match
-// is running. Each participant gets the same START, then the room gets PLAYERS. A duel arms the match timer.
+// begin starts a match for every player in p's room who has not been kicked, if p is the host, there are 2
+// or more such players and no match is running. Each participant gets the same START, then the room gets
+// PLAYERS. A duel arms the match timer.
 // In enforce mode a match whose simulation cannot start ends at once, as after a simulation error.
 func (h *Hub) begin(p *player) []outgoing {
 	r := p.room
-	if p.id != r.hostID || len(r.players) < 2 || r.match != nil {
+	if p.id != r.hostID || r.match != nil {
+		return nil
+	}
+	seated := make([]*player, 0, len(r.players))
+	for _, q := range r.players {
+		if !q.kicked {
+			seated = append(seated, q)
+		}
+	}
+	if len(seated) < 2 {
 		return nil
 	}
 	m := &match{
-		royale:  len(r.players) > 2,
-		players: slices.Clone(r.players),
-		kos:     map[*player]int{},
-		sent:    map[*player]int{},
-		alive:   map[*player]bool{},
+		royale:   len(seated) > 2,
+		players:  seated,
+		kos:      map[*player]int{},
+		sent:     map[*player]int{},
+		alive:    map[*player]bool{},
+		career:   h.career,
+		recorded: map[int64]bool{},
 	}
 	seed := h.newSeed()
 	var b strings.Builder
@@ -690,9 +805,11 @@ func (r *room) eliminate(p *player) []outgoing {
 		}
 	}
 	m.alive[p] = false
+	m.recordPlace(p, place)
 	out := m.tellConnected(r, fmt.Sprintf("OUT %d %d", p.id, place))
 	if place == 2 {
 		i := slices.IndexFunc(m.players, func(q *player) bool { return m.alive[q] })
+		m.recordPlace(m.players[i], 1)
 		out = append(out, m.tellConnected(r, fmt.Sprintf("OUT %d 1", m.players[i].id))...)
 		r.endMatch()
 	}
@@ -728,6 +845,7 @@ func (r *room) scoreKO(p *player) []outgoing {
 // finish ends the duel, sends each participant the verdict from their own side, then sends the room PLAYERS.
 func (r *room) finish(reason string) []outgoing {
 	m := r.match
+	m.recordDuel() // while the runner still holds the stats
 	r.endMatch()
 	out := make([]outgoing, 0, 2+len(r.players))
 	for _, p := range m.players {

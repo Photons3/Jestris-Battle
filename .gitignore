@@ -82,3 +82,6 @@ server/tetris-server
 
 # Server replay module, built by scripts/build.sh
 server/sim/jestris_sim.wasm
+
+# Server database
+jestris.db*

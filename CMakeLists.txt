@@ -55,6 +55,7 @@ if(EMSCRIPTEN)
   set(TETRIS_GFX src/app/gfx_webgl.cpp)
   set(TETRIS_NET src/net/ws_client_web.cpp)
   set(TETRIS_STORE src/app/settings_store_web.cpp)
+  set(TETRIS_ACCOUNT src/app/account_store_web.cpp)
 else()
   FetchContent_Declare(doctest
     URL https://github.com/doctest/doctest/archive/refs/tags/v2.4.12.tar.gz)
@@ -64,6 +65,7 @@ else()
   set(TETRIS_GFX src/app/gfx_sdlgpu.cpp)
   set(TETRIS_NET src/net/connection_none.cpp)
   set(TETRIS_STORE src/app/settings_store_desktop.cpp)
+  set(TETRIS_ACCOUNT src/app/account_store_desktop.cpp)
 endif()
 
 add_library(imgui STATIC
@@ -118,7 +120,8 @@ target_compile_options(tetris_duel PRIVATE ${TETRIS_WARNINGS} -ffp-contract=off)
 
 add_library(tetris_settings STATIC
   src/app/keymap.cpp
-  src/app/settings.cpp)
+  src/app/settings.cpp
+  src/app/account.cpp)
 target_include_directories(tetris_settings PUBLIC src)
 target_link_libraries(tetris_settings PUBLIC tetris_input tetris_duel SDL3::SDL3)
 target_compile_options(tetris_settings PRIVATE ${TETRIS_WARNINGS})
@@ -131,7 +134,8 @@ add_executable(tetris
   src/app/audio_out.cpp
   ${TETRIS_GFX}
   ${TETRIS_NET}
-  ${TETRIS_STORE})
+  ${TETRIS_STORE}
+  ${TETRIS_ACCOUNT})
 target_include_directories(tetris PRIVATE src)
 target_link_libraries(tetris PRIVATE tetris_duel tetris_audio tetris_input tetris_settings imgui SDL3::SDL3)
 target_compile_options(tetris PRIVATE ${TETRIS_WARNINGS})
@@ -167,7 +171,8 @@ add_executable(tetris_tests
   tests/audio_test.cpp
   tests/sound_cues_test.cpp
   tests/keymap_test.cpp
-  tests/settings_test.cpp)
+  tests/settings_test.cpp
+  tests/account_test.cpp)
 target_include_directories(tetris_tests PRIVATE tests)
 target_compile_definitions(tetris_tests PRIVATE TETRIS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(tetris_tests PRIVATE tetris_input tetris_duel tetris_bot tetris_audio tetris_settings doctest::doctest)

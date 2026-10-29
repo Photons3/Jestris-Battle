@@ -1335,16 +1335,63 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
     if (menu.duelsEnabled) {
         ImGui::Spacing();
         ImGui::SeparatorText("1v1 DUEL");
-        ImGui::SetNextItemWidth(width);
-        ImGui::InputTextWithHint("##name", "NAME", menu.nameEdit, sizeof menu.nameEdit,
-                                 ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CharsNoBlank,
-                                 nameCharFilter);
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            if (menu.nameEdit[0] != '\0') {
-                menu.playerName = menu.nameEdit;
-                command = UiCommand::SaveName;
-            } else {  // an empty name isn't allowed: put the saved one back
-                std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+        const float half = (width - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
+        if (menu.accountsEnabled) {
+            const auto showAccountStatus = [&] {
+                if (!menu.accountError.empty())
+                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", menu.accountError.c_str());
+                if (!menu.accountNote.empty()) ImGui::TextDisabled("%s", menu.accountNote.c_str());
+            };
+            if (menu.loggedIn) {
+                ImGui::Text("%s", menu.playerName.c_str());
+                if (menuButton("Log out", width)) command = UiCommand::Logout;
+                ImGui::SetNextItemWidth(width);
+                ImGui::InputTextWithHint("##cur", "CURRENT PASSWORD", menu.currentPassword,
+                                         sizeof menu.currentPassword, ImGuiInputTextFlags_Password);
+                ImGui::SetNextItemWidth(width);
+                ImGui::InputTextWithHint("##new", "NEW PASSWORD", menu.newPassword, sizeof menu.newPassword,
+                                         ImGuiInputTextFlags_Password);
+                const int newBytes = static_cast<int>(std::strlen(menu.newPassword));
+                const bool newOk = newBytes >= kMinPasswordBytes && newBytes <= kMaxPasswordBytes;
+                ImGui::BeginDisabled(menu.accountBusy || menu.currentPassword[0] == '\0' || !newOk);
+                if (menuButton("Change password", width)) command = UiCommand::ChangePassword;
+                ImGui::EndDisabled();
+                showAccountStatus();
+                if (menu.record) {
+                    ImGui::SeparatorText("RECORD");
+                    for (const std::string& line : recordLines(*menu.record)) ImGui::TextUnformatted(line.c_str());
+                }
+            } else {
+                ImGui::SetNextItemWidth(width);
+                ImGui::InputTextWithHint("##user", "USERNAME", menu.loginName, sizeof menu.loginName,
+                                         ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CharsNoBlank,
+                                         nameCharFilter);
+                ImGui::SetNextItemWidth(width);
+                ImGui::InputTextWithHint("##pass", "PASSWORD", menu.loginPassword, sizeof menu.loginPassword,
+                                         ImGuiInputTextFlags_Password);
+                const int passwordBytes = static_cast<int>(std::strlen(menu.loginPassword));
+                const bool credentialsOk = isValidName(menu.loginName) && passwordBytes >= kMinPasswordBytes &&
+                                           passwordBytes <= kMaxPasswordBytes;
+                ImGui::BeginDisabled(menu.accountBusy || !credentialsOk);
+                if (menuButton("Register", half)) command = UiCommand::Register;
+                ImGui::SameLine();
+                if (menuButton("Log in", half)) command = UiCommand::Login;
+                ImGui::EndDisabled();
+                showAccountStatus();
+            }
+        }
+        if (!(menu.accountsEnabled && menu.loggedIn)) {
+            ImGui::SetNextItemWidth(width);
+            ImGui::InputTextWithHint("##name", "NAME", menu.nameEdit, sizeof menu.nameEdit,
+                                     ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CharsNoBlank,
+                                     nameCharFilter);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                if (menu.nameEdit[0] != '\0') {
+                    menu.playerName = menu.nameEdit;
+                    command = UiCommand::SaveName;
+                } else {  // an empty name isn't allowed: put the saved one back
+                    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+                }
             }
         }
         if (!menu.inviteCode.empty()) {
@@ -1366,7 +1413,6 @@ UiCommand drawStartScreen(const Fonts& fonts, StartMenu& menu) {
         if (ImGui::Checkbox("Public", &menu.publicRooms)) command = UiCommand::SavePublic;
         const bool complete = static_cast<int>(std::strlen(menu.joinCode)) == kRoomCodeLength;
         // The code box and Join room share one row, half each.
-        const float half = (width - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
         ImGui::SetNextItemWidth(half);
         const bool entered = ImGui::InputTextWithHint(
             "##code", "CODE", menu.joinCode, sizeof menu.joinCode,

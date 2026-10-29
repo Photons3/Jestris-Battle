@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "app/account.hpp"
 #include "app/duel.hpp"
 #include "app/fonts.hpp"
 #include "app/keymap.hpp"
@@ -21,7 +22,7 @@ struct ImGuiStyle;
 namespace tetris {
 
 enum class Screen { Start, Playing, Duel, Controls };
-enum class UiCommand { None, PlaySolo, PlayBot, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, BeginMatch, LeaveDuel, ToggleSound, ToggleMusic, ChangeVolume, SaveVolume, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink };
+enum class UiCommand { None, PlaySolo, PlayBot, Resume, Restart, QuitToMenu, QuitApp, CreateRoom, JoinRoom, BeginMatch, LeaveDuel, ToggleSound, ToggleMusic, ChangeVolume, SaveVolume, OpenControls, CloseControls, ResetControls, SaveHandling, SaveName, BrowseRooms, QuickMatch, JoinListedRoom, CreatePublicRoom, SavePublic, JoinInvite, CopyInviteLink, Register, Login, Logout, ChangePassword };
 
 struct StartMenu {
     int startLevel = 1;
@@ -42,6 +43,16 @@ struct StartMenu {
     std::string inviteCode;                   // from a ?room= link; shows a Join room button until used
     std::string inviteLinkBase;               // the page address plus "?room="; empty on desktop
     bool canCopyLink = false;                 // the browser offers the Clipboard API
+    bool accountsEnabled = false;             // browser build only: draws the account block
+    bool loggedIn = false;
+    bool accountBusy = false;                 // a Register, Login, or Password call is in flight
+    char loginName[kMaxNameLength + 1] = {};
+    char loginPassword[kMaxPasswordBytes + 1] = {};
+    char currentPassword[kMaxPasswordBytes + 1] = {};
+    char newPassword[kMaxPasswordBytes + 1] = {};
+    std::string accountError;                 // why the last account call failed
+    std::string accountNote;                  // e.g. "Password changed"
+    std::optional<CareerView> record;         // the logged-in account's totals
 };
 
 // The Controls screen: which slot is waiting for a key, and what the last key press changed.

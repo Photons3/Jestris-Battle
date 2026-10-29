@@ -73,6 +73,12 @@ macOS firewall asks. Flags: `-addr` (default `0.0.0.0:8080`), `-dir` (default
 on-screen clock always starts at 2:00, so with `-match 20s` the server's verdict arrives early
 (the red clock and the 0:00 freeze only show at the default length).
 
+Accounts, settings, solo bests and career stats live in a SQLite file, set with `-db` (default
+`jestris.db`, relative to the directory the server runs from; `scripts/install-service.sh` runs it
+from the checkout, so the file sits there). The server creates it on first start, and it survives
+restarts and `scripts/restart.sh`. `jestris.db`, `jestris.db-wal` and `jestris.db-shm` together are the data:
+back up or move all three, and stop the server first. All three are git-ignored.
+
 ### Server authority
 
 The server re-simulates every match from the inputs each client sends, using the C++ core

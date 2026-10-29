@@ -2,6 +2,7 @@
 // (via wazero) to replay each player's game with the same code the browser plays. Handles index a table of
 // matches; a bad handle traps, which the host sees as an error.
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <optional>
 #include <string>
@@ -82,6 +83,17 @@ SIM_EXPORT("sim_snapshot") int sim_snapshot(int h) {
     const std::size_t length = text.size() - kPrefix;
     std::memcpy(g_buffer, text.data() + kPrefix, length);
     return static_cast<int>(length);
+}
+
+// "<pieces> <attack> <garbageCleared> <cancelled> <tetrises> <tSpins> <maxCombo> <t>": eight numbers of at most
+// 11 characters, so trap rather than overflow if that ever changes.
+SIM_EXPORT("sim_stats") int sim_stats(int h) {
+    const MatchGame& match = at(h);
+    const tetris::GameStats& s = match.game().stats();
+    const int length = std::snprintf(g_buffer, kBufferSize, "%d %d %d %d %d %d %d %d", s.pieces, s.attack,
+                                     s.garbageCleared, s.cancelled, s.tetrises, s.tSpins, s.maxCombo, match.t());
+    if (length < 0 || length >= kBufferSize) __builtin_trap();
+    return length;
 }
 
 SIM_EXPORT("sim_buffer") char* sim_buffer() { return g_buffer; }

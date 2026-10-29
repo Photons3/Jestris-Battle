@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <string>
 
+#include "app/account.hpp"
+#include "app/account_store.hpp"
 #include "app/keymap.hpp"
 #include "app/settings.hpp"
 #include "app/settings_store.hpp"
@@ -16,6 +18,10 @@
 
 namespace tetris {
 namespace {
+
+void sendAccount(const std::vector<AccountRequest>& requests) {
+    for (const AccountRequest& request : requests) sendAccountRequest(request.call, request.body);
+}
 
 void applyCommand(App& app, UiCommand command) {
     switch (command) {
@@ -57,28 +63,34 @@ void applyCommand(App& app, UiCommand command) {
         app.saveSettings();
         break;
     case UiCommand::CreateRoom:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.createRoom(app.menu.startLevel, app.menu.publicRooms);
         break;
     case UiCommand::CreatePublicRoom:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.createRoom(app.menu.startLevel, true);
         break;
     case UiCommand::BrowseRooms:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.openLobby();
         break;
     case UiCommand::QuickMatch:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.quickMatch(app.menu.startLevel);
         break;
     case UiCommand::JoinListedRoom:
+        if (app.accountSync.logoutPending) break;
         app.duel.joinRoom(app.menu.pickedRoom, RoomVisibility::Public);  // it was in the public list
         break;
     case UiCommand::SavePublic:
         app.saveSettings();
         break;
     case UiCommand::JoinInvite:
+        if (app.accountSync.logoutPending) break;
         std::snprintf(app.menu.joinCode, sizeof app.menu.joinCode, "%s", app.menu.inviteCode.c_str());
         app.menu.inviteCode.clear();
         app.openDuel();
@@ -88,6 +100,7 @@ void applyCommand(App& app, UiCommand command) {
         copyInviteLink(app.duel.roomCode());
         break;
     case UiCommand::JoinRoom:
+        if (app.accountSync.logoutPending) break;
         app.openDuel();
         app.duel.joinRoom(app.menu.joinCode);
         break;
@@ -122,6 +135,23 @@ void applyCommand(App& app, UiCommand command) {
         app.duel.setSoftDropFactor(app.handling.softDropFactor);
         app.saveSettings();
         break;
+    case UiCommand::Register:
+        app.menu.accountBusy = true;
+        sendAccountRequest(AccountCall::Register, credentialsBody(app.menu.loginName, app.menu.loginPassword));
+        break;
+    case UiCommand::Login:
+        app.menu.accountBusy = true;
+        sendAccountRequest(AccountCall::Login, credentialsBody(app.menu.loginName, app.menu.loginPassword));
+        break;
+    case UiCommand::Logout:
+        sendAccountRequest(AccountCall::Logout, "");
+        app.leaveAccount();
+        app.accountSync.onLogoutSent();
+        break;
+    case UiCommand::ChangePassword:
+        app.menu.accountBusy = true;
+        sendAccountRequest(AccountCall::Password, passwordBody(app.menu.currentPassword, app.menu.newPassword));
+        break;
     }
 }
 
@@ -155,6 +185,8 @@ void playSoloEvents(App& app) {
         if (!result || !app.menu.bests.submit(app.solo->mode(), *result)) continue;
         app.newBest = true;
         app.saveSettings();
+        if (app.menu.loggedIn)
+            sendAccount(app.accountSync.submitBest(true, app.solo->mode(), *result));
         if (const auto sound = soundFor(DuelEvent::Won); sound && !app.hidden) app.audio.play(*sound);
     }
 }
@@ -232,36 +264,80 @@ App::App()
           if (connection) connection->send(text);
       }) {
     menu.duelsEnabled = duelsSupported();
-    const Settings saved = parseSettings(loadSettingsText());
-    keymap = saved.keys;
-    handling = saved.handling;
-    menu.bests = saved.bests;
-    input.setHandling(handling);
-    menu.muted = saved.muted;
-    menu.musicOff = saved.musicOff;
-    menu.soundVolume = saved.soundVolume;
-    menu.musicVolume = saved.musicVolume;
-    menu.publicRooms = saved.publicRooms;
-    menu.playerName = saved.playerName;
-    if (menu.playerName.empty()) {
-        menu.playerName = defaultPlayerName(static_cast<std::uint32_t>(SDL_GetTicksNS()));
-        saveSettings();  // keep the generated name across visits
-    }
-    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    applySettings(parseSettings(loadSettingsText()));
+    ensureGuestName();
     std::string invite = takeInviteCode();
     std::transform(invite.begin(), invite.end(), invite.begin(),
                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     if (isRoomCode(invite)) menu.inviteCode = invite;
     menu.inviteLinkBase = inviteLinkBase();
     menu.canCopyLink = canCopyToClipboard();
+    menu.accountsEnabled = accountsSupported();
+    sendAccount(accountSync.noteEnabled(menu.accountsEnabled));
+}
+
+void App::applySettings(const Settings& settings) {
+    keymap = settings.keys;
+    handling = settings.handling;
+    input.setHandling(handling);
+    duel.setSoftDropFactor(handling.softDropFactor);
+    menu.bests = settings.bests;
+    menu.muted = settings.muted;
+    menu.musicOff = settings.musicOff;
+    menu.soundVolume = settings.soundVolume;
+    menu.musicVolume = settings.musicVolume;
+    menu.publicRooms = settings.publicRooms;
+    menu.playerName = settings.playerName;
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
     audio.setMuted(menu.muted);
     audio.setMusicMuted(menu.musicOff);
     applyVolumes();
 }
 
+Settings App::currentSettings() const {
+    return {keymap, menu.muted, menu.musicOff, menu.soundVolume, menu.musicVolume,
+            menu.playerName, menu.publicRooms, handling, menu.bests};
+}
+
+void App::ensureGuestName() {
+    if (!menu.playerName.empty()) return;
+    menu.playerName = defaultPlayerName(static_cast<std::uint32_t>(SDL_GetTicksNS()));
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    saveSettings();  // keep the generated name across visits
+}
+
 void App::saveSettings() {
-    saveSettingsText(serializeSettings({keymap, menu.muted, menu.musicOff, menu.soundVolume, menu.musicVolume,
-                                        menu.playerName, menu.publicRooms, handling, menu.bests}));
+    const std::string text = serializeSettings(currentSettings());
+    if (!menu.loggedIn) {
+        saveSettingsText(text);  // guest file, synchronous, one write
+        return;
+    }
+    sendAccount(accountSync.save(true, text));
+}
+
+void App::enterAccount(const Profile& profile) {
+    Settings s = parseSettings(profile.settings);
+    s.playerName = profile.username;
+    s.bests = profile.bests;
+    applySettings(s);
+    menu.loggedIn = true;
+    menu.record = profile.career;
+    menu.loginPassword[0] = '\0';
+    menu.currentPassword[0] = '\0';
+    menu.newPassword[0] = '\0';
+    menu.accountError.clear();
+    menu.accountNote.clear();
+    menu.accountBusy = false;
+    accountSync.onEnteredAccount();
+}
+
+void App::leaveAccount() {
+    menu.loggedIn = false;
+    menu.record.reset();
+    menu.accountError.clear();
+    menu.accountNote.clear();
+    applySettings(parseSettings(loadSettingsText()));
+    ensureGuestName();
 }
 
 void App::applyVolumes() {
@@ -282,6 +358,7 @@ void App::newSolo(SoloMode mode) {
 }
 
 void App::openDuel() {
+    if (accountSync.logoutPending) return;  // the logout reply has not arrived; don't open an account socket
     if (!connection) {  // the lobby keeps its connection when it opens a room
         connection = connectToServer();
         if (connection) connection->send(encode(Hello{menu.playerName}));  // queued until the socket opens
@@ -369,6 +446,51 @@ void pumpNetwork(App& app) {
         app.menu.error = app.duel.error();
         app.connection.reset();
         app.screen = Screen::Start;
+    }
+}
+
+void applyAccount(App& app, const AccountSync::Outcome& out) {
+    switch (out.action) {
+    case AccountSync::Action::SignIn:
+        app.enterAccount(out.profile);
+        break;
+    case AccountSync::Action::Refresh:  // record and bests only; keys stay as the player left them
+        app.menu.record = out.profile.career;
+        app.menu.bests = out.profile.bests;
+        break;
+    case AccountSync::Action::LoginFailed:
+    case AccountSync::Action::LogoutFailed:
+        app.menu.accountError = out.error;
+        break;
+    case AccountSync::Action::PasswordChanged:
+        app.menu.accountNote = "Password changed";
+        app.menu.accountError.clear();
+        app.menu.currentPassword[0] = '\0';
+        app.menu.newPassword[0] = '\0';
+        break;
+    case AccountSync::Action::PasswordFailed:
+        app.menu.accountNote.clear();
+        app.menu.accountError = out.error;
+        break;
+    case AccountSync::Action::Bests:
+        app.menu.bests = out.bests;
+        break;
+    case AccountSync::Action::None:
+        break;
+    }
+    sendAccount(out.more);
+}
+
+void pumpAccount(App& app) {
+    // Runs every frame, including while hidden, so a return to Start still refreshes the record.
+    if (returnedToStart(app.screen == Screen::Start, app.wasOnStart))
+        sendAccount(app.accountSync.noteReturnedToStart(app.menu.loggedIn));
+    for (const AccountReply& reply : takeAccountReplies()) {
+        if (reply.call == AccountCall::Register || reply.call == AccountCall::Login ||
+            reply.call == AccountCall::Password) {
+            app.menu.accountBusy = false;
+        }
+        applyAccount(app, app.accountSync.take(reply, app.menu.loggedIn));
     }
 }
 
