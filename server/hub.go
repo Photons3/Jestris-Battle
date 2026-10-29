@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -69,7 +70,16 @@ type Hub struct {
 	// originPatterns are extra page hosts allowed to open /ws (e.g. "game.example.com"), for a
 	// reverse proxy that does not pass the Host header through. The page's own host is always allowed.
 	originPatterns []string
+	sessions       sessionLookup     // nil means no accounts: every socket is a guest
+	accounts       map[int64]*player // the live socket of each logged-in account, guarded by mu
 }
+
+// sessionLookup resolves a session cookie value into its account; *Store satisfies it.
+type sessionLookup interface {
+	Session(ctx context.Context, token string) (Account, error)
+}
+
+const sessionCookie = "jestris_session"
 
 // stopper is a match timer; *time.Timer satisfies it.
 type stopper interface{ Stop() bool }
@@ -96,6 +106,8 @@ type player struct {
 	queue    chan string   // outbound messages in production order, filled under Hub.mu
 	kick     chan struct{} // closed when queue overflows; the writer then closes the connection
 	kicked   bool          // guarded by Hub.mu
+	// accountID is the logged-in account, or 0 for a guest. Set by attach before the player is shared.
+	accountID int64
 }
 
 func newPlayer(conn *websocket.Conn) *player {
@@ -127,6 +139,7 @@ func NewHub() *Hub {
 	return &Hub{
 		rooms:       map[string]*room{},
 		watchers:    map[*player]bool{},
+		accounts:    map[int64]*player{},
 		maxRooms:    defaultMaxRooms,
 		newCode:     randomCode,
 		newSeed:     rand.Uint32,
@@ -148,7 +161,48 @@ func randomCode() string {
 	return string(b)
 }
 
+// account resolves r's session cookie. A missing, unknown or expired cookie, or a failed lookup, means a guest.
+func (h *Hub) account(r *http.Request) (Account, bool) {
+	if h.sessions == nil {
+		return Account{}, false
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return Account{}, false
+	}
+	a, err := h.sessions.Session(r.Context(), c.Value)
+	if err != nil {
+		if !errors.Is(err, errNoSession) {
+			log.Printf("session lookup: %v", err)
+		}
+		return Account{}, false
+	}
+	return a, true
+}
+
+// attach makes p the live socket of account a, kicking the one it replaces, and names p after the account.
+func (h *Hub) attach(p *player, a Account) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if old := h.accounts[a.ID]; old != nil {
+		old.disconnect()
+	}
+	h.accounts[a.ID] = p
+	p.accountID = a.ID
+	p.name = a.Username
+}
+
+// DisconnectAccount closes the account's live socket, if it has one.
+func (h *Hub) DisconnectAccount(userID int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if p := h.accounts[userID]; p != nil {
+		p.disconnect()
+	}
+}
+
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	account, loggedIn := h.account(r)
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.originPatterns})
 	if err != nil {
 		log.Printf("websocket accept: %v", err)
@@ -162,6 +216,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := newPlayer(conn)
 	go p.write(ctx)
 	defer h.leave(p)
+	if loggedIn {
+		h.attach(p, account)
+	}
 	for {
 		typ, data, err := conn.Read(ctx)
 		if err != nil {
@@ -226,7 +283,7 @@ func keepAlive(ctx context.Context, conn *websocket.Conn) {
 func (h *Hub) route(p *player, text string) []outgoing {
 	verb, arg, _ := strings.Cut(text, " ")
 	if verb == "HELLO" {
-		if p.room == nil && validName(arg) {
+		if p.accountID == 0 && p.room == nil && validName(arg) {
 			p.name = arg
 		}
 		return nil
@@ -452,6 +509,9 @@ func (h *Hub) leave(p *player) {
 	h.mu.Lock()
 	var out []outgoing
 	delete(h.watchers, p)
+	if p.accountID != 0 && h.accounts[p.accountID] == p {
+		delete(h.accounts, p.accountID) // a newer socket of the account stays registered
+	}
 	if r := p.room; r != nil {
 		if m := r.match; m != nil && m.runner != nil && m.has(p) {
 			m.runner.push(runnerMsg{from: p, kind: msgLeft})
