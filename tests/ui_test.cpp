@@ -182,6 +182,183 @@ TEST_CASE("ui: the start screen draws the Name field and keeps the saved name") 
 
 namespace {
 
+void prepareStartIo() {
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 900.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+}
+
+UiCommand startFrame(StartMenu& menu) {
+    prepareStartIo();
+    ImGui::NewFrame();
+    const UiCommand command = drawStartScreen(Fonts{}, menu);
+    ImGui::EndFrame();
+    return command;
+}
+
+// Text ImGui actually submitted this frame, so a missing account block fails the test.
+std::string captureStartMenu(StartMenu& menu) {
+    prepareStartIo();
+    ImGui::NewFrame();
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    g.LogEnabled = true;
+    g.LogFlags = ImGuiLogFlags_OutputBuffer;
+    g.LogFile = nullptr;
+    g.LogBuffer.clear();
+    g.LogNextPrefix = nullptr;
+    g.LogNextSuffix = nullptr;
+    g.LogDepthRef = 0;
+    g.LogLinePosY = 1.0e30f;
+    g.LogLineFirstItem = true;
+    const UiCommand command = drawStartScreen(Fonts{}, menu);
+    const std::string text = g.LogBuffer.c_str();
+    g.LogEnabled = false;
+    g.LogFlags = ImGuiLogFlags_None;
+    g.LogBuffer.clear();
+    ImGui::EndFrame();
+    CHECK(command == UiCommand::None);
+    return text;
+}
+
+int countOf(const std::string& text, const char* needle) {
+    const std::string wanted(needle);
+    int count = 0;
+    for (std::size_t at = 0; (at = text.find(wanted, at)) != std::string::npos; at += wanted.size()) ++count;
+    return count;
+}
+
+bool shows(const std::string& text, const char* needle) { return text.find(needle) != std::string::npos; }
+
+UiCommand pressStartButton(StartMenu& menu, const char* label) {
+    ImGuiWindow* window = ImGui::FindWindowByName("##start");
+    REQUIRE(window != nullptr);
+    ImGui::ActivateItemByID(window->GetID(label));
+    UiCommand command = startFrame(menu);
+    if (command == UiCommand::None) command = startFrame(menu);
+    return command;
+}
+
+void focusStartField(StartMenu& menu, const char* id) {
+    ImGuiWindow* window = ImGui::FindWindowByName("##start");
+    REQUIRE(window != nullptr);
+    ImGui::ActivateItemByID(window->GetID(id));
+    startFrame(menu);
+}
+
+bool startFieldActive(const char* id) {
+    ImGuiWindow* window = ImGui::FindWindowByName("##start");
+    REQUIRE(window != nullptr);
+    return ImGui::GetCurrentContext()->ActiveId == window->GetID(id);
+}
+
+}  // namespace
+
+TEST_CASE("ui: logged out, the start screen draws the account fields and the guest name") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    StartMenu menu;
+    menu.duelsEnabled = true;
+    menu.accountsEnabled = true;
+    menu.playerName = "Sam";
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    std::snprintf(menu.loginName, sizeof menu.loginName, "%s", "Sam");
+    std::snprintf(menu.loginPassword, sizeof menu.loginPassword, "%s", "short");
+    CHECK(startFrame(menu) == UiCommand::None);
+    CHECK(startFrame(menu) == UiCommand::None);
+    const std::string shown = captureStartMenu(menu);
+    CHECK(shows(shown, "Register"));
+    CHECK(shows(shown, "Log in"));
+    CHECK_FALSE(shows(shown, "Log out"));
+    CHECK_FALSE(shows(shown, "RECORD"));
+    CHECK(countOf(shown, "Sam") == 2);  // username field and the guest Name field
+    focusStartField(menu, "##user");
+    CHECK(startFieldActive("##user"));
+    focusStartField(menu, "##pass");
+    CHECK(startFieldActive("##pass"));
+    CHECK(menu.playerName == "Sam");
+    CHECK(std::string(menu.loginPassword) == "short");
+    // "short" is outside 8 to 72 bytes, so Register and Log in stay disabled.
+    CHECK(pressStartButton(menu, "Register") == UiCommand::None);
+    CHECK(pressStartButton(menu, "Log in") == UiCommand::None);
+    CHECK(std::string(menu.loginPassword) == "short");
+    // The password field was active, so leave it before replacing the buffer. An active InputText keeps its own copy.
+    focusStartField(menu, "##user");
+    std::snprintf(menu.loginPassword, sizeof menu.loginPassword, "%s", "password");
+    menu.accountBusy = true;
+    CHECK(pressStartButton(menu, "Register") == UiCommand::None);
+    menu.accountBusy = false;
+    CHECK(pressStartButton(menu, "Register") == UiCommand::Register);
+    CHECK(pressStartButton(menu, "Log in") == UiCommand::Login);
+    CHECK(menu.playerName == "Sam");
+    CHECK(std::string(menu.loginName) == "Sam");
+    CHECK(std::string(menu.loginPassword) == "password");
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: logged in, the start screen draws the username, Log out and the record") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    StartMenu menu;
+    menu.duelsEnabled = true;
+    menu.accountsEnabled = true;
+    menu.loggedIn = true;
+    menu.playerName = "Sam";
+    menu.record = CareerView{3, 1, 0, 9, 4, 5, 2, 2.6, 1.5, 45.0, 98.0};
+    menu.accountError = "wrong password";
+    menu.accountNote = "Password changed";
+    CHECK(startFrame(menu) == UiCommand::None);
+    CHECK(startFrame(menu) == UiCommand::None);
+    const std::string shown = captureStartMenu(menu);
+    CHECK(shows(shown, "Sam"));
+    CHECK_FALSE(shows(shown, "NAME"));  // the guest Name field is gone; USERNAME contains NAME too
+    CHECK(shows(shown, "Log out"));
+    CHECK(shows(shown, "Change password"));
+    CHECK(shows(shown, "CURRENT PASSWORD"));
+    CHECK(shows(shown, "NEW PASSWORD"));
+    CHECK(shows(shown, "RECORD"));
+    CHECK(shows(shown, "wrong password"));
+    CHECK(shows(shown, "Password changed"));
+    for (const std::string& line : recordLines(*menu.record)) CHECK(shows(shown, line.c_str()));
+    CHECK(pressStartButton(menu, "Log out") == UiCommand::Logout);
+    CHECK(pressStartButton(menu, "Change password") == UiCommand::None);  // current is empty, new is out of range
+    std::snprintf(menu.currentPassword, sizeof menu.currentPassword, "%s", "x");
+    std::snprintf(menu.newPassword, sizeof menu.newPassword, "%s", "short");
+    CHECK(pressStartButton(menu, "Change password") == UiCommand::None);
+    std::snprintf(menu.newPassword, sizeof menu.newPassword, "%s", "password");
+    menu.accountBusy = true;
+    CHECK(pressStartButton(menu, "Change password") == UiCommand::None);
+    menu.accountBusy = false;
+    CHECK(pressStartButton(menu, "Change password") == UiCommand::ChangePassword);
+    CHECK(menu.playerName == "Sam");
+    ImGui::DestroyContext();
+}
+
+TEST_CASE("ui: accounts disabled draws no account block") {
+    ImGui::CreateContext();
+    configureImGuiIo(ImGui::GetIO());
+    ImGui::GetIO().Fonts->Build();
+    StartMenu menu;
+    menu.duelsEnabled = true;
+    menu.accountsEnabled = false;
+    menu.playerName = "Sam";
+    std::snprintf(menu.nameEdit, sizeof menu.nameEdit, "%s", menu.playerName.c_str());
+    CHECK(startFrame(menu) == UiCommand::None);
+    CHECK(startFrame(menu) == UiCommand::None);
+    const std::string shown = captureStartMenu(menu);
+    CHECK(countOf(shown, "Sam") == 1);  // the guest Name field, same as today
+    CHECK_FALSE(shows(shown, "Register"));
+    CHECK_FALSE(shows(shown, "Log in"));
+    CHECK_FALSE(shows(shown, "Log out"));
+    CHECK_FALSE(shows(shown, "RECORD"));
+    CHECK_FALSE(shows(shown, "PASSWORD"));
+    CHECK(menu.playerName == "Sam");
+    ImGui::DestroyContext();
+}
+
+namespace {
+
 // A headless ImGui context with a real font: the boards draw HUD text through it.
 ImFont* beginUiContext() {
     ImGui::CreateContext();
