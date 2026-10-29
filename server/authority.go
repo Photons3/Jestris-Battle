@@ -44,6 +44,7 @@ type gameSim interface {
 	Eliminated(h int) (bool, error)
 	Buried(h int) (bool, error) // a duel KO whose stack still blocked the spawn
 	Hash(h int) (uint64, error)
+	Stats(h int) (sim.Stats, error)
 	Snapshot(h int) (string, error)
 	Close() error
 }
@@ -143,11 +144,12 @@ type playerSim struct {
 	wouldResync    map[string]int
 	lastSnap       string
 	left           bool
-	dropped        atomic.Int32 // messages route() could not queue; counted under Hub.mu, read by the runner
-	waiting        atomic.Int32 // p's IN and SDF messages in the runner's inbox
-	ins            int          // INs route() has seen from p this match; only touched under Hub.mu
-	droppedIN      atomic.Int64 // the number of the last IN route() could not queue
-	consumedINs    int          // INs the runner has consumed (handled, rejected or dropped); RESYNC's count
+	dropped        atomic.Int32              // messages route() could not queue; counted under Hub.mu, read by the runner
+	waiting        atomic.Int32              // p's IN and SDF messages in the runner's inbox
+	ins            int                       // INs route() has seen from p this match; only touched under Hub.mu
+	droppedIN      atomic.Int64              // the number of the last IN route() could not queue
+	consumedINs    int                       // INs the runner has consumed (handled, rejected or dropped); RESYNC's count
+	stats          atomic.Pointer[sim.Stats] // the game's latest stats; the runner stores, statsOf loads
 }
 
 type effectKind int
@@ -707,6 +709,33 @@ func (r *matchRunner) advanceTo(ps *playerSim, target int) {
 		ps.eliminated = true
 		r.effects = append(r.effects, runnerEffect{kind: effEliminated, from: ps.p})
 	}
+	if !r.failed {
+		r.refreshStats(ps)
+	}
+}
+
+// refreshStats caches ps's game stats and sim time for statsOf.
+func (r *matchRunner) refreshStats(ps *playerSim) {
+	st, err := r.sim.Stats(ps.h)
+	if err != nil {
+		r.fail(ps, err)
+		return
+	}
+	ps.stats.Store(&st)
+}
+
+// statsOf is p's latest cached stats; false for a non-participant or a game that has not started. It is safe
+// to call while the runner goroutine runs.
+func (r *matchRunner) statsOf(p *player) (sim.Stats, bool) {
+	ps := r.players[p]
+	if ps == nil {
+		return sim.Stats{}, false
+	}
+	st := ps.stats.Load()
+	if st == nil {
+		return sim.Stats{}, false
+	}
+	return *st, true
 }
 
 // snapshot queues ps's SNAP for the others if it changed since the last one.

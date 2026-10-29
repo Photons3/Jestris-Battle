@@ -24,13 +24,14 @@ type fakeSim struct {
 	eliminated map[int]bool
 	buried     map[int]bool
 	snaps      map[int]string // Snapshot results; "snap" when unset
-	advanceErr error          // returned by every Advance once set
+	stats      map[int]sim.Stats
+	advanceErr error // returned by every Advance once set
 	closed     bool
 }
 
 func newFakeSim() *fakeSim {
 	return &fakeSim{attacks: map[int][]int{}, topOuts: map[int]int{}, eliminated: map[int]bool{},
-		buried: map[int]bool{}, snaps: map[int]string{}}
+		buried: map[int]bool{}, snaps: map[int]string{}, stats: map[int]sim.Stats{}}
 }
 
 func (f *fakeSim) record(format string, a ...any) {
@@ -57,6 +58,7 @@ func (f *fakeSim) TopOuts(h int) (int, error)     { return f.topOuts[h], nil }
 func (f *fakeSim) Eliminated(h int) (bool, error) { return f.eliminated[h], nil }
 func (f *fakeSim) Buried(h int) (bool, error)     { return f.buried[h], nil }
 func (f *fakeSim) Hash(h int) (uint64, error)     { return 0, nil }
+func (f *fakeSim) Stats(h int) (sim.Stats, error) { return f.stats[h], nil }
 func (f *fakeSim) Close() error                   { f.closed = true; return nil }
 
 func (f *fakeSim) Snapshot(h int) (string, error) {
@@ -1261,5 +1263,23 @@ func TestEnforceSimStartFailureEndsMatch(t *testing.T) {
 				t.Errorf("%s got %q after the match ended", p.name, got)
 			}
 		}
+	}
+}
+
+func TestRunnerKeepsTheLatestStats(t *testing.T) {
+	d := directMatch(t, "Ann", "Bob")
+	r := d.runner()
+	if _, ok := r.statsOf(d.ps[0]); ok {
+		t.Fatal("stats before the game started")
+	}
+	want := sim.Stats{Pieces: 7, Attack: 3, MaxCombo: 2, T: 1000}
+	d.sim().stats[0] = want
+	d.at(2000) // horizon 1000: tick advances both games
+	r.tick(d.h, d.now)
+	if got, ok := r.statsOf(d.ps[0]); !ok || got != want {
+		t.Fatalf("statsOf = %+v %v, want %+v", got, ok, want)
+	}
+	if _, ok := r.statsOf(testPlayer("Zed")); ok {
+		t.Fatal("stats for a non-participant")
 	}
 }
