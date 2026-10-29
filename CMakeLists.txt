@@ -118,7 +118,8 @@ target_compile_options(tetris_duel PRIVATE ${TETRIS_WARNINGS} -ffp-contract=off)
 
 add_library(tetris_settings STATIC
   src/app/keymap.cpp
-  src/app/settings.cpp)
+  src/app/settings.cpp
+  src/app/account.cpp)
 target_include_directories(tetris_settings PUBLIC src)
 target_link_libraries(tetris_settings PUBLIC tetris_input tetris_duel SDL3::SDL3)
 target_compile_options(tetris_settings PRIVATE ${TETRIS_WARNINGS})
@@ -167,7 +168,8 @@ add_executable(tetris_tests
   tests/audio_test.cpp
   tests/sound_cues_test.cpp
   tests/keymap_test.cpp
-  tests/settings_test.cpp)
+  tests/settings_test.cpp
+  tests/account_test.cpp)
 target_include_directories(tetris_tests PRIVATE tests)
 target_compile_definitions(tetris_tests PRIVATE TETRIS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(tetris_tests PRIVATE tetris_input tetris_duel tetris_bot tetris_audio tetris_settings doctest::doctest)
