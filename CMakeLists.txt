@@ -55,6 +55,7 @@ if(EMSCRIPTEN)
   set(TETRIS_GFX src/app/gfx_webgl.cpp)
   set(TETRIS_NET src/net/ws_client_web.cpp)
   set(TETRIS_STORE src/app/settings_store_web.cpp)
+  set(TETRIS_ACCOUNT src/app/account_store_web.cpp)
 else()
   FetchContent_Declare(doctest
     URL https://github.com/doctest/doctest/archive/refs/tags/v2.4.12.tar.gz)
@@ -64,6 +65,7 @@ else()
   set(TETRIS_GFX src/app/gfx_sdlgpu.cpp)
   set(TETRIS_NET src/net/connection_none.cpp)
   set(TETRIS_STORE src/app/settings_store_desktop.cpp)
+  set(TETRIS_ACCOUNT src/app/account_store_desktop.cpp)
 endif()
 
 add_library(imgui STATIC
@@ -132,7 +134,8 @@ add_executable(tetris
   src/app/audio_out.cpp
   ${TETRIS_GFX}
   ${TETRIS_NET}
-  ${TETRIS_STORE})
+  ${TETRIS_STORE}
+  ${TETRIS_ACCOUNT})
 target_include_directories(tetris PRIVATE src)
 target_link_libraries(tetris PRIVATE tetris_duel tetris_audio tetris_input tetris_settings imgui SDL3::SDL3)
 target_compile_options(tetris PRIVATE ${TETRIS_WARNINGS})
