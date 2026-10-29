@@ -125,14 +125,17 @@ void applyCommand(App& app, UiCommand command) {
         app.saveSettings();
         break;
     case UiCommand::Register:
+        app.ignoreStartupMe = true;
         app.menu.accountBusy = true;
         sendAccountRequest(AccountCall::Register, credentialsBody(app.menu.loginName, app.menu.loginPassword));
         break;
     case UiCommand::Login:
+        app.ignoreStartupMe = true;
         app.menu.accountBusy = true;
         sendAccountRequest(AccountCall::Login, credentialsBody(app.menu.loginName, app.menu.loginPassword));
         break;
     case UiCommand::Logout:
+        app.ignoreStartupMe = true;
         sendAccountRequest(AccountCall::Logout, "");
         app.leaveAccount();
         break;
@@ -440,6 +443,7 @@ void pumpAccount(App& app) {
     for (const AccountReply& reply : takeAccountReplies()) {
         switch (reply.call) {
         case AccountCall::Me:
+            if (app.ignoreStartupMe) break;  // a later Register, Login, or Logout already replaced it
             if (reply.status == 200) {
                 if (const std::optional<Profile> profile = parseProfile(reply.body)) app.enterAccount(*profile);
             }
