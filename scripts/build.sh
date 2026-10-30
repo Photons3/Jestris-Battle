@@ -7,6 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EMSDK_DIR="${EMSDK_DIR:-$HOME/emsdk}"
 export PATH="/usr/local/go/bin:$PATH"
+
 # Keep CI and low-memory machines from running the toolchain with too much parallelism.
 export GOMAXPROCS="${GOMAXPROCS:-2}"
 export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
