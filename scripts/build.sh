@@ -7,17 +7,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EMSDK_DIR="${EMSDK_DIR:-$HOME/emsdk}"
 export PATH="/usr/local/go/bin:$PATH"
+# Keep CI and low-memory machines from running the toolchain with too much parallelism.
+export GOMAXPROCS="${GOMAXPROCS:-2}"
+export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 
 # shellcheck disable=SC1091
 source "$EMSDK_DIR/emsdk_env.sh" >/dev/null
 
 echo "==> Building the web game"
 emcmake cmake -S "$ROOT" -B "$ROOT/build-web" -DCMAKE_BUILD_TYPE=Release
-cmake --build "$ROOT/build-web" -j"$(nproc)"
+cmake --build "$ROOT/build-web" -j"$CMAKE_BUILD_PARALLEL_LEVEL"
 
 echo "==> Building the server's replay module"
 emcmake cmake -S "$ROOT" -B "$ROOT/build-sim" -DCMAKE_BUILD_TYPE=Release -DTETRIS_SIM_ONLY=ON
-cmake --build "$ROOT/build-sim" --target jestris_sim -j"$(nproc)"
+cmake --build "$ROOT/build-sim" --target jestris_sim -j"$CMAKE_BUILD_PARALLEL_LEVEL"
 mkdir -p "$ROOT/server/sim"
 cp "$ROOT/build-sim/jestris_sim.wasm" "$ROOT/server/sim/"
 
@@ -29,8 +32,8 @@ if [ ! -f go.mod ]; then
 fi
 # The server is its own module: ignore any go.work in a parent directory.
 export GOWORK=off
-go test ./...
+GOMAXPROCS="$GOMAXPROCS" go test -p 1 ./...
 mkdir -p "$ROOT/build-server"
-CGO_ENABLED=0 go build -o "$ROOT/build-server/tetris-server" .
+CGO_ENABLED=0 GOMAXPROCS="$GOMAXPROCS" go build -p 1 -o "$ROOT/build-server/tetris-server" .
 
 echo "==> Done. Start it with scripts/run.sh"
